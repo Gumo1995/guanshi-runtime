@@ -1526,6 +1526,21 @@ function isSwiftCalendarAccessDeniedError(error) {
   return /swift exited with code 2/i.test(message) && /calendar access denied/i.test(message);
 }
 
+function isSwiftCalendarToolchainError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (!/swift exited with code \d+/i.test(message)) return false;
+  return (
+    /this SDK is not supported by the compiler/i.test(message) ||
+    /redefinition of module 'SwiftBridging'/i.test(message) ||
+    /could not build (Objective-C )?module '(EventKit|Foundation|CoreServices|CoreFoundation|CoreLocation)'/i.test(message) ||
+    /failed to build module '(EventKit|Foundation|CoreServices|CoreFoundation|CoreLocation)'/i.test(message)
+  );
+}
+
+function isSwiftCalendarJxaFallbackError(error) {
+  return isSwiftCalendarAccessDeniedError(error) || isSwiftCalendarToolchainError(error);
+}
+
 function isCalendarBackendUnavailableMessage(message) {
   const text = String(message || "");
   return text.startsWith("swift exited") || text.startsWith("osascript exited");
@@ -1958,7 +1973,7 @@ async function runMacCalendarExportOnce(options = {}) {
   try {
     return await runMacCalendarExportSwiftOnce();
   } catch (error) {
-    if (!isSwiftCalendarAccessDeniedError(error)) throw error;
+    if (!isSwiftCalendarJxaFallbackError(error)) throw error;
     return runMacCalendarExportViaJxa(options);
   }
 }
@@ -1967,7 +1982,7 @@ async function runMacCalendarListCalendarsOnce() {
   try {
     return await runMacCalendarListCalendarsSwiftOnce();
   } catch (error) {
-    if (!isSwiftCalendarAccessDeniedError(error)) throw error;
+    if (!isSwiftCalendarJxaFallbackError(error)) throw error;
     return runMacCalendarListCalendarsViaJxa();
   }
 }
@@ -1976,7 +1991,7 @@ async function runMacCalendarCreateEventOnce(payload) {
   try {
     return await runMacCalendarCreateEventSwiftOnce(payload);
   } catch (error) {
-    if (!isSwiftCalendarAccessDeniedError(error)) throw error;
+    if (!isSwiftCalendarJxaFallbackError(error)) throw error;
     return runMacCalendarCreateEventViaJxa(payload);
   }
 }
@@ -1985,7 +2000,7 @@ async function runMacCalendarDeleteEventOnce(payload) {
   try {
     return await runMacCalendarDeleteEventSwiftOnce(payload);
   } catch (error) {
-    if (!isSwiftCalendarAccessDeniedError(error)) throw error;
+    if (!isSwiftCalendarJxaFallbackError(error)) throw error;
     return runMacCalendarDeleteEventViaJxa(payload);
   }
 }
