@@ -1,0 +1,7 @@
+node_modules/
+.runtime/
+dist/
+*.log
+.DS_Store
+calendar_sync.json
+internal_update_state_v151.json

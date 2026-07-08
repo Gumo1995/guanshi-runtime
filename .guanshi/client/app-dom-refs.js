@@ -1,0 +1,202 @@
+/* global window */
+
+(function attachDomRefsModule(globalScope) {
+  "use strict";
+
+  const ID_REF_PAIRS = [
+    ["rangeSwitch", "range-switch"],
+    ["reviewRangeSwitch", "review-range-switch"],
+    ["emptyTip", "empty-tip"],
+    ["calendarRangeLabel", "calendar-range-label"],
+    ["calendarWeekdays", "calendar-weekdays"],
+    ["calendarScroll", "calendar-scroll"],
+    ["calendarCustomScrollbar", "calendar-custom-scrollbar"],
+    ["calendarCustomThumb", "calendar-custom-thumb"],
+    ["calendarTimeAxis", "calendar-time-axis"],
+    ["calendarDayColumns", "calendar-day-columns"],
+    ["calendarUnratedJumpBtn", "calendar-unrated-jump-btn"],
+    ["calendarUnratedCount", "calendar-unrated-count"],
+    ["calendarPrevWeekBtn", "calendar-prev-week"],
+    ["calendarTodayBtn", "calendar-today"],
+    ["calendarNextWeekBtn", "calendar-next-week"],
+    ["calendarSyncStatus", "calendar-sync-status"],
+    ["calendarEventModal", "calendar-event-modal"],
+    ["calendarEventTitle", "calendar-event-title"],
+    ["calendarEventForm", "calendar-event-form"],
+    ["calendarEventEditCategory", "calendar-event-edit-category"],
+    ["calendarEventEditDate", "calendar-event-edit-date"],
+    ["calendarEventEditStart", "calendar-event-edit-start"],
+    ["calendarEventEditEnd", "calendar-event-edit-end"],
+    ["calendarEventEditQuality", "calendar-event-edit-quality"],
+    ["calendarEventEditHappiness", "calendar-event-edit-happiness"],
+    ["calendarEventEditNote", "calendar-event-edit-note"],
+    ["scoreWheelPopover", "score-wheel-popover"],
+    ["scoreWheelTrack", "score-wheel-track"],
+    ["barsWrap", "category-bars"],
+    ["scatterWrap", "scatter"],
+    ["insight", "insight"],
+    ["heroQuote", "hero-quote"],
+    ["metricHours", "metric-hours"],
+    ["metricQuality", "metric-quality"],
+    ["metricHappiness", "metric-happiness"],
+    ["metricGolden", "metric-golden"],
+    ["qualityIndex", "quality-index"],
+    ["pomodoroMinutesInput", "pomodoro-minutes"],
+    ["pomodoroCategory", "pomodoro-category"],
+    ["pomodoroDial", "pomodoro-dial"],
+    ["pomodoroDisplay", "pomodoro-display"],
+    ["pomodoroRange", "pomodoro-range"],
+    ["pomodoroMinusFiveBtn", "pomodoro-minus-five"],
+    ["pomodoroPlusFiveBtn", "pomodoro-plus-five"],
+    ["pomodoroStartBtn", "pomodoro-start"],
+    ["pomodoroPauseBtn", "pomodoro-pause"],
+    ["pomodoroResetBtn", "pomodoro-reset"],
+    ["pomodoroScoreModal", "pomodoro-score-modal"],
+    ["pomodoroScoreTitle", "pomodoro-score-title"],
+    ["pomodoroScoreDescription", "pomodoro-score-description"],
+    ["pomodoroQualityScoreSlider", "pomodoro-quality-slider"],
+    ["pomodoroHappinessScoreSlider", "pomodoro-happiness-slider"],
+    ["pomodoroScoreConfirmBtn", "pomodoro-score-confirm"],
+    ["pomodoroScoreIncompleteBtn", "pomodoro-score-incomplete"],
+    ["pomodoroScoreCancelBtn", "pomodoro-score-cancel"],
+    ["globalSearchWrap", "global-search-wrap"],
+    ["globalSearchInput", "global-search-input"],
+    ["globalSearchResultsPanel", "global-search-results"],
+    ["globalSearchResultsList", "global-search-results-list"],
+    ["globalSearchResultsEmpty", "global-search-results-empty"],
+    ["topSyncRefreshBtn", "top-sync-refresh-btn"],
+    ["topSyncHub", "top-sync-hub"],
+    ["sidebar", "sidebar"],
+    ["sidebarResizer", "sidebar-resizer"],
+    ["sidebarProjectList", "sidebar-project-list"],
+    ["sidebarTagList", "sidebar-tag-list"],
+    ["sidebarTaxonomyRangeControl", "sidebar-taxonomy-range"],
+    ["todoFilterBar", "todo-filter-bar"],
+    ["todoGroups", "todo-groups"],
+    ["todoHistoryGroups", "todo-history-groups"],
+    ["todoHistoryToggleBtn", "todo-history-toggle"],
+    ["todoRecurringToggleBtn", "todo-recurring-toggle"],
+    ["todoAddButton", "todo-add-button"],
+    ["todoDetailForm", "todo-detail-form"],
+    ["todoDetailStatus", "todo-detail-status"],
+    ["todoDetailId", "todo-detail-id"],
+    ["todoTitleInput", "todo-title-input"],
+    ["todoDueDateInput", "todo-due-date-input"],
+    ["todoProjectSuggestWrap", "todo-project-suggest-wrap"],
+    ["todoProjectInput", "todo-project-input"],
+    ["todoProjectSuggestionMenu", "todo-project-suggestion-menu"],
+    ["todoCategorySuggestWrap", "todo-category-suggest-wrap"],
+    ["todoCategoryTrigger", "todo-category-trigger"],
+    ["todoCategoryTriggerLabel", "todo-category-trigger-label"],
+    ["todoCategorySuggestionMenu", "todo-category-suggestion-menu"],
+    ["todoCategoryInput", "todo-category-input"],
+    ["todoRepeatSuggestWrap", "todo-repeat-suggest-wrap"],
+    ["todoRepeatTrigger", "todo-repeat-trigger"],
+    ["todoRepeatTriggerLabel", "todo-repeat-trigger-label"],
+    ["todoRepeatSuggestionMenu", "todo-repeat-suggestion-menu"],
+    ["todoTagSuggestWrap", "todo-tag-suggest-wrap"],
+    ["todoTagsInput", "todo-tags-input"],
+    ["todoTagSuggestionMenu", "todo-tag-suggestion-menu"],
+    ["todoNoteInput", "todo-note-input"],
+    ["todoQualityInput", "todo-quality-input"],
+    ["todoHappinessInput", "todo-happiness-input"],
+    ["todoStartTimeInput", "todo-start-time-input"],
+    ["todoEndTimeInput", "todo-end-time-input"],
+    ["todoEstimateInput", "todo-estimate-input"],
+    ["todoReminderInput", "todo-reminder-input"],
+    ["todoRepeatInput", "todo-repeat-input"],
+    ["todoPlanLockBtn", "todo-plan-lock-btn"],
+    ["todoFocusBtn", "todo-focus-btn"],
+    ["todoSyncMessage", "todo-sync-message"],
+    ["reviewSummary", "review-summary"],
+    ["reviewList", "review-list"],
+    ["reviewDebugSummary", "review-debug-summary"],
+    ["reviewDebugTbody", "review-debug-tbody"],
+    ["reviewLegacyToggleBtn", "review-legacy-toggle"],
+    ["reviewLegacySections", "review-legacy-sections"],
+    ["reviewVisualSummary", "review-visual-summary"],
+    ["reviewVisualKpis", "review-visual-kpis"],
+    ["reviewChartTrend", "review-chart-trend"],
+    ["reviewChartCategory", "review-chart-category"],
+    ["reviewChartTimeband", "review-chart-timeband"],
+    ["reviewChartMatrix", "review-chart-matrix"],
+    ["settingsCategoryList", "settings-category-list"],
+    ["settingsCategoryAddInput", "settings-category-add-input"],
+    ["settingsCategoryAddBtn", "settings-category-add-btn"],
+    ["settingsCategoryResetBtn", "settings-category-reset-btn"],
+    ["settingsSyncAllRefreshBtn", "settings-sync-all-refresh-btn"],
+    ["settingsSyncCalendarSelect", "settings-sync-calendar-select"],
+    ["settingsSyncCalendarHint", "settings-sync-calendar-hint"],
+    ["settingsSyncReminderSelect", "settings-sync-reminder-select"],
+    ["settingsSyncReminderHint", "settings-sync-reminder-hint"],
+    ["settingsReminderLeadSelect", "settings-reminder-lead-select"],
+    ["settingsReminderLeadHint", "settings-reminder-lead-hint"],
+    ["settingsQuoteEditor", "settings-quote-editor"],
+    ["settingsQuoteSaveBtn", "settings-quote-save-btn"],
+    ["settingsQuoteResetBtn", "settings-quote-reset-btn"],
+    ["settingsQuoteStatus", "settings-quote-status"],
+    ["settingsDataExportBtn", "settings-data-export-btn"],
+    ["settingsDataImportBtn", "settings-data-import-btn"],
+    ["settingsDataImportInput", "settings-data-import-input"],
+    ["settingsDataStatus", "settings-data-status"],
+    ["settingsInstallMode", "settings-install-mode"],
+    ["settingsInstallBtn", "settings-install-btn"],
+    ["settingsInstallCopyBtn", "settings-install-copy-btn"],
+    ["settingsInstallStatus", "settings-install-status"],
+    ["settingsUpdateCurrent", "settings-update-current"],
+    ["settingsUpdateLatest", "settings-update-latest"],
+    ["settingsUpdateWorktree", "settings-update-worktree"],
+    ["settingsUpdateRemote", "settings-update-remote"],
+    ["settingsUpdateDetails", "settings-update-details"],
+    ["settingsUpdateCheckBtn", "settings-update-check-btn"],
+    ["settingsUpdateApplyBtn", "settings-update-apply-btn"],
+    ["settingsUpdateStatus", "settings-update-status"],
+    ["installGuideBanner", "install-guide-banner"],
+    ["installGuideBannerInstallBtn", "install-guide-banner-install-btn"],
+    ["installGuideBannerSettingsBtn", "install-guide-banner-settings-btn"],
+    ["installGuideBannerDismissBtn", "install-guide-banner-dismiss-btn"],
+    ["syncErrorModal", "sync-error-modal"],
+    ["syncErrorSummary", "sync-error-summary"],
+    ["syncErrorDetail", "sync-error-detail"],
+    ["syncErrorCopyStatus", "sync-error-copy-status"],
+    ["syncErrorCopyBtn", "sync-error-copy-btn"],
+  ];
+
+  const SELECTOR_REF_PAIRS = [
+    ["recordsPanel", ".records-panel", "one"],
+    ["firstScreenPanels", ".layout-grid > .panel", "all"],
+    ["todoNativeInputIcons", ".todo-native-input-icon[data-target-input]", "all"],
+    ["sidebarNavItems", ".sidebar-nav-item[data-view]", "all"],
+    ["appViews", ".app-view[data-view]", "all"],
+    ["todoDetailPanel", ".todo-detail-panel", "one"],
+  ];
+
+  function createDomRefsModule({ documentRef = globalScope.document } = {}) {
+    if (
+      !documentRef ||
+      typeof documentRef.getElementById !== "function" ||
+      typeof documentRef.querySelector !== "function" ||
+      typeof documentRef.querySelectorAll !== "function"
+    ) {
+      throw new Error("TimeQualityDomRefsModule requires a browser-like document.");
+    }
+
+    const refs = {};
+
+    ID_REF_PAIRS.forEach(([key, id]) => {
+      refs[key] = documentRef.getElementById(id);
+    });
+
+    SELECTOR_REF_PAIRS.forEach(([key, selector, mode]) => {
+      refs[key] = mode === "all"
+        ? Array.from(documentRef.querySelectorAll(selector))
+        : documentRef.querySelector(selector);
+    });
+
+    return refs;
+  }
+
+  globalScope.TimeQualityDomRefsModule = {
+    createDomRefsModule,
+  };
+})(typeof window !== "undefined" ? window : globalThis);

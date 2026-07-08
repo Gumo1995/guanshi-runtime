@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>观时 | Satori</title>
+  <link rel="shortcut icon" href="./favicon.ico?v=1.5.7" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.7" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.7" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.7" />
+  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.7" />
+  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.7" color="#234f49" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <main class="desktop-app">
+    <header class="topbar">
+      <div class="topbar-right">
+        <div id="global-search-wrap" class="top-search-wrap">
+          <label class="top-search" aria-label="全局搜索">
+            <span class="top-search-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="6.5"></circle>
+                <path d="m16 16 4 4"></path>
+              </svg>
+            </span>
+            <input id="global-search-input" type="search" placeholder="搜索待办 / 记录 / 项目 / 备注" />
+          </label>
+          <div id="global-search-results" class="top-search-results" hidden>
+            <ul id="global-search-results-list" class="top-search-results-list" role="listbox" aria-label="搜索结果"></ul>
+            <p id="global-search-results-empty" class="top-search-results-empty" hidden>未找到匹配结果</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section id="install-guide-banner" class="install-guide-banner" aria-live="polite" hidden>
+      <div class="install-guide-banner-main">
+        <strong>安装为独立应用</strong>
+        <span>用 Chrome 安装后，可从启动台或 Dock 像普通 App 一样打开。</span>
+      </div>
+      <div class="install-guide-banner-actions">
+        <button id="install-guide-banner-install-btn" class="btn-primary" type="button">安装</button>
+        <button id="install-guide-banner-settings-btn" class="btn-secondary" type="button">查看步骤</button>
+        <button id="install-guide-banner-dismiss-btn" class="icon-btn" type="button" aria-label="关闭安装提示">×</button>
+      </div>
+    </section>
+
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+          <div class="sidebar-brand-top">
+            <div class="brand-logo brand-logo--g" role="img" aria-label="观时">
+              <span class="brand-logo-mark" aria-hidden="true"></span>
+              <span class="brand-logo-text">
+                <span class="brand-logo-main">观时</span>
+              </span>
+            </div>
+            <button id="top-sync-refresh-btn" class="topbar-icon-btn sidebar-sync-refresh-btn" type="button" title="刷新同步" aria-label="刷新同步">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 6v5h-5" />
+                <path d="M4 18v-5h5" />
+                <path d="M19 11a7 7 0 0 0-12-3" />
+                <path d="M5 13a7 7 0 0 0 12 3" />
+              </svg>
+            </button>
+          </div>
+          <div id="top-sync-hub" class="top-sync-hub sidebar-sync-hub" aria-live="polite">
+            <p id="todo-sync-message" class="todo-sync-message">最近同步：尚未同步</p>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="主导航">
+          <button id="nav-overview" class="sidebar-nav-item is-active" data-view="overview" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 3a9 9 0 1 0 9 9" />
+                <path d="M12 12V3" />
+                <path d="M12 12h9" />
+              </svg>
+            </span>
+            <span class="nav-label">总览</span>
+          </button>
+          <button id="nav-todo" class="sidebar-nav-item" data-view="todo" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <rect x="4" y="4" width="16" height="16" rx="3" />
+                <path d="M8 12.5 10.5 15 16 9.5" />
+              </svg>
+            </span>
+            <span class="nav-label">待办</span>
+          </button>
+          <button id="nav-calendar" class="sidebar-nav-item" data-view="calendar" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
+                <path d="M8 3.5v3" />
+                <path d="M16 3.5v3" />
+                <path d="M3.5 9.5h17" />
+              </svg>
+            </span>
+            <span class="nav-label">日历</span>
+          </button>
+          <button id="nav-review" class="sidebar-nav-item" data-view="review" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <rect x="4" y="3.5" width="16" height="17" rx="2.5" />
+                <path d="M8 8.5h8" />
+                <path d="M8 12h8" />
+                <path d="M8 15.5h5" />
+              </svg>
+            </span>
+            <span class="nav-label">复盘</span>
+          </button>
+          <button id="nav-settings" class="sidebar-nav-item" data-view="settings" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M4 7h16" />
+                <path d="M4 12h16" />
+                <path d="M4 17h16" />
+                <circle cx="9" cy="7" r="2" />
+                <circle cx="15" cy="12" r="2" />
+                <circle cx="11" cy="17" r="2" />
+              </svg>
+            </span>
+            <span class="nav-label">设置</span>
+          </button>
+        </nav>
+
+        <div id="sidebar-taxonomy-range" class="sidebar-taxonomy-range" role="group" aria-label="项目标签统计范围">
+          <button data-range="all" type="button">全部</button>
+          <button data-range="month" type="button">近一月</button>
+          <button data-range="week" type="button">近一周</button>
+        </div>
+
+        <section class="sidebar-section" aria-label="项目列表">
+          <h3>项目</h3>
+          <div id="sidebar-project-list" class="sidebar-taxonomy-list"></div>
+        </section>
+
+        <section class="sidebar-section" aria-label="标签列表">
+          <h3>标签</h3>
+          <div id="sidebar-tag-list" class="sidebar-taxonomy-list"></div>
+        </section>
+      </aside>
+
+      <button id="sidebar-resizer" class="sidebar-resizer" type="button" aria-label="调整侧边栏宽度" title="拖动调整侧边栏"></button>
+
+      <section class="main-stage">
+        <section id="view-overview" class="app-view is-active" data-view="overview">
+          <header class="hero panel reveal" style="--delay: 0ms">
+            <div class="hero-top">
+              <div class="hero-main">
+                <p class="eyebrow">Satori</p>
+                <h1>时间质感</h1>
+                <p class="hero-text">
+                  记录每段时间，校准专注、计划与复盘，让日常安排更有方向。
+                </p>
+                <div class="hero-score" id="quality-index-wrap">
+                  <span>综合质感指数</span>
+                  <strong id="quality-index">0</strong>
+                  <small>/ 100</small>
+                </div>
+                <section id="hero-quote" class="hero-quote" aria-live="polite"></section>
+              </div>
+
+              <section class="entry-hub" aria-label="番茄钟记录">
+                <div class="pomodoro pomodoro-hero" aria-label="番茄计时">
+                  <input id="pomodoro-minutes" type="hidden" value="25" />
+
+                  <div class="pomodoro-layout">
+                    <div class="pomodoro-visual">
+                      <div class="pomodoro-dial" id="pomodoro-dial" role="img" aria-label="番茄钟进度">
+                        <div class="pomodoro-dial-face" aria-hidden="true"></div>
+                        <div class="pomodoro-dial-hand" id="pomodoro-hand" aria-hidden="true"></div>
+                        <div class="pomodoro-dial-cap" aria-hidden="true"></div>
+                      </div>
+
+                      <div class="pomodoro-clock" id="pomodoro-display" aria-live="polite">25:00</div>
+
+                      <div class="pomodoro-time-meta">
+                        <button class="btn-secondary pomodoro-shift-btn" id="pomodoro-minus-five" type="button" aria-label="减少 5 分钟">-</button>
+                        <p class="pomodoro-range" id="pomodoro-range">--:-- → --:--</p>
+                        <button class="btn-secondary pomodoro-shift-btn" id="pomodoro-plus-five" type="button" aria-label="增加 5 分钟">+</button>
+                      </div>
+                    </div>
+
+                    <div class="pomodoro-side">
+                      <label class="pomodoro-category-wrap">
+                        <select id="pomodoro-category" aria-label="类别">
+                          <option value="工作">工作</option>
+                          <option value="学习">学习</option>
+                          <option value="运动">运动</option>
+                          <option value="休息">休息</option>
+                          <option value="社交">社交</option>
+                          <option value="兴趣">兴趣</option>
+                          <option value="家务">家务</option>
+                          <option value="通勤">通勤</option>
+                        </select>
+                      </label>
+
+                      <div class="pomodoro-actions pomodoro-actions-vertical">
+                        <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-start" type="button" aria-label="开始" title="开始">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M8 5.5v13l10-6.5z" />
+                          </svg>
+                        </button>
+                        <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-pause" type="button" aria-label="暂停" title="暂停" disabled>
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M7.5 5h3.5v14H7.5zM13 5h3.5v14H13z" />
+                          </svg>
+                        </button>
+                        <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-reset" type="button" aria-label="重置" title="重置">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M7 7h10v10H7z" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </header>
+
+          <section class="panel reveal summary-panel" style="--delay: 140ms">
+            <div class="panel-head">
+              <h2>总结分析</h2>
+              <div id="range-switch" class="range-switch" role="tablist" aria-label="时间范围">
+                <button class="active" data-range="7" type="button">近 7 天</button>
+                <button data-range="30" type="button">近 30 天</button>
+                <button data-range="all" type="button">全部</button>
+              </div>
+            </div>
+
+            <section class="summary-layout">
+              <div class="summary-left">
+                <div class="metric-grid">
+                  <article class="metric-card">
+                    <span>总记录时长</span>
+                    <strong id="metric-hours">0h</strong>
+                  </article>
+                  <article class="metric-card">
+                    <span>平均质量</span>
+                    <strong id="metric-quality">0.0</strong>
+                  </article>
+                  <article class="metric-card">
+                    <span>平均幸福感</span>
+                    <strong id="metric-happiness">0.0</strong>
+                  </article>
+                  <article class="metric-card">
+                    <span>高质量高幸福时长</span>
+                    <strong id="metric-golden">0h</strong>
+                  </article>
+                </div>
+
+                <section class="insight" id="insight"></section>
+
+                <article class="chart-box chart-box-bars">
+                  <h3>
+                    <span>分类时长分布</span>
+                    <span class="bar-title-metrics" aria-hidden="true">
+                      <span class="bar-metric-title">质量</span>
+                      <span class="bar-metric-title">幸福</span>
+                    </span>
+                  </h3>
+                  <div id="category-bars" class="bars"></div>
+                </article>
+              </div>
+
+              <article class="chart-box chart-box-scatter">
+                <h3>质量 × 幸福感分布</h3>
+                <div class="quadrant">
+                  <span class="quad-label top-left">低质量高幸福</span>
+                  <span class="quad-label top-right">高质量高幸福</span>
+                  <span class="quad-label bottom-left">低质量低幸福</span>
+                  <span class="quad-label bottom-right">高质量低幸福</span>
+                  <div class="axis x-axis"></div>
+                  <div class="axis y-axis"></div>
+                  <div id="scatter"></div>
+                </div>
+              </article>
+            </section>
+          </section>
+        </section>
+
+        <section id="view-todo" class="app-view" data-view="todo" hidden>
+          <div class="todo-layout">
+            <section class="panel todo-panel">
+              <div class="panel-head todo-panel-head">
+                <div class="todo-panel-head-title">
+                  <h2>待办事项</h2>
+                  <button
+                    id="todo-history-toggle"
+                    class="todo-history-toggle-btn"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="显示历史"
+                    title="显示历史"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 5a7 7 0 1 1-6.22 3.8" />
+                      <path d="M12 8v4l2.5 2.5" />
+                      <path d="M4 5v4h4" />
+                    </svg>
+                  </button>
+                  <button
+                    id="todo-recurring-toggle"
+                    class="todo-history-toggle-btn todo-recurring-toggle-btn"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="筛选周期"
+                    title="筛选周期"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m15.7 4.6 3.2 3.2-3.2 3.2" />
+                      <path d="M5.1 11V9.8a2 2 0 0 1 2-2h11.8" />
+                      <path d="m8.3 19.4-3.2-3.2 3.2-3.2" />
+                      <path d="M18.9 13v1.2a2 2 0 0 1-2 2H5.1" />
+                    </svg>
+                  </button>
+                </div>
+                <div class="todo-panel-head-actions">
+                  <div id="todo-filter-bar" class="todo-filter-bar" role="tablist" aria-label="待办分类维度">
+                    <button class="is-active" data-dimension="time" type="button">时间</button>
+                    <button data-dimension="project" type="button">项目</button>
+                    <button data-dimension="tag" type="button">标签</button>
+                  </div>
+                  <button id="todo-add-button" class="icon-btn" type="button" aria-label="新增待办" title="新增待办">+</button>
+                </div>
+              </div>
+
+              <div id="todo-groups" class="todo-groups" aria-live="polite"></div>
+            </section>
+
+            <section class="panel todo-detail-panel">
+              <div class="todo-detail-head">
+                <div class="todo-detail-head-main">
+                  <h2>任务详情</h2>
+                  <div class="todo-detail-meta">
+                    <p id="todo-detail-status" class="todo-status-chip">待同步</p>
+                    <p id="todo-detail-id" class="todo-detail-id">todo_</p>
+                  </div>
+                </div>
+                <div class="todo-detail-head-actions">
+                  <button
+                    id="todo-plan-lock-btn"
+                    class="todo-head-icon-btn todo-plan-lock-btn"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="锁定排期"
+                    title="锁定排期"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="5.5" y="10.3" width="13" height="9.2" rx="2.2" />
+                      <path d="M8.6 10.3V7.8a3.4 3.4 0 0 1 6.8 0v2.5" />
+                    </svg>
+                  </button>
+                  <button
+                    id="todo-focus-btn"
+                    class="todo-focus-icon-btn"
+                    type="button"
+                    aria-label="开始番茄"
+                    title="开始番茄"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 5.5c-4.14 0-7.5 3.36-7.5 7.5s3.36 7.5 7.5 7.5 7.5-3.36 7.5-7.5-3.36-7.5-7.5-7.5z" />
+                      <path d="M12 9v4.2" />
+                      <path d="m12 13.2 2.9 1.7" />
+                      <path d="M9.1 3.7h5.8" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <form id="todo-detail-form" class="todo-detail-form">
+                <label>
+                  <span>标题 *</span>
+                  <input id="todo-title-input" type="text" required placeholder="输入待办标题" />
+                </label>
+
+                <div class="todo-inline-grid">
+                  <label>
+                    <span>截止日期 *</span>
+                    <div class="todo-native-input-wrap is-date">
+                      <input id="todo-due-date-input" type="date" required />
+                      <span class="todo-native-input-icon" data-target-input="todo-due-date-input" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <rect x="3.5" y="5" width="17" height="15" rx="2.5"></rect>
+                          <path d="M8 3.5v3"></path>
+                          <path d="M16 3.5v3"></path>
+                          <path d="M3.5 9.5h17"></path>
+                        </svg>
+                      </span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>预计时段</span>
+                    <div class="todo-native-input-wrap is-time">
+                      <input id="todo-start-time-input" type="time" />
+                      <span class="todo-native-input-icon" data-target-input="todo-start-time-input" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="8.2"></circle>
+                          <path d="M12 7.5v5.2"></path>
+                          <path d="m12 12.7 3.8 2"></path>
+                        </svg>
+                      </span>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="todo-inline-grid">
+                  <label>
+                    <span>结束时间</span>
+                    <div class="todo-native-input-wrap is-time">
+                      <input id="todo-end-time-input" type="time" />
+                      <span class="todo-native-input-icon" data-target-input="todo-end-time-input" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="8.2"></circle>
+                          <path d="M12 7.5v5.2"></path>
+                          <path d="m12 12.7 3.8 2"></path>
+                        </svg>
+                      </span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>预计时长(分钟)</span>
+                    <input id="todo-estimate-input" type="number" min="5" step="5" placeholder="45" />
+                  </label>
+                </div>
+
+                <div class="todo-inline-grid">
+                  <label>
+                    <span>项目</span>
+                    <div id="todo-project-suggest-wrap" class="todo-suggest-wrap">
+                      <input id="todo-project-input" type="text" autocomplete="off" placeholder="例如 A-B-C" />
+                      <div id="todo-project-suggestion-menu" class="todo-suggestion-menu" hidden></div>
+                    </div>
+                  </label>
+                  <label>
+                    <span>分类 *</span>
+                    <div id="todo-category-suggest-wrap" class="todo-suggest-wrap todo-category-select-wrap">
+                      <button
+                        id="todo-category-trigger"
+                        class="todo-category-trigger"
+                        type="button"
+                        aria-haspopup="listbox"
+                        aria-expanded="false"
+                        aria-label="选择分类"
+                      >
+                        <span id="todo-category-trigger-label">工作</span>
+                        <span class="todo-category-trigger-caret" aria-hidden="true"></span>
+                      </button>
+                      <div id="todo-category-suggestion-menu" class="todo-suggestion-menu" hidden role="listbox" aria-label="分类列表"></div>
+                      <select id="todo-category-input" class="todo-native-select-hidden" required tabindex="-1" aria-hidden="true">
+                        <option value="工作">工作</option>
+                        <option value="学习">学习</option>
+                        <option value="运动">运动</option>
+                        <option value="休息">休息</option>
+                        <option value="社交">社交</option>
+                        <option value="兴趣">兴趣</option>
+                        <option value="家务">家务</option>
+                        <option value="通勤">通勤</option>
+                      </select>
+                    </div>
+                  </label>
+                </div>
+
+                <label>
+                  <span>标签（逗号分隔）</span>
+                  <div id="todo-tag-suggest-wrap" class="todo-suggest-wrap">
+                    <input id="todo-tags-input" type="text" autocomplete="off" placeholder="例如 重要且紧急" />
+                    <div id="todo-tag-suggestion-menu" class="todo-suggestion-menu" hidden></div>
+                  </div>
+                </label>
+
+                <input id="todo-quality-input" type="hidden" />
+                <input id="todo-happiness-input" type="hidden" />
+
+                <div class="todo-inline-grid">
+                  <label>
+                    <span>提醒</span>
+                    <div class="todo-native-input-wrap is-datetime">
+                      <input id="todo-reminder-input" type="datetime-local" />
+                      <span class="todo-native-input-icon" data-target-input="todo-reminder-input" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <rect x="3.5" y="5" width="17" height="15" rx="2.5"></rect>
+                          <path d="M8 3.5v3"></path>
+                          <path d="M16 3.5v3"></path>
+                          <path d="M3.5 9.5h17"></path>
+                          <circle cx="16.5" cy="15.5" r="2.9"></circle>
+                          <path d="M16.5 14.4v1.3"></path>
+                          <path d="m16.5 15.7 1.1.6"></path>
+                        </svg>
+                      </span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>重复</span>
+                    <div id="todo-repeat-suggest-wrap" class="todo-suggest-wrap">
+                      <button
+                        id="todo-repeat-trigger"
+                        class="todo-repeat-trigger"
+                        type="button"
+                        aria-haspopup="listbox"
+                        aria-expanded="false"
+                        aria-label="选择重复规则"
+                      >
+                        <span id="todo-repeat-trigger-label">不提醒</span>
+                        <span class="todo-repeat-trigger-caret" aria-hidden="true"></span>
+                      </button>
+                      <div id="todo-repeat-suggestion-menu" class="todo-suggestion-menu" hidden role="listbox" aria-label="重复规则列表"></div>
+                      <select id="todo-repeat-input" class="todo-native-select-hidden" tabindex="-1" aria-hidden="true">
+                        <option value="none">不提醒</option>
+                        <option value="once">单次</option>
+                        <option value="daily">每天</option>
+                        <option value="weekly">每周</option>
+                        <option value="monthly">每月</option>
+                      </select>
+                    </div>
+                  </label>
+                </div>
+
+                <label class="todo-note-full">
+                  <span>备注</span>
+                  <textarea id="todo-note-input" rows="4" placeholder="补充你的执行要点。"></textarea>
+                </label>
+
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-calendar" class="app-view" data-view="calendar" hidden>
+          <section class="panel records-panel calendar-page-panel">
+            <div class="panel-head records-panel-head">
+              <div class="records-panel-head-main">
+                <h2>记录日历</h2>
+                <button
+                  id="calendar-unrated-jump-btn"
+                  class="btn-secondary calendar-unrated-jump-btn"
+                  type="button"
+                  aria-label="跳转到待评分周"
+                  title="暂无待评分"
+                >
+                  待评分
+                  <span id="calendar-unrated-count" class="calendar-unrated-count">0</span>
+                </button>
+              </div>
+              <div class="calendar-head-controls calendar-head-controls-right">
+                <div class="calendar-nav" role="group" aria-label="日历周切换">
+                  <button class="btn-secondary calendar-nav-btn" id="calendar-prev-week" type="button" aria-label="上一周">←</button>
+                  <button class="btn-secondary calendar-nav-btn" id="calendar-today" type="button">本周</button>
+                  <button class="btn-secondary calendar-nav-btn" id="calendar-next-week" type="button" aria-label="下一周">→</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="records-calendar" aria-label="按周查看记录">
+              <div class="calendar-meta-row">
+                <p id="calendar-range-label" class="calendar-range-label"></p>
+              </div>
+              <div id="calendar-weekdays" class="calendar-weekdays" role="rowgroup" aria-label="周日期"></div>
+
+              <div class="calendar-scroll-shell">
+                <div id="calendar-scroll" class="calendar-scroll" aria-label="周时间轴">
+                  <div class="calendar-canvas">
+                    <div id="calendar-time-axis" class="calendar-time-axis"></div>
+                    <div id="calendar-day-columns" class="calendar-day-columns"></div>
+                  </div>
+                </div>
+                <div
+                  id="calendar-custom-scrollbar"
+                  class="calendar-custom-scrollbar"
+                  role="scrollbar"
+                  aria-orientation="vertical"
+                  aria-controls="calendar-scroll"
+                  aria-label="时间轴滚动条"
+                  aria-valuemin="0"
+                  aria-valuemax="0"
+                  aria-valuenow="0"
+                  tabindex="0"
+                >
+                  <div id="calendar-custom-thumb" class="calendar-custom-thumb"></div>
+                </div>
+              </div>
+            </div>
+
+            <p id="empty-tip" class="empty-tip">
+              本周还没有记录。先添加一段时间，系统会自动生成分析结果。
+            </p>
+          </section>
+        </section>
+
+        <section id="view-review" class="app-view" data-view="review" hidden>
+          <section class="panel review-panel">
+            <div class="panel-head review-panel-head">
+              <div class="review-panel-head-main">
+                <h2>日志复盘</h2>
+                <p id="review-visual-summary" class="review-panel-head-summary">--</p>
+              </div>
+              <div class="review-panel-head-actions">
+                <div id="review-range-switch" class="range-switch review-range-switch" role="tablist" aria-label="复盘时间范围">
+                  <button class="active" data-range="7" type="button">近 7 天</button>
+                  <button data-range="30" type="button">近 30 天</button>
+                  <button data-range="all" type="button">全部</button>
+                </div>
+              </div>
+            </div>
+
+            <section class="review-visual-panel" aria-label="Entry 多维可视化">
+              <div id="review-visual-kpis" class="review-visual-kpis"></div>
+              <div class="review-visual-grid">
+                <article class="review-visual-card">
+                  <h4>最近 14 天记录时长</h4>
+                  <div id="review-chart-trend" class="review-chart review-chart-trend"></div>
+                </article>
+                <article class="review-visual-card">
+                  <h4>分类时长分布</h4>
+                  <div id="review-chart-category" class="review-chart review-chart-category"></div>
+                </article>
+                <article class="review-visual-card">
+                  <h4>时段活跃度</h4>
+                  <div id="review-chart-timeband" class="review-chart review-chart-timeband"></div>
+                </article>
+                <article class="review-visual-card">
+                  <h4>质量 × 幸福矩阵</h4>
+                  <div id="review-chart-matrix" class="review-chart review-chart-matrix"></div>
+                </article>
+              </div>
+            </section>
+
+            <div id="review-legacy-sections" class="review-legacy-sections" hidden>
+              <div id="review-summary" class="review-summary"></div>
+              <div id="review-list" class="review-list"></div>
+              <section class="review-debug-panel" aria-label="调试数据表">
+                <div class="review-debug-head">
+                  <h3>调试数据表（待办 / 日程）</h3>
+                  <p id="review-debug-summary">--</p>
+                </div>
+                <div class="review-debug-table-wrap">
+                  <table class="review-debug-table">
+                    <thead>
+                      <tr>
+                        <th>类型</th>
+                        <th>ID</th>
+                        <th>标题</th>
+                        <th>日期</th>
+                        <th>时间</th>
+                        <th>分类/项目</th>
+                        <th>标签</th>
+                        <th>评分</th>
+                        <th>状态标签</th>
+                        <th>同步/来源</th>
+                        <th>外部ID</th>
+                        <th>关联ID</th>
+                        <th>更新时间</th>
+                      </tr>
+                    </thead>
+                    <tbody id="review-debug-tbody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+        </section>
+
+        <section id="view-settings" class="app-view" data-view="settings" hidden>
+          <section class="panel settings-panel">
+            <div class="panel-head settings-panel-head">
+              <h2>设置</h2>
+              <p>仅保存在当前设备。</p>
+            </div>
+            <div class="settings-grid" role="list">
+              <article class="settings-card settings-card-sync" role="listitem">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3>日历同步</h3>
+                    <p>设置日历/提醒目标，一键刷新列表。</p>
+                  </div>
+                  <div class="settings-card-head-side">
+                    <button id="settings-sync-all-refresh-btn" class="btn-secondary settings-sync-refresh-btn" type="button">刷新列表</button>
+                    <span class="settings-card-badge">核心配置</span>
+                  </div>
+                </header>
+                <div class="settings-sync-compact-grid">
+                  <div class="settings-sync-target">
+                    <label class="settings-field-label" for="settings-sync-calendar-select">同步目标日历</label>
+                    <div class="settings-sync-target-row">
+                      <select id="settings-sync-calendar-select" aria-label="同步目标日历"></select>
+                    </div>
+                  </div>
+                  <div class="settings-sync-target">
+                    <label class="settings-field-label" for="settings-sync-reminder-select">同步提醒列表</label>
+                    <div class="settings-sync-target-row">
+                      <select id="settings-sync-reminder-select" aria-label="同步提醒列表"></select>
+                    </div>
+                  </div>
+                  <div class="settings-sync-target">
+                    <label class="settings-field-label" for="settings-reminder-lead-select">默认提前提醒</label>
+                    <div class="settings-sync-target-row">
+                      <select id="settings-reminder-lead-select" aria-label="默认提醒时间"></select>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="settings-card settings-card-data" role="listitem">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3>数据迁移</h3>
+                    <p>导出/导入本地数据。</p>
+                  </div>
+                </header>
+                <div class="settings-data-controls">
+                  <div class="settings-data-actions">
+                    <button id="settings-data-export-btn" class="btn-secondary" type="button">导出数据</button>
+                    <button id="settings-data-import-btn" class="btn-secondary" type="button">导入数据</button>
+                    <input id="settings-data-import-input" type="file" accept="application/json,.json" hidden />
+                  </div>
+                  <p id="settings-data-status" class="settings-data-status" aria-live="polite"></p>
+                </div>
+              </article>
+
+              <article class="settings-card settings-card-install" role="listitem">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3>安装为独立应用</h3>
+                    <p>用 Chrome 生成独立窗口入口。</p>
+                  </div>
+                  <div class="settings-card-head-side">
+                    <span id="settings-install-mode" class="settings-card-badge">检测中</span>
+                  </div>
+                </header>
+                <div class="settings-install-controls">
+                  <ol class="settings-install-steps">
+                    <li>用 Chrome 打开当前页面。</li>
+                    <li>点地址栏右侧的安装图标，或打开 Chrome 菜单。</li>
+                    <li>选择“安装观时”或“保存并分享”里的“创建快捷方式”。</li>
+                    <li>勾选“作为窗口打开”，以后从启动台或 Dock 打开。</li>
+                  </ol>
+                  <div class="settings-install-actions">
+                    <button id="settings-install-btn" class="btn-primary" type="button" disabled>安装观时</button>
+                    <button id="settings-install-copy-btn" class="btn-secondary" type="button">复制地址</button>
+                  </div>
+                  <p id="settings-install-status" class="settings-install-status" aria-live="polite"></p>
+                </div>
+              </article>
+
+              <article class="settings-card settings-card-update" role="listitem">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3>内测更新</h3>
+                    <p>从 GitHub 稳定 tag 更新源码。</p>
+                  </div>
+                  <div class="settings-card-head-side">
+                    <span class="settings-card-badge">macOS</span>
+                  </div>
+                </header>
+                <div class="settings-update-controls">
+                  <dl class="settings-kv-list settings-update-kv">
+                    <div>
+                      <dt>当前版本</dt>
+                      <dd id="settings-update-current">--</dd>
+                    </div>
+                    <div>
+                      <dt>最新版本</dt>
+                      <dd id="settings-update-latest">--</dd>
+                    </div>
+                    <div>
+                      <dt>源码状态</dt>
+                      <dd id="settings-update-worktree">--</dd>
+                    </div>
+                    <div>
+                      <dt>远端仓库</dt>
+                      <dd id="settings-update-remote">--</dd>
+                    </div>
+                  </dl>
+                  <p id="settings-update-details" class="settings-update-details"></p>
+                  <div class="settings-update-actions">
+                    <button id="settings-update-check-btn" class="btn-secondary" type="button">检查更新</button>
+                    <button id="settings-update-apply-btn" class="btn-primary" type="button" disabled>更新到稳定版</button>
+                  </div>
+                  <p id="settings-update-status" class="settings-update-status" aria-live="polite"></p>
+                </div>
+              </article>
+
+              <article class="settings-card settings-card-category" role="listitem">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3>分类管理</h3>
+                    <p>可新增、重命名、排序；同步到待办和日历。</p>
+                  </div>
+                </header>
+                <div class="settings-category-controls">
+                  <label class="settings-field-label" for="settings-category-add-input">新增分类</label>
+                  <div class="settings-category-add">
+                    <input id="settings-category-add-input" type="text" maxlength="20" placeholder="输入新分类名称" />
+                    <button id="settings-category-add-btn" class="btn-secondary" type="button">新增</button>
+                    <button id="settings-category-reset-btn" class="btn-secondary" type="button">恢复默认</button>
+                  </div>
+                </div>
+                <div id="settings-category-list" class="settings-category-list" aria-label="分类可编辑列表"></div>
+              </article>
+
+              <article class="settings-card settings-card-quote" role="listitem">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3>名人名言管理</h3>
+                    <p>总览语录管理，每行一条：内容 —— 作者。</p>
+                  </div>
+                </header>
+                <div class="settings-quote-controls">
+                  <label class="settings-field-label" for="settings-quote-editor">语录</label>
+                  <textarea
+                    id="settings-quote-editor"
+                    class="settings-quote-editor"
+                    rows="10"
+                    placeholder="例如：在黑暗中抱怨，不如点亮一盏灯。 —— 刘彝"
+                  ></textarea>
+                  <div class="settings-quote-actions">
+                    <button id="settings-quote-save-btn" class="btn-secondary" type="button">保存语录</button>
+                    <button id="settings-quote-reset-btn" class="btn-secondary" type="button">恢复默认</button>
+                  </div>
+                  <p id="settings-quote-status" class="settings-quote-status" aria-live="polite"></p>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+      </section>
+    </div>
+  </main>
+
+  <div id="pomodoro-score-modal" class="pomodoro-score-modal" hidden>
+    <div class="pomodoro-score-backdrop" data-score-modal-close="true"></div>
+    <section class="pomodoro-score-card" role="dialog" aria-modal="true" aria-labelledby="pomodoro-score-title">
+      <h2 id="pomodoro-score-title" contenteditable="false" tabindex="0" title="点击编辑事件名称">番茄钟：工作</h2>
+      <p id="pomodoro-score-description">请确认本次专注的质量与幸福感评分，确认后将直接记录。</p>
+
+      <div class="pomodoro-score-grid">
+        <label class="slider-wrap">
+          <div class="slider-head">
+            <span>质量评分</span>
+          </div>
+          <input id="pomodoro-quality-slider" type="number" min="1" max="10" step="1" value="7" required />
+        </label>
+        <label class="slider-wrap">
+          <div class="slider-head">
+            <span>幸福感评分</span>
+          </div>
+          <input id="pomodoro-happiness-slider" type="number" min="1" max="10" step="1" value="7" required />
+        </label>
+      </div>
+
+      <div class="pomodoro-score-actions">
+        <button class="btn-secondary" id="pomodoro-score-cancel" type="button">取消记录</button>
+        <button class="btn-secondary" id="pomodoro-score-incomplete" type="button">未完成，记录本轮</button>
+        <button class="btn-primary" id="pomodoro-score-confirm" type="button">确认评分</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="calendar-event-modal" class="calendar-event-modal" hidden>
+    <div class="calendar-event-backdrop" data-calendar-modal-close="true"></div>
+    <section class="calendar-event-card" role="dialog" aria-modal="true" aria-labelledby="calendar-event-title">
+      <div class="calendar-event-card-head">
+        <h2 id="calendar-event-title" contenteditable="false" tabindex="0" title="点击编辑事件名称">事件名称</h2>
+        <button class="calendar-event-close" type="button" data-calendar-modal-close="true" aria-label="关闭">×</button>
+      </div>
+
+      <form id="calendar-event-form" class="entry-form calendar-event-form">
+        <div class="calendar-event-form-grid">
+          <label>
+            <span>类别</span>
+            <select id="calendar-event-edit-category" name="category" required>
+              <option value="工作">工作</option>
+              <option value="学习">学习</option>
+              <option value="运动">运动</option>
+              <option value="休息">休息</option>
+              <option value="社交">社交</option>
+              <option value="兴趣">兴趣</option>
+              <option value="家务">家务</option>
+              <option value="通勤">通勤</option>
+            </select>
+          </label>
+          <label>
+            <span>日期</span>
+            <input id="calendar-event-edit-date" name="date" type="date" required />
+          </label>
+          <label>
+            <span>开始</span>
+            <input id="calendar-event-edit-start" name="start" type="time" required />
+          </label>
+          <label>
+            <span>结束</span>
+            <input id="calendar-event-edit-end" name="end" type="time" required />
+          </label>
+          <label>
+            <span>质量评分（1-10）</span>
+            <input id="calendar-event-edit-quality" name="quality" type="number" min="1" max="10" step="1" required />
+          </label>
+          <label>
+            <span>幸福感评分（1-10）</span>
+            <input id="calendar-event-edit-happiness" name="happiness" type="number" min="1" max="10" step="1" required />
+          </label>
+        </div>
+
+        <label class="calendar-event-form-note">
+          <span>备注</span>
+          <textarea id="calendar-event-edit-note" name="note" rows="3" maxlength="120" placeholder="可填写事件描述"></textarea>
+        </label>
+
+        <div class="calendar-event-form-actions">
+          <button class="btn-secondary" type="button" data-calendar-modal-close="true">取消</button>
+          <button class="btn-primary" type="submit">确认修改</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <div id="score-wheel-popover" class="score-wheel-popover" hidden aria-hidden="true">
+    <div class="score-wheel-shell" role="listbox" aria-label="评分滚轮选择器">
+      <div class="score-wheel-highlight" aria-hidden="true"></div>
+      <div id="score-wheel-track" class="score-wheel-track"></div>
+    </div>
+  </div>
+
+  <div id="sync-error-modal" class="sync-error-modal" hidden>
+    <div class="sync-error-backdrop" data-sync-error-close="true"></div>
+    <section class="sync-error-card" role="dialog" aria-modal="true" aria-labelledby="sync-error-title">
+      <div class="sync-error-head">
+        <h2 id="sync-error-title">同步错误详情</h2>
+        <button class="sync-error-close" type="button" data-sync-error-close="true" aria-label="关闭">×</button>
+      </div>
+      <p id="sync-error-summary" class="sync-error-summary"></p>
+      <label class="sync-error-detail-wrap" for="sync-error-detail">
+        <span>完整错误信息</span>
+        <textarea id="sync-error-detail" readonly rows="7"></textarea>
+      </label>
+      <p id="sync-error-copy-status" class="sync-error-copy-status" aria-live="polite"></p>
+      <div class="sync-error-actions">
+        <button id="sync-error-copy-btn" class="btn-secondary" type="button">复制错误信息</button>
+        <button id="sync-error-ok-btn" class="btn-primary" type="button" data-sync-error-close="true">知道了</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="app-config.js"></script>
+  <script src="app-dom-refs.js"></script>
+  <script src="app-startup.js"></script>
+  <script src="app-core-utils.js"></script>
+  <script src="app-overview.js"></script>
+  <script src="app-layout-shell.js"></script>
+  <script src="app-todo-model.js"></script>
+  <script src="app-todo-sync-bridge.js"></script>
+  <script src="app-sync.js"></script>
+  <script src="app-external-calendar-import.js"></script>
+  <script src="app-sync-runtime.js"></script>
+  <script src="app-todo-actions.js"></script>
+  <script src="app-calendar-actions.js"></script>
+  <script src="app-data-store.js"></script>
+  <script src="app-undo-runtime.js"></script>
+  <script src="app-calendar-samples.js"></script>
+  <script src="app-todo-plan.js"></script>
+  <script src="app-todo-detail.js"></script>
+  <script src="app-todo-list.js"></script>
+  <script src="app-sidebar-taxonomy.js"></script>
+  <script src="app-review.js"></script>
+  <script src="app-search.js"></script>
+  <script src="app-score-wheel.js"></script>
+  <script src="app-settings.js"></script>
+  <script src="app-install-guide.js"></script>
+  <script src="app-internal-update.js"></script>
+  <script src="app-pomodoro-todo-link.js"></script>
+  <script src="app-pomodoro.js"></script>
+  <script src="app-todo-reminder.js"></script>
+  <script src="app-sync-settings.js"></script>
+  <script src="app-calendar-ui.js"></script>
+  <script src="app-calendar-modal.js"></script>
+  <script src="app-render-coordinator.js"></script>
+  <script src="app.js"></script>
+</body>
+
+</html>

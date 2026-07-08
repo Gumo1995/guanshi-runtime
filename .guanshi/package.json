@@ -1,0 +1,13 @@
+{
+  "name": "guanshi-runtime",
+  "productName": "观时",
+  "version": "1.5.7",
+  "description": "观时本地 Chrome 运行版",
+  "private": true,
+  "author": "xuyuhan",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "node server.js",
+    "web": "node server.js"
+  }
+}
