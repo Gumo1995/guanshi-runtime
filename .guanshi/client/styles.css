@@ -5533,15 +5533,29 @@ textarea::placeholder {
   gap: 9px;
 }
 
+.settings-environment-kv > div,
 .settings-update-kv > div {
   grid-template-columns: 76px minmax(0, 1fr);
 }
 
+.settings-environment-kv dd,
 .settings-update-kv dd {
   color: #3e5267;
   font-size: 11px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.settings-environment-kv dd[data-tone="success"] {
+  color: #346d5f;
+}
+
+.settings-environment-kv dd[data-tone="warning"] {
+  color: #9b7a2d;
+}
+
+.settings-environment-kv dd[data-tone="danger"] {
+  color: #9b3a3a;
 }
 
 .settings-update-details {

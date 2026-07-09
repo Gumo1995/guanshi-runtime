@@ -56,6 +56,7 @@ const INTERNAL_UPDATE_ALLOWED_GITHUB_OWNER = "gumo1995";
 const INTERNAL_UPDATE_ALLOWED_GITHUB_REPO = "guanshi-runtime";
 const INTERNAL_UPDATE_STABLE_TAG_PATTERN = /^v(\d+)\.(\d+)\.(\d+)$/;
 const INTERNAL_UPDATE_GIT_TIMEOUT_MS = 90000;
+const MIN_SUPPORTED_NODE_MAJOR = 18;
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
@@ -445,17 +446,215 @@ function normalizeTagList(text) {
     .filter(Boolean);
 }
 
+function parseNodeVersionMajor(versionText) {
+  const match = String(versionText || "").match(/^v?(\d+)(?:\.\d+){0,2}$/);
+  if (!match) return null;
+  const major = Number.parseInt(match[1], 10);
+  return Number.isFinite(major) ? major : null;
+}
+
+function createEnvironmentCheck({
+  key,
+  label,
+  required = false,
+  requiredFor = "",
+  available = false,
+  supported = available,
+  recommended = supported,
+  value = "",
+  version = "",
+  path: foundPath = "",
+  message = "",
+}) {
+  return {
+    key,
+    label,
+    required: Boolean(required),
+    requiredFor: String(requiredFor || ""),
+    available: Boolean(available),
+    supported: Boolean(supported),
+    recommended: Boolean(recommended),
+    value: String(value || ""),
+    version: String(version || ""),
+    path: String(foundPath || ""),
+    message: String(message || ""),
+  };
+}
+
+function runEnvironmentCommand(command, args = [], { timeoutMs = 5000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: ROOT_DIR,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGTERM");
+      reject(new Error(`${command} check timed out.`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const output = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n").trim();
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(output || `${command} exited with code ${code}.`));
+      }
+    });
+  });
+}
+
+function collectMacChromeEnvironmentCheck() {
+  if (process.platform !== "darwin") {
+    return createEnvironmentCheck({
+      key: "chrome",
+      label: "Google Chrome",
+      requiredFor: "standalone-app",
+      available: false,
+      supported: false,
+      value: "不支持",
+      message: "Chrome 独立窗口体验当前只按 macOS 用户版检查。",
+    });
+  }
+
+  const candidates = [
+    "/Applications/Google Chrome.app",
+    path.join(process.env.HOME || "", "Applications", "Google Chrome.app"),
+    "/System/Volumes/Data/Applications/Google Chrome.app",
+  ].filter(Boolean);
+  const chromePath = candidates.find((candidate) => fs.existsSync(candidate)) || "";
+
+  return createEnvironmentCheck({
+    key: "chrome",
+    label: "Google Chrome",
+    requiredFor: "standalone-app",
+    available: Boolean(chromePath),
+    supported: Boolean(chromePath),
+    value: chromePath ? "已安装" : "未找到",
+    path: chromePath,
+    message: chromePath
+      ? "可以使用 Chrome 独立窗口和安装为 App 的体验。"
+      : "可以继续打开本地网页，但独立窗口和安装为 App 需要先安装 Google Chrome。",
+  });
+}
+
+async function collectGitEnvironmentCheck() {
+  try {
+    const version = await runEnvironmentCommand("git", ["--version"], { timeoutMs: 5000 });
+    return createEnvironmentCheck({
+      key: "git",
+      label: "Git",
+      requiredFor: "online-update",
+      available: true,
+      supported: true,
+      value: version || "已安装",
+      version,
+      message: "Git 可用，在线更新还需要当前文件夹保留 .git 且远端指向公开用户版仓库。",
+    });
+  } catch (error) {
+    return createEnvironmentCheck({
+      key: "git",
+      label: "Git",
+      requiredFor: "online-update",
+      available: false,
+      supported: false,
+      value: "未找到",
+      message: "未找到 Git。观时可以继续使用，但在线更新不可用。",
+    });
+  }
+}
+
+async function collectRuntimeEnvironmentStatus() {
+  const nodeMajor = parseNodeVersionMajor(process.version);
+  const nodeSupported = typeof nodeMajor === "number" && nodeMajor >= MIN_SUPPORTED_NODE_MAJOR;
+  const nodeIsLts = Boolean(process.release?.lts);
+  const checks = {
+    macos: createEnvironmentCheck({
+      key: "macos",
+      label: "macOS",
+      required: true,
+      available: process.platform === "darwin",
+      supported: process.platform === "darwin",
+      value: process.platform === "darwin" ? `macOS（${process.arch}）` : process.platform,
+      message: process.platform === "darwin" ? "支持当前 macOS 本地运行方式。" : "当前产品只支持 macOS。",
+    }),
+    node: createEnvironmentCheck({
+      key: "node",
+      label: "Node.js",
+      required: true,
+      available: true,
+      supported: nodeSupported,
+      recommended: nodeSupported && nodeIsLts,
+      value: process.version,
+      version: process.version,
+      message: !nodeSupported
+        ? `Node.js 版本过旧，请安装 Node.js LTS（建议 ${MIN_SUPPORTED_NODE_MAJOR} 或更高）。`
+        : nodeIsLts
+          ? "Node.js LTS 版本可用于观时本地服务。"
+          : "当前 Node.js 版本可运行，但建议用户版安装 Node.js LTS。",
+    }),
+    chrome: collectMacChromeEnvironmentCheck(),
+    git: await collectGitEnvironmentCheck(),
+  };
+
+  const warningMessages = [];
+  if (checks.node.supported && !checks.node.recommended) warningMessages.push(checks.node.message);
+  if (!checks.chrome.available) warningMessages.push(checks.chrome.message);
+  if (!checks.git.available) warningMessages.push(checks.git.message);
+
+  const blockingMessages = Object.values(checks)
+    .filter((check) => check.required && !check.supported)
+    .map((check) => check.message)
+    .filter(Boolean);
+
+  return {
+    checkedAt: new Date().toISOString(),
+    platform: process.platform,
+    arch: process.arch,
+    minimumNodeMajor: MIN_SUPPORTED_NODE_MAJOR,
+    checks,
+    summary: {
+      canLaunch: checks.macos.supported && checks.node.supported,
+      canUseChromeApp: checks.macos.supported && checks.chrome.available,
+      canUseOnlineUpdatePrerequisites: checks.macos.supported && checks.node.supported && checks.git.available,
+      blockingMessages,
+      warningMessages,
+    },
+  };
+}
+
 function isInternalUpdateGitRepoAvailable() {
   return fs.existsSync(path.join(ROOT_DIR, ".git"));
 }
 
 async function collectInternalUpdateGitStatus({ includeDirty = true } = {}) {
   const packageVersion = readPackageVersion();
+  const environment = await collectRuntimeEnvironmentStatus();
   const result = {
     platform: process.platform,
     supportedPlatform: process.platform === "darwin",
     sourceRoot: ROOT_DIR,
     packageVersion,
+    environment,
     isGitRepo: isInternalUpdateGitRepoAvailable(),
     remoteUrl: "",
     originAllowed: false,
@@ -474,6 +673,18 @@ async function collectInternalUpdateGitStatus({ includeDirty = true } = {}) {
   if (!result.supportedPlatform) {
     result.disabledReason = "unsupported-platform";
     result.disabledMessage = "内部更新仅支持 macOS。";
+    return result;
+  }
+
+  if (!environment.checks.node.supported) {
+    result.disabledReason = "unsupported-node-version";
+    result.disabledMessage = environment.checks.node.message;
+    return result;
+  }
+
+  if (!environment.checks.git.available) {
+    result.disabledReason = "missing-git-command";
+    result.disabledMessage = "未找到 Git。可以继续使用观时，但在线更新不可用。";
     return result;
   }
 
@@ -542,6 +753,12 @@ async function ensureInternalUpdateEnvironment({ requireClean = false } = {}) {
   const status = await collectInternalUpdateGitStatus({ includeDirty: true });
   if (!status.supportedPlatform) {
     throw createHttpError("UNSUPPORTED_PLATFORM", status.disabledMessage, 400, { status });
+  }
+  if (status.disabledReason === "unsupported-node-version") {
+    throw createHttpError("UNSUPPORTED_NODE_VERSION", status.disabledMessage, 400, { status });
+  }
+  if (status.disabledReason === "missing-git-command") {
+    throw createHttpError("GIT_UNAVAILABLE", status.disabledMessage, 503, { status });
   }
   if (!status.isGitRepo) {
     throw createHttpError("MISSING_GIT_REPO", status.disabledMessage, 400, { status });

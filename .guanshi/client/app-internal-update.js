@@ -30,6 +30,10 @@
     const settingsUpdateCheckBtn = deps.settingsUpdateCheckBtn || null;
     const settingsUpdateApplyBtn = deps.settingsUpdateApplyBtn || null;
     const settingsUpdateStatus = deps.settingsUpdateStatus || null;
+    const settingsEnvPlatform = deps.settingsEnvPlatform || null;
+    const settingsEnvNode = deps.settingsEnvNode || null;
+    const settingsEnvChrome = deps.settingsEnvChrome || null;
+    const settingsEnvGit = deps.settingsEnvGit || null;
 
     let eventsBound = false;
     let loading = false;
@@ -40,6 +44,24 @@
     function setText(node, value) {
       if (!node) return;
       node.textContent = String(value || "--");
+    }
+
+    function setCheckText(node, check, fallback = "--") {
+      if (!node) return;
+      const text = String(check?.value || fallback || "--").trim() || "--";
+      node.textContent = text;
+      const tone = getCheckTone(check);
+      if (tone) {
+        node.dataset.tone = tone;
+      } else {
+        delete node.dataset.tone;
+      }
+      const message = String(check?.message || "").trim();
+      if (message) {
+        node.title = message;
+      } else {
+        node.removeAttribute("title");
+      }
     }
 
     function setStatus(message, tone = "normal") {
@@ -90,6 +112,25 @@
       return "--";
     }
 
+    function getEnvironmentCheck(key) {
+      return currentStatus?.environment?.checks?.[key] || null;
+    }
+
+    function getCheckTone(check) {
+      if (!check) return "";
+      if (check.supported === false || (check.required && !check.available)) return "danger";
+      if (check.recommended === false) return "warning";
+      if (!check.available) return "warning";
+      return "success";
+    }
+
+    function renderEnvironmentChecks() {
+      setCheckText(settingsEnvPlatform, getEnvironmentCheck("macos"));
+      setCheckText(settingsEnvNode, getEnvironmentCheck("node"));
+      setCheckText(settingsEnvChrome, getEnvironmentCheck("chrome"));
+      setCheckText(settingsEnvGit, getEnvironmentCheck("git"));
+    }
+
     function syncButtons() {
       if (settingsUpdateCheckBtn) {
         settingsUpdateCheckBtn.disabled = loading || applying || !fetchFn || !currentStatus?.canCheck;
@@ -112,6 +153,7 @@
     }
 
     function render() {
+      renderEnvironmentChecks();
       setText(settingsUpdateCurrent, getVersionLabel());
       setText(settingsUpdateLatest, getLatestLabel());
       setText(settingsUpdateWorktree, getWorktreeLabel());
