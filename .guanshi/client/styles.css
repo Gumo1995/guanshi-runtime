@@ -5463,6 +5463,28 @@ textarea::placeholder {
   gap: 6px;
 }
 
+.settings-data-recovery {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.settings-data-recovery select {
+  width: min(100%, 420px);
+  min-height: 34px;
+  border: 1px solid #d7dfdc;
+  border-radius: 8px;
+  padding: 0 9px;
+  background: #fbfdfc;
+  color: #22322f;
+  font-size: 12px;
+}
+
+.settings-data-recovery select:disabled {
+  color: #8190a0;
+  background: #f4f7f8;
+}
+
 .settings-runtime-port-row {
   display: grid;
   grid-template-columns: minmax(92px, 130px) auto;
@@ -5611,6 +5633,34 @@ textarea::placeholder {
   border-radius: 10px;
   padding: 0 10px;
   font-size: 12px;
+}
+
+.settings-update-force-btn:not(:disabled) {
+  border-color: #d6a26d;
+  color: #8a5323;
+  background: #fff8ef;
+}
+
+.settings-update-backups {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.settings-update-backups select {
+  width: min(100%, 420px);
+  min-height: 34px;
+  border: 1px solid #d7dfdc;
+  border-radius: 8px;
+  padding: 0 9px;
+  background: #fbfdfc;
+  color: #22322f;
+  font-size: 12px;
+}
+
+.settings-update-backups select:disabled {
+  color: #8190a0;
+  background: #f4f7f8;
 }
 
 .settings-update-status {

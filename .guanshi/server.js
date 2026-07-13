@@ -30,6 +30,10 @@ const INTERNAL_UPDATE_STATE_FILE_PATH = path.join(DATA_DIR, "internal_update_sta
 const RUNTIME_CONFIG_FILE_PATH = path.join(DATA_DIR, "runtime_config.json");
 const LOCAL_DATA_BACKUP_DIR = path.join(DATA_DIR, "local-data");
 const LOCAL_DATA_LATEST_FILE_PATH = path.join(LOCAL_DATA_BACKUP_DIR, "latest.json");
+const LOCAL_DATA_SNAPSHOT_FILE_PATTERN = /^snapshot-[0-9T_Z-]+\.json$/;
+const INTERNAL_UPDATE_BACKUP_DIR = path.join(DATA_DIR, "update-backups");
+const INTERNAL_UPDATE_RESTORE_DIR = path.join(DATA_DIR, "restored-update-backups");
+const INTERNAL_UPDATE_BACKUP_ID_PATTERN = /^update-[0-9T_Z-]+(?:-[0-9]+)?$/;
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "127.0.0.1";
 
@@ -64,6 +68,7 @@ const INTERNAL_UPDATE_ALLOWED_GITHUB_OWNER = "gumo1995";
 const INTERNAL_UPDATE_ALLOWED_GITHUB_REPO = "guanshi-runtime";
 const INTERNAL_UPDATE_STABLE_TAG_PATTERN = /^v(\d+)\.(\d+)\.(\d+)$/;
 const INTERNAL_UPDATE_GIT_TIMEOUT_MS = 90000;
+const INTERNAL_UPDATE_GENERATED_ROOTS = new Set([".runtime", "dist", "node_modules", "pet-runs"]);
 const MIN_SUPPORTED_NODE_MAJOR = 18;
 
 function sendJson(res, statusCode, payload) {
@@ -356,6 +361,111 @@ function readLocalDataLatestPayload() {
   return JSON.parse(raw);
 }
 
+function getLocalDataSnapshotFilePath(snapshotId) {
+  const normalizedId = String(snapshotId || "").trim();
+  if (normalizedId === "latest") return LOCAL_DATA_LATEST_FILE_PATH;
+  if (!LOCAL_DATA_SNAPSHOT_FILE_PATTERN.test(normalizedId)) {
+    throw createHttpError("LOCAL_DATA_SNAPSHOT_INVALID", "Local data snapshot identifier is invalid.", 400);
+  }
+  return path.join(LOCAL_DATA_BACKUP_DIR, normalizedId);
+}
+
+function normalizeStoredLocalDataBackupPayload(raw) {
+  const payload = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  if (String(payload.schema || "").trim() !== LOCAL_DATA_BACKUP_SCHEMA) {
+    throw createHttpError("LOCAL_DATA_SNAPSHOT_CORRUPT", "Local data snapshot schema is not supported.", 500);
+  }
+  const storage = normalizeLocalDataStorage(payload.storage);
+  if (!Object.keys(storage).length) {
+    throw createHttpError("LOCAL_DATA_SNAPSHOT_CORRUPT", "Local data snapshot does not contain restorable storage.", 500);
+  }
+  const exportedAt = String(payload.exportedAt || "").trim();
+  const receivedAt = String(payload.receivedAt || exportedAt || "").trim();
+  return {
+    schema: LOCAL_DATA_BACKUP_SCHEMA,
+    exportedAt,
+    receivedAt,
+    reason: String(payload.reason || "auto").trim().slice(0, 80) || "auto",
+    source: {
+      origin: String(payload.source?.origin || "").slice(0, 240),
+      href: String(payload.source?.href || "").slice(0, 500),
+    },
+    stats: {
+      entries: Number.isFinite(Number(payload.stats?.entries)) ? Number(payload.stats.entries) : null,
+      todos: Number.isFinite(Number(payload.stats?.todos)) ? Number(payload.stats.todos) : null,
+      storageKeys: Object.keys(storage).length,
+    },
+    storage,
+  };
+}
+
+function readLocalDataSnapshot(snapshotId) {
+  const filePath = getLocalDataSnapshotFilePath(snapshotId);
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw createHttpError("LOCAL_DATA_SNAPSHOT_NOT_FOUND", "Local data snapshot was not found.", 404);
+    }
+    throw createHttpError("LOCAL_DATA_SNAPSHOT_READ_FAILED", "Local data snapshot could not be read.", 500);
+  }
+  return {
+    id: String(snapshotId || "").trim(),
+    filePath,
+    payload: normalizeStoredLocalDataBackupPayload(raw),
+  };
+}
+
+function summarizeLocalDataSnapshot(snapshotId, filePath, payload) {
+  let sizeBytes = 0;
+  try {
+    sizeBytes = fs.statSync(filePath).size;
+  } catch {
+    sizeBytes = 0;
+  }
+  return {
+    id: snapshotId,
+    isLatest: snapshotId === "latest",
+    capturedAt: payload.receivedAt || payload.exportedAt || "",
+    exportedAt: payload.exportedAt || "",
+    reason: payload.reason,
+    stats: payload.stats,
+    storageKeys: Object.keys(payload.storage).length,
+    sizeBytes,
+  };
+}
+
+function listLocalDataSnapshots() {
+  const snapshots = [];
+  try {
+    const latest = readLocalDataSnapshot("latest");
+    snapshots.push(summarizeLocalDataSnapshot("latest", latest.filePath, latest.payload));
+  } catch (error) {
+    if (error?.code !== "LOCAL_DATA_SNAPSHOT_NOT_FOUND") throw error;
+  }
+
+  let names = [];
+  try {
+    names = fs.readdirSync(LOCAL_DATA_BACKUP_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && LOCAL_DATA_SNAPSHOT_FILE_PATTERN.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  for (const name of names) {
+    try {
+      const snapshot = readLocalDataSnapshot(name);
+      snapshots.push(summarizeLocalDataSnapshot(name, snapshot.filePath, snapshot.payload));
+    } catch {
+      // Skip corrupt rolling snapshots while preserving the rest of the recovery list.
+    }
+  }
+  return snapshots;
+}
+
 function writeJsonAtomic(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -431,7 +541,7 @@ function pruneLocalDataSnapshots() {
   }
 }
 
-function saveLocalDataBackup(payload) {
+function saveLocalDataBackup(payload, { forceSnapshot = false } = {}) {
   const normalized = normalizeLocalDataBackupPayload(payload);
   let previousHash = "";
   try {
@@ -444,7 +554,7 @@ function saveLocalDataBackup(payload) {
   writeJsonAtomic(LOCAL_DATA_LATEST_FILE_PATH, normalized);
   const nextHash = hashText(JSON.stringify(normalized.storage));
   let snapshotFile = "";
-  if (nextHash !== previousHash) {
+  if (forceSnapshot || nextHash !== previousHash) {
     snapshotFile = `snapshot-${safeLocalDataTimestamp(normalized.receivedAt)}.json`;
     writeJsonAtomic(path.join(LOCAL_DATA_BACKUP_DIR, snapshotFile), normalized);
     pruneLocalDataSnapshots();
@@ -616,6 +726,28 @@ function normalizeGitStatusLines(text) {
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean);
+}
+
+function getUntrackedPathFromGitStatusLine(line) {
+  const text = String(line || "");
+  if (!text.startsWith("?? ")) return "";
+  return text.slice(3).trim();
+}
+
+function buildInternalUpdateDirtySummary(dirtyFiles) {
+  const files = Array.isArray(dirtyFiles) ? dirtyFiles : [];
+  const untrackedPaths = files.map(getUntrackedPathFromGitStatusLine).filter(Boolean);
+  const generatedUntracked = untrackedPaths.filter((item) => {
+    const topLevel = item.replace(/^\.\//, "").split(/[\\/]/)[0];
+    return INTERNAL_UPDATE_GENERATED_ROOTS.has(topLevel);
+  });
+  return {
+    total: files.length,
+    trackedChanges: Math.max(0, files.length - untrackedPaths.length),
+    untrackedFiles: untrackedPaths.length,
+    generatedUntracked: generatedUntracked.length,
+    untrackedPaths,
+  };
 }
 
 function normalizeTagList(text) {
@@ -843,8 +975,16 @@ async function collectInternalUpdateGitStatus({ includeDirty = true } = {}) {
     currentTag: "",
     dirty: false,
     dirtyFiles: [],
+    dirtySummary: {
+      total: 0,
+      trackedChanges: 0,
+      untrackedFiles: 0,
+      generatedUntracked: 0,
+      untrackedPaths: [],
+    },
     canCheck: false,
     canApply: false,
+    canForceApply: false,
     disabledReason: "",
     disabledMessage: "",
   };
@@ -913,6 +1053,7 @@ async function collectInternalUpdateGitStatus({ includeDirty = true } = {}) {
         await runGitText(["status", "--porcelain"], { timeoutMs: 10000 }),
       );
       result.dirty = result.dirtyFiles.length > 0;
+      result.dirtySummary = buildInternalUpdateDirtySummary(result.dirtyFiles);
     } catch {
       result.dirtyFiles = [];
       result.dirty = false;
@@ -921,9 +1062,10 @@ async function collectInternalUpdateGitStatus({ includeDirty = true } = {}) {
 
   result.canCheck = true;
   result.canApply = !result.dirty;
+  result.canForceApply = result.dirty;
   if (result.dirty) {
     result.disabledReason = "dirty-worktree";
-    result.disabledMessage = "当前源码目录有未提交改动，不能直接更新。";
+    result.disabledMessage = "当前源码目录有未提交改动，不能直接更新；可使用备份并强制更新。";
   }
   return result;
 }
@@ -1028,6 +1170,290 @@ function writeInternalUpdateState(payload) {
   } catch {
     // ignore state persistence failures
   }
+}
+
+function getInternalUpdateBackupDirectory(backupId) {
+  const normalizedId = String(backupId || "").trim();
+  if (!INTERNAL_UPDATE_BACKUP_ID_PATTERN.test(normalizedId)) {
+    throw createHttpError("UPDATE_BACKUP_ID_INVALID", "Update backup identifier is invalid.", 400);
+  }
+  return path.join(INTERNAL_UPDATE_BACKUP_DIR, normalizedId);
+}
+
+function createInternalUpdateBackupDirectory() {
+  const baseId = `update-${safeLocalDataTimestamp()}`;
+  let id = baseId;
+  let suffix = 1;
+  while (fs.existsSync(path.join(INTERNAL_UPDATE_BACKUP_DIR, id))) {
+    id = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+  const backupDir = path.join(INTERNAL_UPDATE_BACKUP_DIR, id);
+  fs.mkdirSync(path.join(backupDir, "untracked"), { recursive: true });
+  return { id, backupDir };
+}
+
+function resolveInternalUpdateRootPath(relativePath) {
+  const normalizedPath = String(relativePath || "").trim();
+  if (!normalizedPath || path.isAbsolute(normalizedPath)) {
+    throw createHttpError("UPDATE_BACKUP_PATH_INVALID", "Update backup path is invalid.", 400);
+  }
+  const resolvedPath = path.resolve(ROOT_DIR, normalizedPath);
+  const gitDir = path.resolve(ROOT_DIR, ".git");
+  if (!isPathInside(resolvedPath, ROOT_DIR) || resolvedPath === ROOT_DIR || resolvedPath === gitDir) {
+    throw createHttpError("UPDATE_BACKUP_PATH_INVALID", "Update backup path is outside the runtime root.", 400);
+  }
+  if (isPathInside(DATA_DIR, ROOT_DIR) && resolvedPath === DATA_DIR) {
+    throw createHttpError("UPDATE_BACKUP_RUNTIME_DATA_PROTECTED", "Runtime data is protected and cannot be moved for an update.", 409);
+  }
+  return resolvedPath;
+}
+
+function getInternalUpdateBackupRelativePath(filePath) {
+  const relativePath = path.relative(ROOT_DIR, filePath).replace(/\\/g, "/");
+  if (!relativePath || relativePath.startsWith("../") || path.isAbsolute(relativePath)) {
+    throw createHttpError("UPDATE_BACKUP_PATH_INVALID", "Update backup path is invalid.", 400);
+  }
+  return relativePath;
+}
+
+function movePathToUpdateBackup(sourcePath, destinationPath) {
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+  try {
+    fs.renameSync(sourcePath, destinationPath);
+  } catch (error) {
+    if (error?.code !== "EXDEV") throw error;
+    fs.cpSync(sourcePath, destinationPath, {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+      preserveTimestamps: true,
+    });
+    fs.rmSync(sourcePath, { recursive: true, force: false });
+  }
+}
+
+function copyUpdateBackupPath(sourcePath, destinationPath) {
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+  fs.cpSync(sourcePath, destinationPath, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    preserveTimestamps: true,
+  });
+}
+
+async function listInternalUpdateUntrackedPaths() {
+  const output = await runGitText(["ls-files", "--others", "--exclude-standard", "-z"], { timeoutMs: 10000 });
+  return String(output || "")
+    .split("\0")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function writeInternalUpdateBackupMetadata(backupDir, metadata) {
+  writeJsonAtomic(path.join(backupDir, "backup.json"), metadata);
+}
+
+function readInternalUpdateBackupMetadata(backupId) {
+  const backupDir = getInternalUpdateBackupDirectory(backupId);
+  const metadataPath = path.join(backupDir, "backup.json");
+  let metadata;
+  try {
+    metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw createHttpError("UPDATE_BACKUP_NOT_FOUND", "Update backup was not found.", 404);
+    }
+    throw createHttpError("UPDATE_BACKUP_READ_FAILED", "Update backup metadata could not be read.", 500);
+  }
+  if (!metadata || typeof metadata !== "object" || metadata.id !== backupId) {
+    throw createHttpError("UPDATE_BACKUP_CORRUPT", "Update backup metadata is invalid.", 500);
+  }
+  return { backupDir, metadata };
+}
+
+function summarizeInternalUpdateBackup(metadata) {
+  return {
+    id: String(metadata.id || ""),
+    createdAt: String(metadata.createdAt || ""),
+    previousVersion: String(metadata.previousVersion || ""),
+    previousTag: String(metadata.previousTag || ""),
+    targetTag: String(metadata.targetTag || ""),
+    trackedChanges: Number(metadata.trackedChanges || 0),
+    untrackedFiles: Array.isArray(metadata.untrackedPaths) ? metadata.untrackedPaths.length : 0,
+    state: String(metadata.state || "ready"),
+  };
+}
+
+function listInternalUpdateBackups() {
+  let names = [];
+  try {
+    names = fs.readdirSync(INTERNAL_UPDATE_BACKUP_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && INTERNAL_UPDATE_BACKUP_ID_PATTERN.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const backups = [];
+  for (const id of names) {
+    try {
+      const { metadata } = readInternalUpdateBackupMetadata(id);
+      backups.push(summarizeInternalUpdateBackup(metadata));
+    } catch {
+      // Skip a partial backup directory rather than hiding other recoverable backups.
+    }
+  }
+  return backups;
+}
+
+async function createInternalUpdateBackup(status, target) {
+  const { id, backupDir } = createInternalUpdateBackupDirectory();
+  const untrackedPaths = await listInternalUpdateUntrackedPaths();
+  const trackedChanges = Number(status?.dirtySummary?.trackedChanges || 0);
+  const trackedPatch = trackedChanges
+    ? await runGitText(["diff", "--binary", "--no-ext-diff", "HEAD", "--"], { timeoutMs: 30000 })
+    : "";
+  const metadata = {
+    id,
+    kind: "force-update-backup-v1",
+    createdAt: new Date().toISOString(),
+    state: "prepared",
+    sourceRoot: ROOT_DIR,
+    previousVersion: status.packageVersion,
+    previousCommit: status.currentCommit,
+    previousTag: status.currentTag,
+    targetTag: target.tag,
+    targetVersion: target.version,
+    dirtyFiles: Array.isArray(status.dirtyFiles) ? status.dirtyFiles : [],
+    trackedChanges,
+    trackedPatchFile: trackedPatch ? "tracked.patch" : "",
+    untrackedPaths,
+  };
+  fs.writeFileSync(path.join(backupDir, "status-before.txt"), `${metadata.dirtyFiles.join("\n")}\n`, "utf8");
+  if (trackedPatch) fs.writeFileSync(path.join(backupDir, "tracked.patch"), trackedPatch, "utf8");
+  writeInternalUpdateBackupMetadata(backupDir, metadata);
+
+  const movedPaths = [];
+  try {
+    for (const relativePath of untrackedPaths) {
+      const sourcePath = resolveInternalUpdateRootPath(relativePath);
+      if (!fs.existsSync(sourcePath)) continue;
+      const backupPath = path.join(backupDir, "untracked", relativePath);
+      movePathToUpdateBackup(sourcePath, backupPath);
+      movedPaths.push(relativePath);
+    }
+    await runGitCommand(["reset", "--hard", "HEAD"], { timeoutMs: INTERNAL_UPDATE_GIT_TIMEOUT_MS });
+  } catch (error) {
+    for (const relativePath of movedPaths.slice().reverse()) {
+      const backupPath = path.join(backupDir, "untracked", relativePath);
+      const restorePath = resolveInternalUpdateRootPath(relativePath);
+      if (!fs.existsSync(backupPath) || fs.existsSync(restorePath)) continue;
+      try {
+        movePathToUpdateBackup(backupPath, restorePath);
+      } catch {
+        // The backup directory remains available for explicit restore if rollback cannot complete.
+      }
+    }
+    metadata.state = "prepare-failed";
+    metadata.failedAt = new Date().toISOString();
+    metadata.failureMessage = error instanceof Error ? error.message.slice(0, 500) : "Unknown backup preparation error";
+    writeInternalUpdateBackupMetadata(backupDir, metadata);
+    throw createHttpError("FORCE_UPDATE_BACKUP_FAILED", "更新前备份失败，原有文件已保留。", 500, { backupId: id });
+  }
+
+  metadata.state = "ready";
+  metadata.readyAt = new Date().toISOString();
+  metadata.movedUntrackedPaths = movedPaths;
+  writeInternalUpdateBackupMetadata(backupDir, metadata);
+  return {
+    ...summarizeInternalUpdateBackup(metadata),
+    backupDirectory: path.relative(ROOT_DIR, backupDir) || backupDir,
+  };
+}
+
+function exportInternalUpdateBackup(backupId) {
+  const { backupDir, metadata } = readInternalUpdateBackupMetadata(backupId);
+  const restoreDir = path.join(INTERNAL_UPDATE_RESTORE_DIR, `${backupId}-${safeLocalDataTimestamp()}`);
+  fs.mkdirSync(restoreDir, { recursive: true });
+  for (const fileName of ["backup.json", "status-before.txt", "tracked.patch"]) {
+    const sourcePath = path.join(backupDir, fileName);
+    if (fs.existsSync(sourcePath)) fs.copyFileSync(sourcePath, path.join(restoreDir, fileName));
+  }
+  const untrackedDir = path.join(backupDir, "untracked");
+  if (fs.existsSync(untrackedDir)) {
+    fs.cpSync(untrackedDir, path.join(restoreDir, "untracked"), { recursive: true, preserveTimestamps: true });
+  }
+  return {
+    backup: summarizeInternalUpdateBackup(metadata),
+    exportDirectory: path.relative(ROOT_DIR, restoreDir) || restoreDir,
+  };
+}
+
+async function restoreInternalUpdateBackupToOriginal(backupId) {
+  const { backupDir, metadata } = readInternalUpdateBackupMetadata(backupId);
+  const exported = exportInternalUpdateBackup(backupId);
+  const restoreDir = path.resolve(ROOT_DIR, exported.exportDirectory);
+  const untrackedPaths = Array.isArray(metadata.untrackedPaths) ? metadata.untrackedPaths : [];
+  const restoredPaths = [];
+  const conflictPaths = [];
+  for (const relativePath of untrackedPaths) {
+    const sourcePath = path.join(backupDir, "untracked", relativePath);
+    if (!fs.existsSync(sourcePath)) continue;
+    const targetPath = resolveInternalUpdateRootPath(relativePath);
+    if (fs.existsSync(targetPath)) {
+      copyUpdateBackupPath(sourcePath, path.join(restoreDir, "conflicts", relativePath));
+      conflictPaths.push(relativePath);
+      continue;
+    }
+    copyUpdateBackupPath(sourcePath, targetPath);
+    restoredPaths.push(relativePath);
+  }
+
+  let trackedPatchApplied = false;
+  let trackedPatchMessage = "没有需要恢复的已跟踪文件改动。";
+  const patchPath = path.join(backupDir, "tracked.patch");
+  if (fs.existsSync(patchPath) && fs.statSync(patchPath).size > 0) {
+    const patchRelativePath = getInternalUpdateBackupRelativePath(patchPath);
+    try {
+      await runGitCommand(["apply", "--check", "--whitespace=nowarn", "--", patchRelativePath], { timeoutMs: 30000 });
+      await runGitCommand(["apply", "--3way", "--whitespace=nowarn", "--", patchRelativePath], { timeoutMs: 30000 });
+      trackedPatchApplied = true;
+      trackedPatchMessage = "已恢复已跟踪文件改动。";
+    } catch {
+      trackedPatchMessage = "已跟踪文件改动未自动套用，补丁已导出到恢复目录。";
+    }
+  }
+
+  return {
+    ...exported,
+    restoredPaths,
+    conflictPaths,
+    trackedPatchApplied,
+    trackedPatchMessage,
+  };
+}
+
+async function forceApplyInternalUpdate(targetTag) {
+  const parsedTarget = parseStableUpdateVersion(targetTag);
+  if (!parsedTarget) {
+    throw createHttpError("INVALID_UPDATE_TAG", "只允许 vX.Y.Z 格式的稳定 tag。", 400);
+  }
+  const status = await ensureInternalUpdateEnvironment({ requireClean: false });
+  const currentVersion = parsePackageVersion(status.packageVersion);
+  if (currentVersion && compareVersionParts(parsedTarget, currentVersion) <= 0) {
+    throw createHttpError("TAG_NOT_NEWER", "目标 tag 不高于当前版本。", 400, { status, target: parsedTarget });
+  }
+  await runGitCommand(["fetch", "--tags", "origin"], { timeoutMs: INTERNAL_UPDATE_GIT_TIMEOUT_MS });
+  await runGitText(["rev-parse", "--verify", `refs/tags/${parsedTarget.tag}^{commit}`], { timeoutMs: 10000 });
+  const backup = status.dirty ? await createInternalUpdateBackup(status, parsedTarget) : null;
+  const result = await applyInternalUpdate(parsedTarget.tag);
+  return {
+    ...result,
+    forced: Boolean(backup),
+    backup,
+  };
 }
 
 async function applyInternalUpdate(targetTag) {
@@ -2492,6 +2918,29 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (method === "GET" && pathname === "/api/local-data/snapshots") {
+    try {
+      const snapshots = listLocalDataSnapshots();
+      sendJson(res, 200, {
+        ok: true,
+        message: "Local data snapshots loaded",
+        result: {
+          snapshotLimit: LOCAL_DATA_SNAPSHOT_LIMIT,
+          snapshots,
+        },
+      });
+    } catch (error) {
+      const status = Number(error?.statusCode || 500);
+      sendJson(res, status, {
+        ok: false,
+        error: String(error?.code || "LOCAL_DATA_SNAPSHOTS_LIST_FAILED"),
+        message: error instanceof Error ? error.message : "Local data snapshots could not be listed.",
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
   if (method === "POST" && pathname === "/api/local-data/backup") {
     try {
       const rawBody = await collectRequestBody(req, LOCAL_DATA_BACKUP_MAX_BYTES);
@@ -2510,6 +2959,79 @@ const server = http.createServer(async (req, res) => {
         ok: false,
         error: String(error?.code || "LOCAL_DATA_BACKUP_FAILED"),
         message: errorMessage,
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/local-data/restore") {
+    try {
+      const rawBody = await collectRequestBody(req, LOCAL_DATA_BACKUP_MAX_BYTES);
+      const parsed = parseJsonBody(rawBody);
+      const snapshot = readLocalDataSnapshot(parsed?.snapshotId);
+      const currentStorage = normalizeLocalDataStorage(parsed?.currentSnapshot?.storage);
+      const preRestoreBackup = Object.keys(currentStorage).length
+        ? saveLocalDataBackup(
+          {
+            ...parsed.currentSnapshot,
+            reason: "before-restore",
+          },
+          { forceSnapshot: true },
+        )
+        : null;
+      sendJson(res, 200, {
+        ok: true,
+        message: "Local data snapshot ready to restore",
+        result: {
+          snapshot: {
+            id: snapshot.id,
+            ...snapshot.payload,
+          },
+          preRestoreBackup,
+        },
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown local data restore error";
+      let status = Number(error?.statusCode || 400);
+      if (errorMessage === "BODY_TOO_LARGE") status = 413;
+      sendJson(res, status, {
+        ok: false,
+        error: String(error?.code || "LOCAL_DATA_RESTORE_FAILED"),
+        message: errorMessage,
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "DELETE" && pathname === "/api/local-data/snapshots") {
+    try {
+      const rawBody = await collectRequestBody(req);
+      const parsed = parseJsonBody(rawBody);
+      const snapshotId = String(parsed?.snapshotId || "").trim();
+      if (snapshotId === "latest") {
+        throw createHttpError("LOCAL_DATA_LATEST_DELETE_BLOCKED", "The latest local data backup cannot be deleted.", 409);
+      }
+      const filePath = getLocalDataSnapshotFilePath(snapshotId);
+      try {
+        fs.unlinkSync(filePath);
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          throw createHttpError("LOCAL_DATA_SNAPSHOT_NOT_FOUND", "Local data snapshot was not found.", 404);
+        }
+        throw error;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        message: "Local data snapshot deleted",
+        result: { snapshotId },
+      });
+    } catch (error) {
+      sendJson(res, Number(error?.statusCode || 400), {
+        ok: false,
+        error: String(error?.code || "LOCAL_DATA_SNAPSHOT_DELETE_FAILED"),
+        message: error instanceof Error ? error.message : "Local data snapshot could not be deleted.",
         details: error?.details || {},
       });
     }
@@ -2550,6 +3072,105 @@ const server = http.createServer(async (req, res) => {
         ok: false,
         error: String(error?.code || "INTERNAL_UPDATE_CHECK_FAILED"),
         message: error instanceof Error ? error.message : "Unknown internal update check error",
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/internal-update/backups") {
+    try {
+      sendJson(res, 200, {
+        ok: true,
+        message: "Internal update backups loaded",
+        result: {
+          backups: listInternalUpdateBackups(),
+        },
+      });
+    } catch (error) {
+      sendJson(res, Number(error?.statusCode || 500), {
+        ok: false,
+        error: String(error?.code || "UPDATE_BACKUPS_LIST_FAILED"),
+        message: error instanceof Error ? error.message : "Update backups could not be listed.",
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/internal-update/force-apply") {
+    try {
+      const rawBody = await collectRequestBody(req);
+      const parsed = parseJsonBody(rawBody);
+      const result = await forceApplyInternalUpdate(parsed?.tag);
+      sendJson(res, 200, {
+        ok: true,
+        message: "Forced internal update applied",
+        result,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown forced internal update error";
+      sendJson(res, Number(error?.statusCode || 400), {
+        ok: false,
+        error: String(error?.code || "INTERNAL_UPDATE_FORCE_APPLY_FAILED"),
+        message: errorMessage,
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/internal-update/backups/restore") {
+    try {
+      const rawBody = await collectRequestBody(req);
+      const parsed = parseJsonBody(rawBody);
+      const backupId = String(parsed?.backupId || "").trim();
+      const mode = String(parsed?.mode || "export").trim();
+      let result;
+      if (mode === "export") {
+        result = exportInternalUpdateBackup(backupId);
+      } else if (mode === "original") {
+        await ensureInternalUpdateEnvironment({ requireClean: false });
+        result = await restoreInternalUpdateBackupToOriginal(backupId);
+      } else {
+        throw createHttpError("UPDATE_BACKUP_RESTORE_MODE_INVALID", "Update backup restore mode is invalid.", 400);
+      }
+      sendJson(res, 200, {
+        ok: true,
+        message: "Internal update backup restored",
+        result,
+      });
+    } catch (error) {
+      sendJson(res, Number(error?.statusCode || 400), {
+        ok: false,
+        error: String(error?.code || "UPDATE_BACKUP_RESTORE_FAILED"),
+        message: error instanceof Error ? error.message : "Update backup could not be restored.",
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "DELETE" && pathname === "/api/internal-update/backups") {
+    try {
+      const rawBody = await collectRequestBody(req);
+      const parsed = parseJsonBody(rawBody);
+      const backupId = String(parsed?.backupId || "").trim();
+      const backupDir = getInternalUpdateBackupDirectory(backupId);
+      if (!fs.existsSync(backupDir)) {
+        throw createHttpError("UPDATE_BACKUP_NOT_FOUND", "Update backup was not found.", 404);
+      }
+      fs.rmSync(backupDir, { recursive: true, force: false });
+      sendJson(res, 200, {
+        ok: true,
+        message: "Internal update backup deleted",
+        result: { backupId },
+      });
+    } catch (error) {
+      sendJson(res, Number(error?.statusCode || 400), {
+        ok: false,
+        error: String(error?.code || "UPDATE_BACKUP_DELETE_FAILED"),
+        message: error instanceof Error ? error.message : "Update backup could not be deleted.",
         details: error?.details || {},
       });
     }

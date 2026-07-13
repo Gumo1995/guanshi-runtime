@@ -5,13 +5,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>观时 | Satori</title>
-  <link rel="shortcut icon" href="./favicon.ico?v=1.5.10" />
+  <link rel="shortcut icon" href="./favicon.ico?v=1.5.11" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.10" />
-  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.10" />
-  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.10" />
-  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.10" />
-  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.10" color="#234f49" />
+  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.11" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.11" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.11" />
+  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.11" />
+  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.11" color="#234f49" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 
@@ -730,6 +730,19 @@
                     <input id="settings-data-import-input" type="file" accept="application/json,.json" hidden />
                   </div>
                   <p id="settings-data-status" class="settings-data-status" aria-live="polite"></p>
+                  <div class="settings-data-recovery">
+                    <label class="settings-field-label" for="settings-data-snapshot-select">本地快照</label>
+                    <select id="settings-data-snapshot-select" aria-label="选择本地数据快照" disabled>
+                      <option value="">正在读取快照</option>
+                    </select>
+                    <div class="settings-data-actions">
+                      <button id="settings-data-snapshot-refresh-btn" class="btn-secondary" type="button">刷新快照</button>
+                      <button id="settings-data-snapshot-preview-btn" class="btn-secondary" type="button" disabled>预览</button>
+                      <button id="settings-data-snapshot-restore-btn" class="btn-primary" type="button" disabled>恢复此快照</button>
+                      <button id="settings-data-snapshot-delete-btn" class="btn-secondary" type="button" disabled>删除快照</button>
+                    </div>
+                    <p id="settings-data-snapshot-status" class="settings-data-status" aria-live="polite"></p>
+                  </div>
                 </div>
               </article>
 
@@ -809,6 +822,19 @@
                   <div class="settings-update-actions">
                     <button id="settings-update-check-btn" class="btn-secondary" type="button">检查更新</button>
                     <button id="settings-update-apply-btn" class="btn-primary" type="button" disabled>更新到稳定版</button>
+                    <button id="settings-update-force-apply-btn" class="btn-secondary settings-update-force-btn" type="button" disabled>备份并强制更新</button>
+                  </div>
+                  <div class="settings-update-backups">
+                    <label class="settings-field-label" for="settings-update-backup-select">更新保护备份</label>
+                    <select id="settings-update-backup-select" aria-label="选择更新保护备份" disabled>
+                      <option value="">暂无更新保护备份</option>
+                    </select>
+                    <div class="settings-update-actions">
+                      <button id="settings-update-backup-export-btn" class="btn-secondary" type="button" disabled>导出副本</button>
+                      <button id="settings-update-backup-restore-btn" class="btn-secondary" type="button" disabled>恢复到原位置</button>
+                      <button id="settings-update-backup-delete-btn" class="btn-secondary" type="button" disabled>删除备份</button>
+                    </div>
+                    <p id="settings-update-backup-status" class="settings-update-status" aria-live="polite"></p>
                   </div>
                   <p id="settings-update-status" class="settings-update-status" aria-live="polite"></p>
                 </div>
