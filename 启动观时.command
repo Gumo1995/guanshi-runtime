@@ -7,6 +7,9 @@ RUNTIME_DIR="$APP_DIR/.runtime"
 PID_FILE="$RUNTIME_DIR/server.pid"
 PORT_FILE="$RUNTIME_DIR/server.port"
 LOG_FILE="$RUNTIME_DIR/server.log"
+RUNTIME_CONFIG_FILE="$RUNTIME_DIR/runtime_config.json"
+DEFAULT_PORT="8080"
+PORT="${TIMEQUALITY_PORT:-}"
 
 mkdir -p "$RUNTIME_DIR"
 
@@ -17,6 +20,33 @@ open_guanshi_url() {
   else
     open "$target_url"
   fi
+}
+
+is_guanshi_service_on_port() {
+  local target_port="$1"
+  local status_url="http://127.0.0.1:$target_port/api/runtime/status"
+  node -e '
+const http = require("http");
+const url = process.argv[1];
+const req = http.get(url, { timeout: 800 }, (res) => {
+  let body = "";
+  res.setEncoding("utf8");
+  res.on("data", (chunk) => { body += chunk; });
+  res.on("end", () => {
+    try {
+      const parsed = JSON.parse(body || "{}");
+      process.exit(res.statusCode === 200 && parsed && parsed.app === "guanshi" ? 0 : 1);
+    } catch {
+      process.exit(1);
+    }
+  });
+});
+req.on("timeout", () => {
+  req.destroy();
+  process.exit(1);
+});
+req.on("error", () => process.exit(1));
+' "$status_url" >/dev/null 2>&1
 }
 
 if ! command -v node >/dev/null 2>&1; then
@@ -60,6 +90,29 @@ if ! command -v git >/dev/null 2>&1; then
   echo
 fi
 
+if [ -z "$PORT" ] && [ -f "$RUNTIME_CONFIG_FILE" ]; then
+  PORT="$(node -e '
+const fs = require("fs");
+const file = process.argv[1];
+try {
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  const port = Number.parseInt(String(parsed && parsed.port || ""), 10);
+  if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+    process.stdout.write(String(port));
+  }
+} catch {}
+' "$RUNTIME_CONFIG_FILE" 2>/dev/null || true)"
+fi
+PORT="${PORT:-$DEFAULT_PORT}"
+
+if ! [[ "$PORT" =~ '^[0-9]+$' ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  echo "端口配置无效：$PORT"
+  echo "请使用 1 到 65535 之间的数字。"
+  echo
+  read "?按回车键关闭窗口..."
+  exit 1
+fi
+
 if [ ! -f "$SERVER_ENTRY" ]; then
   echo "没有找到观时运行文件：$SERVER_ENTRY"
   echo "请确认这个文件夹完整下载。"
@@ -71,7 +124,7 @@ fi
 if [ -f "$PID_FILE" ]; then
   EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" >/dev/null 2>&1; then
-    PORT="$(cat "$PORT_FILE" 2>/dev/null || echo 8080)"
+    PORT="$(cat "$PORT_FILE" 2>/dev/null || echo "$PORT")"
     URL="http://127.0.0.1:$PORT/"
     open_guanshi_url "$URL"
     echo "观时已经在运行：$URL"
@@ -81,16 +134,20 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-PORT=""
-for CANDIDATE in {8080..8090}; do
-  if ! lsof -nP -iTCP:"$CANDIDATE" -sTCP:LISTEN >/dev/null 2>&1; then
-    PORT="$CANDIDATE"
-    break
+if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  if is_guanshi_service_on_port "$PORT"; then
+    URL="http://127.0.0.1:$PORT/"
+    open_guanshi_url "$URL"
+    echo "观时已经在运行：$URL"
+    echo "$PORT" > "$PORT_FILE"
+    echo
+    read "?按回车键关闭窗口..."
+    exit 0
   fi
-done
 
-if [ -z "$PORT" ]; then
-  echo "8080 到 8090 端口都被占用，暂时无法启动观时。"
+  echo "端口 $PORT 已被其他程序占用，观时未切换到新端口。"
+  echo "这样可以避免浏览器把数据识别成另一份本地站点数据。"
+  echo "请关闭占用端口的程序后重新启动；如确需临时端口，可在终端设置 TIMEQUALITY_PORT 后启动。"
   echo
   read "?按回车键关闭窗口..."
   exit 1

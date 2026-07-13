@@ -29,6 +29,7 @@
       normalizeProjectName,
       commitUndoSnapshot,
       scheduleAutoBidirectionalSync,
+      scheduleLocalDataBackup = () => {},
       getIsApplyingUndo = () => false,
       getPendingTodoReminderDisables = () => [],
       setPendingTodoReminderDisables = () => {},
@@ -39,6 +40,7 @@
       ["normalizeProjectName", normalizeProjectName],
       ["commitUndoSnapshot", commitUndoSnapshot],
       ["scheduleAutoBidirectionalSync", scheduleAutoBidirectionalSync],
+      ["scheduleLocalDataBackup", scheduleLocalDataBackup],
       ["getIsApplyingUndo", getIsApplyingUndo],
       ["getPendingTodoReminderDisables", getPendingTodoReminderDisables],
       ["setPendingTodoReminderDisables", setPendingTodoReminderDisables],
@@ -116,6 +118,7 @@
       setPendingTodoReminderDisables(normalized);
       try {
         localStorageRef.setItem(TODO_REMINDER_DISABLE_QUEUE_STORAGE_KEY, JSON.stringify(normalized));
+        scheduleLocalDataBackup("todo-reminder-disable-queue-save");
       } catch {
         // ignore storage failures
       }
@@ -200,6 +203,7 @@
       const skipSyncSchedule = Boolean(options && options.skipSyncSchedule);
       const skipUndoSnapshot = Boolean(options && options.skipUndoSnapshot);
       localStorageRef.setItem(TODO_STORAGE_KEY, JSON.stringify(value.map(normalizeTodo)));
+      scheduleLocalDataBackup("todos-save");
       if (!skipSyncSchedule && !getIsApplyingUndo()) {
         scheduleAutoBidirectionalSync("todos-save");
       }
@@ -241,6 +245,7 @@
 
     function saveIgnoredExternalCalendarIds(idSet) {
       localStorageRef.setItem(EXTERNAL_CALENDAR_IGNORED_KEY, JSON.stringify(Array.from(idSet)));
+      scheduleLocalDataBackup("calendar-ignored-save");
     }
 
     function loadEntries() {
@@ -274,6 +279,7 @@
     function saveEntries(value, options = {}) {
       const skipUndoSnapshot = Boolean(options && options.skipUndoSnapshot);
       localStorageRef.setItem(STORAGE_KEY, JSON.stringify(value));
+      scheduleLocalDataBackup("entries-save");
       if (!skipUndoSnapshot) {
         commitUndoSnapshot();
       }

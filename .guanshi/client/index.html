@@ -5,13 +5,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>观时 | Satori</title>
-  <link rel="shortcut icon" href="./favicon.ico?v=1.5.9" />
+  <link rel="shortcut icon" href="./favicon.ico?v=1.5.10" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.9" />
-  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.9" />
-  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.9" />
-  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.9" />
-  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.9" color="#234f49" />
+  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.10" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.10" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.10" />
+  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.10" />
+  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.10" color="#234f49" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 
@@ -711,11 +711,19 @@
               <article class="settings-card settings-card-data" role="listitem">
                 <header class="settings-card-head">
                   <div class="settings-card-head-main">
-                    <h3>数据迁移</h3>
-                    <p>导出/导入本地数据。</p>
+                    <h3>数据与运行</h3>
+                    <p>导出/导入本地数据，设置下次启动端口。</p>
                   </div>
                 </header>
                 <div class="settings-data-controls">
+                  <div class="settings-runtime-port">
+                    <label class="settings-field-label" for="settings-runtime-port-input">本地端口</label>
+                    <div class="settings-runtime-port-row">
+                      <input id="settings-runtime-port-input" type="number" inputmode="numeric" min="1" max="65535" step="1" />
+                      <button id="settings-runtime-port-save-btn" class="btn-secondary" type="button">保存端口</button>
+                    </div>
+                    <p id="settings-runtime-port-status" class="settings-data-status" aria-live="polite"></p>
+                  </div>
                   <div class="settings-data-actions">
                     <button id="settings-data-export-btn" class="btn-secondary" type="button">导出数据</button>
                     <button id="settings-data-import-btn" class="btn-secondary" type="button">导入数据</button>
@@ -981,6 +989,7 @@
   <script src="app-todo-actions.js"></script>
   <script src="app-calendar-actions.js"></script>
   <script src="app-data-store.js"></script>
+  <script src="app-local-data-backup.js"></script>
   <script src="app-undo-runtime.js"></script>
   <script src="app-calendar-samples.js"></script>
   <script src="app-todo-plan.js"></script>

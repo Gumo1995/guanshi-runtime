@@ -12,7 +12,9 @@ const {
   EXTERNAL_CALENDAR_SYNC_URL, EXTERNAL_CALENDAR_SYNC_TRIGGER_URL, EXTERNAL_CALENDAR_PUSH_URL,
   EXTERNAL_CALENDAR_LIST_URL, EXTERNAL_REMINDER_LIST_URL, EXTERNAL_TASK_SYNC_URL, EXTERNAL_TASK_DELETE_URL,
   EXTERNAL_TASK_PULL_URL, EXTERNAL_TASK_REMINDER_SYNC_URL, EXTERNAL_TASK_REMINDER_COMPLETE_URL,
-  INTERNAL_UPDATE_STATUS_URL, INTERNAL_UPDATE_CHECK_URL, INTERNAL_UPDATE_APPLY_URL, INSTALL_GUIDE_DISMISSED_KEY,
+  INTERNAL_UPDATE_STATUS_URL, INTERNAL_UPDATE_CHECK_URL, INTERNAL_UPDATE_APPLY_URL, RUNTIME_CONFIG_URL,
+  INSTALL_GUIDE_DISMISSED_KEY,
+  LOCAL_DATA_BACKUP_URL, LOCAL_DATA_LATEST_URL,
   EXTERNAL_CALENDAR_SOURCE, EXTERNAL_CALENDAR_IGNORED_KEY, EXTERNAL_CALENDAR_DEFAULT_CATEGORY,
   EXTERNAL_CALENDAR_AUTO_TODO_ENABLED, EXTERNAL_CALENDAR_AUTO_TODO_MAX_DURATION_HOURS,
   DEFAULT_SYNC_TARGET_SOURCE_NAME, DEFAULT_SYNC_TARGET_CALENDAR_NAME, DEFAULT_SYNC_TARGET_GROUP,
@@ -138,6 +140,16 @@ const { createDataStoreModule } = dataStoreModuleSource;
 if (typeof createDataStoreModule !== "function") {
   throw new Error(
     "TimeQualityDataStoreModule is missing createDataStoreModule. Ensure app-data-store.js is loaded before app.js.",
+  );
+}
+
+const localDataBackupModuleSource =
+  (typeof window !== "undefined" && window.TimeQualityLocalDataBackupModule) || {};
+const { createLocalDataBackupModule } = localDataBackupModuleSource;
+
+if (typeof createLocalDataBackupModule !== "function") {
+  throw new Error(
+    "TimeQualityLocalDataBackupModule is missing createLocalDataBackupModule. Ensure app-local-data-backup.js is loaded before app.js.",
   );
 }
 
@@ -391,7 +403,8 @@ const {
   settingsCategoryResetBtn, settingsSyncAllRefreshBtn, settingsSyncCalendarSelect, settingsSyncCalendarHint,
   settingsSyncReminderSelect, settingsSyncReminderHint, settingsReminderLeadSelect, settingsReminderLeadHint,
   settingsQuoteEditor, settingsQuoteSaveBtn, settingsQuoteResetBtn, settingsQuoteStatus, settingsDataExportBtn,
-  settingsDataImportBtn, settingsDataImportInput, settingsDataStatus, settingsInstallMode, settingsInstallBtn,
+  settingsDataImportBtn, settingsDataImportInput, settingsDataStatus, settingsRuntimePortInput,
+  settingsRuntimePortSaveBtn, settingsRuntimePortStatus, settingsInstallMode, settingsInstallBtn,
   settingsInstallCopyBtn, settingsInstallStatus, settingsEnvPlatform, settingsEnvNode, settingsEnvChrome, settingsEnvGit,
   settingsUpdateCurrent, settingsUpdateLatest, settingsUpdateWorktree, settingsUpdateRemote, settingsUpdateDetails,
   settingsUpdateCheckBtn, settingsUpdateApplyBtn, settingsUpdateStatus,
@@ -429,12 +442,25 @@ const MOTIVATION_QUOTES = [
   { text: "真正的幸福，来自有意义地度过今天。", author: "威廉·詹姆斯" },
 ];
 
+const localDataBackupModule = createLocalDataBackupModule({
+  DATA_EXPORT_SCHEMA,
+  DATA_EXPORT_STORAGE_PREFIX,
+  LOCAL_DATA_BACKUP_URL,
+  LOCAL_DATA_LATEST_URL,
+  STORAGE_KEY,
+  TODO_STORAGE_KEY,
+  CATEGORY_STORAGE_KEY,
+  localStorageRef: typeof window !== "undefined" && window.localStorage ? window.localStorage : null,
+  windowRef: window,
+});
+
 const settingsModule = createSettingsModule({
   CATEGORY_STORAGE_KEY,
   QUOTE_POOL_KEY,
   QUOTE_LIBRARY_KEY,
   DATA_EXPORT_SCHEMA,
   DATA_EXPORT_STORAGE_PREFIX,
+  RUNTIME_CONFIG_URL,
   CACHE_RESET_ONCE_KEY,
   DEFAULT_CATEGORIES,
   MOTIVATION_QUOTES,
@@ -457,6 +483,9 @@ const settingsModule = createSettingsModule({
   settingsDataImportBtn,
   settingsDataImportInput,
   settingsDataStatus,
+  settingsRuntimePortInput,
+  settingsRuntimePortSaveBtn,
+  settingsRuntimePortStatus,
   escapeHtml,
   getActiveView: () => activeView,
   getCategories: () => categories,
@@ -477,6 +506,8 @@ const settingsModule = createSettingsModule({
   syncTodoCategoryTriggerLabel,
   updateTodoCategorySuggestionOptions,
   isTodoCategorySuggestionMenuOpen,
+  scheduleLocalDataBackup: (reason) => localDataBackupModule.scheduleBackup(reason),
+  backupLocalDataNow: (reason) => localDataBackupModule.backupNow(reason),
 });
 const internalUpdateModule = createInternalUpdateModule({
   INTERNAL_UPDATE_STATUS_URL,
@@ -845,6 +876,7 @@ const dataStoreModule = createDataStoreModule({
   normalizeProjectName,
   commitUndoSnapshot,
   scheduleAutoBidirectionalSync,
+  scheduleLocalDataBackup: (reason) => localDataBackupModule.scheduleBackup(reason),
   getIsApplyingUndo: isApplyingUndoActive,
   getPendingTodoReminderDisables: () => pendingTodoReminderDisables,
   setPendingTodoReminderDisables: (value) => {
@@ -1431,11 +1463,14 @@ const renderCoordinatorModule = createRenderCoordinatorModule({
   getSelectedTodo,
 });
 
+void localDataBackupModule.restoreLatestIfNeeded();
+
 createStartupModule([
-  () => settingsModule.initCategoryConfiguration(), () => pomodoroModule.init(), initCalendar, initMacCalendarSync,
+  () => settingsModule.initCategoryConfiguration(), () => settingsModule.initRuntimePortConfiguration(),
+  () => pomodoroModule.init(), initCalendar, initMacCalendarSync,
   initTodo, initAutoBidirectionalSync, initLayoutState, () => installGuideModule.init(),
   () => internalUpdateModule.init(), bindEvents, render,
-  () => setActiveView(activeView), initializeUndoHistory,
+  () => setActiveView(activeView), initializeUndoHistory, () => localDataBackupModule.scheduleBackup("startup"),
 ]).init();
 
 function runOneTimeCacheResetIfNeeded(...args) {

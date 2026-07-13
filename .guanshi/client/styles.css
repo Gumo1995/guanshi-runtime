@@ -5458,6 +5458,38 @@ textarea::placeholder {
   font-size: 12px;
 }
 
+.settings-runtime-port {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-runtime-port-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 130px) auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 250px;
+}
+
+.settings-runtime-port-row input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #d7dfdc;
+  border-radius: 10px;
+  padding: 0 10px;
+  background: #fbfdfc;
+  color: #22322f;
+  font-size: 12px;
+}
+
+.settings-runtime-port-row .btn-secondary {
+  min-height: 34px;
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .settings-data-status {
   min-height: 18px;
   margin: 0;

@@ -19,6 +19,7 @@
     const QUOTE_LIBRARY_KEY = String(deps.QUOTE_LIBRARY_KEY || "time_quality_quote_library_v1");
     const DATA_EXPORT_SCHEMA = String(deps.DATA_EXPORT_SCHEMA || "timequality-local-storage-export-v1");
     const DATA_EXPORT_STORAGE_PREFIX = String(deps.DATA_EXPORT_STORAGE_PREFIX || "time_quality_");
+    const RUNTIME_CONFIG_URL = String(deps.RUNTIME_CONFIG_URL || "/api/runtime/config");
     const CACHE_RESET_ONCE_KEY = String(deps.CACHE_RESET_ONCE_KEY || "time_quality_cache_reset_once_v2");
     const DEFAULT_CATEGORIES = normalizeList(deps.DEFAULT_CATEGORIES).map((item) => String(item));
     const MOTIVATION_QUOTES = normalizeList(deps.MOTIVATION_QUOTES).map((item) => ({
@@ -43,6 +44,18 @@
     const syncTodoCategoryTriggerLabel = requireFunction(deps, "syncTodoCategoryTriggerLabel");
     const updateTodoCategorySuggestionOptions = requireFunction(deps, "updateTodoCategorySuggestionOptions");
     const isTodoCategorySuggestionMenuOpen = requireFunction(deps, "isTodoCategorySuggestionMenuOpen");
+    const scheduleLocalDataBackup =
+      typeof deps.scheduleLocalDataBackup === "function" ? deps.scheduleLocalDataBackup : () => {};
+    const backupLocalDataNow =
+      typeof deps.backupLocalDataNow === "function"
+        ? deps.backupLocalDataNow
+        : () => Promise.resolve({ ok: false, skipped: "unavailable" });
+    const fetchFn =
+      typeof deps.fetchFn === "function"
+        ? deps.fetchFn
+        : typeof windowRef.fetch === "function"
+          ? windowRef.fetch.bind(windowRef)
+          : null;
 
     const alertFn =
       typeof deps.alertFn === "function"
@@ -87,6 +100,9 @@
     const settingsDataImportBtn = deps.settingsDataImportBtn || null;
     const settingsDataImportInput = deps.settingsDataImportInput || null;
     const settingsDataStatus = deps.settingsDataStatus || null;
+    const settingsRuntimePortInput = deps.settingsRuntimePortInput || null;
+    const settingsRuntimePortSaveBtn = deps.settingsRuntimePortSaveBtn || null;
+    const settingsRuntimePortStatus = deps.settingsRuntimePortStatus || null;
 
     let eventsBound = false;
 
@@ -148,6 +164,7 @@
       const normalized = normalizeCategoryList(value);
       try {
         localStorageRef?.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(normalized));
+        scheduleLocalDataBackup("categories-save");
       } catch {
         // ignore storage failures
       }
@@ -427,6 +444,7 @@
       const normalized = normalizeQuoteLibrary(list);
       try {
         localStorageRef?.setItem(QUOTE_LIBRARY_KEY, JSON.stringify(normalized));
+        scheduleLocalDataBackup("quote-library-save");
       } catch {
         // ignore storage failures
       }
@@ -473,6 +491,7 @@
     function saveQuoteState(state = getQuoteState()) {
       try {
         localStorageRef?.setItem(QUOTE_POOL_KEY, JSON.stringify(state));
+        scheduleLocalDataBackup("quote-pool-save");
       } catch {
         // ignore storage failures
       }
@@ -589,6 +608,66 @@
       if (!settingsDataStatus) return;
       settingsDataStatus.textContent = String(message || "").trim();
       settingsDataStatus.dataset.tone = tone;
+    }
+
+    function setRuntimePortStatus(message, tone = "normal") {
+      if (!settingsRuntimePortStatus) return;
+      settingsRuntimePortStatus.textContent = String(message || "").trim();
+      settingsRuntimePortStatus.dataset.tone = tone;
+    }
+
+    function normalizeRuntimePort(value) {
+      const port = Number.parseInt(String(value || "").trim(), 10);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+      return port;
+    }
+
+    async function initRuntimePortConfiguration() {
+      if (!settingsRuntimePortInput || !fetchFn) return;
+      try {
+        const response = await fetchFn(RUNTIME_CONFIG_URL, { headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error(`RUNTIME_CONFIG_LOAD_${response.status}`);
+        const payload = await response.json();
+        const configuredPort = normalizeRuntimePort(payload?.result?.port) || 8080;
+        const currentPort = normalizeRuntimePort(payload?.result?.currentPort);
+        settingsRuntimePortInput.value = String(configuredPort);
+        const currentText = currentPort ? `当前运行端口 ${currentPort}` : "当前运行端口未知";
+        const nextText = configuredPort === currentPort ? "已生效" : "重启后生效";
+        setRuntimePortStatus(`${currentText}，${nextText}。`, configuredPort === currentPort ? "normal" : "warning");
+      } catch {
+        settingsRuntimePortInput.value = settingsRuntimePortInput.value || "8080";
+        setRuntimePortStatus("端口配置读取失败，可保存后下次启动生效。", "warning");
+      }
+    }
+
+    async function handleRuntimePortSave() {
+      if (!settingsRuntimePortInput || !fetchFn) return;
+      const port = normalizeRuntimePort(settingsRuntimePortInput.value);
+      if (!port) {
+        setRuntimePortStatus("请输入 1 到 65535 之间的端口号。", "danger");
+        settingsRuntimePortInput.focus();
+        return;
+      }
+
+      try {
+        settingsRuntimePortSaveBtn?.setAttribute("disabled", "disabled");
+        const response = await fetchFn(RUNTIME_CONFIG_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ port }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(String(payload?.message || `RUNTIME_CONFIG_SAVE_${response.status}`));
+        const currentPort = normalizeRuntimePort(payload?.result?.currentPort);
+        const restartRequired = Boolean(payload?.result?.restartRequired);
+        const currentText = currentPort ? `当前运行端口 ${currentPort}` : "当前运行端口未知";
+        const suffix = restartRequired ? "重启观时后生效" : "已生效";
+        setRuntimePortStatus(`已保存端口 ${port}，${currentText}，${suffix}。`, restartRequired ? "warning" : "success");
+      } catch {
+        setRuntimePortStatus("端口保存失败，请稍后重试。", "danger");
+      } finally {
+        settingsRuntimePortSaveBtn?.removeAttribute("disabled");
+      }
     }
 
     function collectExportableLocalStorage() {
@@ -746,6 +825,7 @@
         }
 
         const result = applyImportedStorageSnapshot(storage);
+        await backupLocalDataNow("manual-import");
         setDataStatus(`导入成功：${result.imported} 项，正在刷新。`, "success");
         setTimeoutFn(() => reloadPage(), 160);
       } catch {
@@ -794,6 +874,18 @@
           void handleDataImportChange(event);
         });
       }
+      if (settingsRuntimePortSaveBtn) {
+        settingsRuntimePortSaveBtn.addEventListener("click", () => {
+          void handleRuntimePortSave();
+        });
+      }
+      if (settingsRuntimePortInput) {
+        settingsRuntimePortInput.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          void handleRuntimePortSave();
+        });
+      }
     }
 
     return {
@@ -802,6 +894,7 @@
       loadQuoteState,
       getCurrentMotivationQuotes,
       initCategoryConfiguration,
+      initRuntimePortConfiguration,
       bindEvents,
       renderCategoryManager,
       renderQuoteManager,

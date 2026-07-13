@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 
 const SERVER_DIR = __dirname;
@@ -26,6 +27,9 @@ const DATA_DIR = process.env.TIMEQUALITY_DATA_DIR
   : ROOT_DIR;
 const CALENDAR_SYNC_FILE_PATH = path.join(DATA_DIR, "calendar_sync.json");
 const INTERNAL_UPDATE_STATE_FILE_PATH = path.join(DATA_DIR, "internal_update_state_v151.json");
+const RUNTIME_CONFIG_FILE_PATH = path.join(DATA_DIR, "runtime_config.json");
+const LOCAL_DATA_BACKUP_DIR = path.join(DATA_DIR, "local-data");
+const LOCAL_DATA_LATEST_FILE_PATH = path.join(LOCAL_DATA_BACKUP_DIR, "latest.json");
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "127.0.0.1";
 
@@ -51,6 +55,10 @@ const MIME_TYPES = {
   ".ico": "image/x-icon",
 };
 const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
+const LOCAL_DATA_BACKUP_MAX_BYTES = 10 * 1024 * 1024;
+const LOCAL_DATA_BACKUP_SCHEMA = "timequality-local-storage-export-v1";
+const LOCAL_DATA_STORAGE_PREFIX = "time_quality_";
+const LOCAL_DATA_SNAPSHOT_LIMIT = 40;
 const TODO_SYNC_STATES = new Set(["dirty", "synced", "conflict", "error"]);
 const INTERNAL_UPDATE_ALLOWED_GITHUB_OWNER = "gumo1995";
 const INTERNAL_UPDATE_ALLOWED_GITHUB_REPO = "guanshi-runtime";
@@ -279,6 +287,177 @@ function createHttpError(code, message, statusCode = 400, details = {}) {
   error.statusCode = statusCode;
   error.details = details && typeof details === "object" ? details : {};
   return error;
+}
+
+function safeLocalDataTimestamp(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const time = Number.isFinite(date.getTime()) ? date : new Date();
+  return time.toISOString().replace(/[:.]/g, "-");
+}
+
+function hashText(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function normalizeLocalDataStorage(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const output = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || !normalizedKey.startsWith(LOCAL_DATA_STORAGE_PREFIX)) continue;
+    if (typeof value === "string") {
+      output[normalizedKey] = value;
+      continue;
+    }
+    try {
+      output[normalizedKey] = JSON.stringify(value);
+    } catch {
+      // skip unserializable entries
+    }
+  }
+  return output;
+}
+
+function normalizeLocalDataBackupPayload(raw) {
+  const payload = raw && typeof raw === "object" ? raw : {};
+  const schema = String(payload.schema || "").trim();
+  if (schema !== LOCAL_DATA_BACKUP_SCHEMA) {
+    throw createHttpError("LOCAL_DATA_SCHEMA_MISMATCH", "Local data backup schema is not supported.", 400);
+  }
+
+  const storage = normalizeLocalDataStorage(payload.storage);
+  const keys = Object.keys(storage);
+  if (!keys.length) {
+    throw createHttpError("LOCAL_DATA_EMPTY", "Local data backup does not contain exportable storage.", 400);
+  }
+
+  const exportedMs = Date.parse(String(payload.exportedAt || ""));
+  const exportedAt = Number.isFinite(exportedMs) ? new Date(exportedMs).toISOString() : new Date().toISOString();
+  return {
+    schema: LOCAL_DATA_BACKUP_SCHEMA,
+    exportedAt,
+    receivedAt: new Date().toISOString(),
+    reason: String(payload.reason || "auto").trim().slice(0, 80) || "auto",
+    source: {
+      origin: String(payload.source?.origin || "").slice(0, 240),
+      href: String(payload.source?.href || "").slice(0, 500),
+    },
+    stats: {
+      entries: Number.isFinite(Number(payload.stats?.entries)) ? Number(payload.stats.entries) : null,
+      todos: Number.isFinite(Number(payload.stats?.todos)) ? Number(payload.stats.todos) : null,
+      storageKeys: keys.length,
+    },
+    storage,
+  };
+}
+
+function readLocalDataLatestPayload() {
+  const raw = fs.readFileSync(LOCAL_DATA_LATEST_FILE_PATH, "utf8");
+  return JSON.parse(raw);
+}
+
+function writeJsonAtomic(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
+function normalizeRuntimePort(value) {
+  const port = Number.parseInt(String(value || "").trim(), 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw createHttpError("INVALID_RUNTIME_PORT", "Runtime port must be an integer from 1 to 65535.", 400);
+  }
+  return port;
+}
+
+function readRuntimeConfig() {
+  let parsed = {};
+  try {
+    parsed = JSON.parse(fs.readFileSync(RUNTIME_CONFIG_FILE_PATH, "utf8"));
+  } catch {
+    parsed = {};
+  }
+
+  let port = 8080;
+  try {
+    port = normalizeRuntimePort(parsed?.port || 8080);
+  } catch {
+    port = 8080;
+  }
+
+  return {
+    port,
+    updatedAt: String(parsed?.updatedAt || ""),
+  };
+}
+
+function saveRuntimeConfig(nextConfig) {
+  const port = normalizeRuntimePort(nextConfig?.port);
+  const payload = {
+    port,
+    updatedAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(RUNTIME_CONFIG_FILE_PATH, payload);
+  return payload;
+}
+
+function pruneLocalDataSnapshots() {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(LOCAL_DATA_BACKUP_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /^snapshot-.*\.json$/.test(entry.name))
+      .map((entry) => {
+        const filePath = path.join(LOCAL_DATA_BACKUP_DIR, entry.name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(filePath).mtimeMs;
+        } catch {
+          // ignore vanished file
+        }
+        return { filePath, mtimeMs };
+      })
+      .sort((left, right) => right.mtimeMs - left.mtimeMs);
+  } catch {
+    return;
+  }
+
+  for (const entry of entries.slice(LOCAL_DATA_SNAPSHOT_LIMIT)) {
+    try {
+      fs.unlinkSync(entry.filePath);
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+}
+
+function saveLocalDataBackup(payload) {
+  const normalized = normalizeLocalDataBackupPayload(payload);
+  let previousHash = "";
+  try {
+    const previous = JSON.parse(fs.readFileSync(LOCAL_DATA_LATEST_FILE_PATH, "utf8"));
+    previousHash = hashText(JSON.stringify(previous?.storage || {}));
+  } catch {
+    previousHash = "";
+  }
+
+  writeJsonAtomic(LOCAL_DATA_LATEST_FILE_PATH, normalized);
+  const nextHash = hashText(JSON.stringify(normalized.storage));
+  let snapshotFile = "";
+  if (nextHash !== previousHash) {
+    snapshotFile = `snapshot-${safeLocalDataTimestamp(normalized.receivedAt)}.json`;
+    writeJsonAtomic(path.join(LOCAL_DATA_BACKUP_DIR, snapshotFile), normalized);
+    pruneLocalDataSnapshots();
+  }
+
+  return {
+    ok: true,
+    backupDir: path.relative(ROOT_DIR, LOCAL_DATA_BACKUP_DIR) || LOCAL_DATA_BACKUP_DIR,
+    latestFile: path.relative(ROOT_DIR, LOCAL_DATA_LATEST_FILE_PATH) || LOCAL_DATA_LATEST_FILE_PATH,
+    snapshotFile,
+    storageKeys: Object.keys(normalized.storage).length,
+    stats: normalized.stats,
+  };
 }
 
 function readPackageVersion() {
@@ -2238,6 +2417,104 @@ const server = http.createServer(async (req, res) => {
   const method = req.method || "GET";
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = requestUrl.pathname;
+
+  if (method === "GET" && pathname === "/api/runtime/status") {
+    const config = readRuntimeConfig();
+    sendJson(res, 200, {
+      ok: true,
+      app: "guanshi",
+      productName: "观时",
+      version: readPackageVersion(),
+      runtime: {
+        host: HOST,
+        port: PORT,
+        rootDir: ROOT_DIR,
+        dataDir: DATA_DIR,
+        configuredPort: config.port,
+      },
+    });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/runtime/config") {
+    const config = readRuntimeConfig();
+    sendJson(res, 200, {
+      ok: true,
+      message: "Runtime config loaded",
+      result: {
+        ...config,
+        currentPort: PORT,
+      },
+    });
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/runtime/config") {
+    try {
+      const rawBody = await collectRequestBody(req);
+      const parsed = parseJsonBody(rawBody);
+      const config = saveRuntimeConfig(parsed);
+      sendJson(res, 200, {
+        ok: true,
+        message: "Runtime config saved",
+        result: {
+          ...config,
+          currentPort: PORT,
+          restartRequired: config.port !== PORT,
+        },
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown runtime config error";
+      let status = Number(error?.statusCode || 400);
+      if (errorMessage === "BODY_TOO_LARGE") status = 413;
+      sendJson(res, status, {
+        ok: false,
+        error: String(error?.code || "RUNTIME_CONFIG_SAVE_FAILED"),
+        message: errorMessage,
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/local-data/latest") {
+    try {
+      const payload = readLocalDataLatestPayload();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      const status = error?.code === "ENOENT" ? 404 : 500;
+      sendJson(res, status, {
+        ok: false,
+        error: status === 404 ? "LOCAL_DATA_BACKUP_NOT_FOUND" : "LOCAL_DATA_BACKUP_READ_FAILED",
+        message: status === 404 ? "No local data backup has been saved yet." : "Local data backup could not be read.",
+      });
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/local-data/backup") {
+    try {
+      const rawBody = await collectRequestBody(req, LOCAL_DATA_BACKUP_MAX_BYTES);
+      const parsed = parseJsonBody(rawBody);
+      const result = saveLocalDataBackup(parsed);
+      sendJson(res, 200, {
+        ok: true,
+        message: "Local data backup saved",
+        result,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown local data backup error";
+      let status = Number(error?.statusCode || 400);
+      if (errorMessage === "BODY_TOO_LARGE") status = 413;
+      sendJson(res, status, {
+        ok: false,
+        error: String(error?.code || "LOCAL_DATA_BACKUP_FAILED"),
+        message: errorMessage,
+        details: error?.details || {},
+      });
+    }
+    return;
+  }
 
   if (method === "GET" && pathname === "/api/internal-update/status") {
     try {
