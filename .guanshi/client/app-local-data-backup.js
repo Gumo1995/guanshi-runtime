@@ -30,7 +30,7 @@
     } = deps;
 
     const CORE_DATA_KEYS = new Set([STORAGE_KEY, TODO_STORAGE_KEY, CATEGORY_STORAGE_KEY]);
-    const BACKUP_DEBOUNCE_MS = 1200;
+    const BACKUP_DEBOUNCE_MS = 60 * 1000;
     let backupTimer = null;
     let restoreCheckComplete = false;
     let recoveryEventsBound = false;
