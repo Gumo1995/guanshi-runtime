@@ -2,7 +2,7 @@
 
 观时是一个本地运行的时间记录、待办规划与复盘工具。
 
-当前版本：1.5.12
+当前版本：1.6.0
 
 ## 第一次启动
 
@@ -45,6 +45,37 @@ http://127.0.0.1:8080/
 设置页“数据与运行”可以查看本地快照、预览摘要，并恢复指定快照。手动恢复前会自动保存一份“恢复前快照”；恢复只覆盖观时浏览器本地数据，不会修改 macOS 日历或提醒事项。
 
 如果在线更新提示源码目录不干净，设置页会提供“备份并强制更新”。它会先把未跟踪文件和已跟踪改动保存到 `.runtime/update-backups`，再更新到稳定 tag。更新保护备份可以导出副本，或在明确确认后恢复到原位置；同名文件不会被覆盖。
+
+## AI 与外部 Agent
+
+v1.6.0 包含本地 AI 基础能力：Provider / BYOK 服务端配置、Domain Module Runtime 注册表、AI memory proposal、确定性排程草稿、AI action workflows、Guanshi MCP 外部 Agent 接入和隐私脱敏 guard。默认不会自动调用模型或自动改动待办、日历、提醒。
+
+当前默认只启用时间管理模块。后续日记、记账、六爻等模块会通过独立 module manifest、记忆命名空间、工具权限和草稿确认规则接入，避免互相污染数据或越权写入。
+
+AI 对话路由会优先使用模块工具 ID，例如 `time.parse_task`。未注册模块的工具不会被执行。
+
+外部 Agent 可通过本地 stdio JSON-RPC MCP 入口接入：
+
+```text
+node .guanshi/mcp-server.js
+```
+
+MCP 客户端配置时建议使用绝对路径：
+
+```json
+{
+  "mcpServers": {
+    "guanshi": {
+      "command": "node",
+      "args": ["/path/to/guanshi-runtime/.guanshi/mcp-server.js"],
+      "env": {
+        "GUANSHI_DATA_DIR": "/path/to/guanshi-runtime/.runtime",
+        "GUANSHI_MCP_CLIENT_ID": "codex-local"
+      }
+    }
+  }
+}
+```
 
 ## 常见问题
 

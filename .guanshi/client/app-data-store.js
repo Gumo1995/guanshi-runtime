@@ -15,6 +15,8 @@
       TODO_STORAGE_KEY = "time_quality_todos_v1",
       TODO_REMINDER_DISABLE_QUEUE_STORAGE_KEY = "time_quality_todo_reminder_disable_queue_v1",
       SIDEBAR_WIDTH_STORAGE_KEY = "time_quality_sidebar_width_v1",
+      SIDEBAR_COLLAPSED_STORAGE_KEY = "time_quality_sidebar_collapsed_v1",
+      TODO_DETAIL_WIDTH_STORAGE_KEY = "time_quality_todo_detail_width_v1",
       EXTERNAL_CALENDAR_IGNORED_KEY = "time_quality_calendar_ignored_v1",
       CACHE_RESET_ONCE_KEY = "time_quality_cache_reset_once_v2",
       QUOTE_LIBRARY_KEY = "time_quality_quote_library_v1",
@@ -23,6 +25,8 @@
       CALENDAR_SAMPLE_16_SEEDED_KEY = "time_quality_calendar_sample_16_seeded_v2",
       SIDEBAR_MIN_WIDTH = 220,
       SIDEBAR_MAX_WIDTH = 420,
+      TODO_DETAIL_MIN_WIDTH = 320,
+      TODO_DETAIL_MAX_WIDTH = 640,
       TODO_PROJECT_LEVEL_SEPARATOR = " / ",
       localStorageRef = globalScope.localStorage || null,
       normalizeTodo,
@@ -228,7 +232,50 @@
     }
 
     function clampSidebarWidth(width) {
-      return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, width));
+      const parsed = Number(width);
+      if (!Number.isFinite(parsed)) return 288;
+      return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parsed));
+    }
+
+    function loadSidebarCollapsed() {
+      try {
+        return localStorageRef.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+      } catch {
+        return false;
+      }
+    }
+
+    function saveSidebarCollapsed(value) {
+      try {
+        localStorageRef.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, value ? "1" : "0");
+      } catch {
+        // ignore storage failures
+      }
+    }
+
+    function loadTodoDetailWidth() {
+      try {
+        const raw = localStorageRef.getItem(TODO_DETAIL_WIDTH_STORAGE_KEY);
+        const parsed = Number.parseFloat(String(raw || ""));
+        if (!Number.isFinite(parsed)) return 430;
+        return clampTodoDetailWidth(parsed);
+      } catch {
+        return 430;
+      }
+    }
+
+    function saveTodoDetailWidth(width) {
+      try {
+        localStorageRef.setItem(TODO_DETAIL_WIDTH_STORAGE_KEY, String(clampTodoDetailWidth(width)));
+      } catch {
+        // ignore storage failures
+      }
+    }
+
+    function clampTodoDetailWidth(width) {
+      const parsed = Number(width);
+      if (!Number.isFinite(parsed)) return 430;
+      return Math.max(TODO_DETAIL_MIN_WIDTH, Math.min(TODO_DETAIL_MAX_WIDTH, parsed));
     }
 
     function loadIgnoredExternalCalendarIds() {
@@ -299,6 +346,11 @@
       loadSidebarWidth,
       saveSidebarWidth,
       clampSidebarWidth,
+      loadSidebarCollapsed,
+      saveSidebarCollapsed,
+      loadTodoDetailWidth,
+      saveTodoDetailWidth,
+      clampTodoDetailWidth,
       loadIgnoredExternalCalendarIds,
       saveIgnoredExternalCalendarIds,
       loadEntries,

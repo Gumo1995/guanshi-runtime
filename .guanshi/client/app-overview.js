@@ -5,11 +5,12 @@
       windowRef = globalScope,
       metricHours,
       metricQuality,
-      metricHappiness,
-      metricGolden,
-      qualityIndex,
-      insight,
-      barsWrap,
+	      metricHappiness,
+	      metricGolden,
+	      qualityIndex,
+	      overviewJudgment,
+	      insight,
+	      barsWrap,
       scatterWrap,
       SCATTER_PADDING_PERCENT,
       SCATTER_BASE_DURATION_HOURS,
@@ -42,7 +43,7 @@
       return "深夜";
     }
 
-    function setAnimatedText(element, target, suffix = "", fixed = 0) {
+	    function setAnimatedText(element, target, suffix = "", fixed = 0) {
       if (!element) return;
       const from = Number(element.dataset.value || 0);
       const to = Number(target || 0);
@@ -62,10 +63,125 @@
         }
       }
 
-      requestFrame(frame);
-    }
+	      requestFrame(frame);
+	    }
 
-    function renderMetrics(list) {
+	    function escapeHtml(value) {
+	      return String(value ?? "")
+	        .replaceAll("&", "&amp;")
+	        .replaceAll("<", "&lt;")
+	        .replaceAll(">", "&gt;")
+	        .replaceAll('"', "&quot;")
+	        .replaceAll("'", "&#039;");
+	    }
+
+	    function getLocalDateText(date = new Date()) {
+	      const year = date.getFullYear();
+	      const month = String(date.getMonth() + 1).padStart(2, "0");
+	      const day = String(date.getDate()).padStart(2, "0");
+	      return `${year}-${month}-${day}`;
+	    }
+
+	    function isDateText(value) {
+	      return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+	    }
+
+	    function formatHoursLabel(hours) {
+	      const safeHours = Math.max(0, Number(hours) || 0);
+	      if (safeHours < 1) return `${Math.round(safeHours * 60)}m`;
+	      return `${safeHours.toFixed(safeHours >= 10 ? 0 : 1)}h`;
+	    }
+
+	    function getTodoWorkloadMinutes(todo) {
+	      const remaining = Number(todo?.remainingMinutes);
+	      if (Number.isFinite(remaining) && remaining >= 0) return Math.min(24 * 60, remaining);
+	      const estimated = Number(todo?.estimatedMinutes);
+	      if (Number.isFinite(estimated) && estimated > 0) return Math.min(24 * 60, estimated);
+	      return 60;
+	    }
+
+	    function renderJudgment(context = {}) {
+	      if (!overviewJudgment) return;
+	      const allEntries = Array.isArray(context.entries) ? context.entries : [];
+	      const allTodos = Array.isArray(context.todos) ? context.todos : [];
+	      const today = getLocalDateText();
+	      const tomorrow = getLocalDateText(new Date(Date.now() + 24 * 60 * 60 * 1000));
+	      const todayEntries = allEntries.filter((entry) => String(entry?.date || "").trim() === today);
+	      const arrangedHours = sumBy(todayEntries, (entry) => Math.max(0, Number(entry?.duration) || 0));
+	      const activeTodos = allTodos.filter((todo) => !todo?.completed);
+	      const dueOrOverdueTodos = activeTodos.filter((todo) => {
+	        const dueDate = String(todo?.dueDate || "").trim();
+	        return isDateText(dueDate) && dueDate <= today;
+	      });
+	      const dueTomorrowTodos = activeTodos.filter((todo) => String(todo?.dueDate || "").trim() === tomorrow);
+	      const pendingMinutes = sumBy(dueOrOverdueTodos, getTodoWorkloadMinutes);
+	      const pendingHours = pendingMinutes / 60;
+	      const totalLoadHours = arrangedHours + pendingHours;
+	      const freeHours = Math.max(0, 8 - totalLoadHours);
+	      const overdueCount = dueOrOverdueTodos.filter((todo) => String(todo?.dueDate || "").trim() < today).length;
+	      const dueTodayCount = dueOrOverdueTodos.length - overdueCount;
+
+	      let status = "宽松";
+	      let tone = "loose";
+	      let recommendation = "适合先处理一个清晰产出，再补充计划。";
+	      if (totalLoadHours > 9) {
+	        status = "超载";
+	        tone = "overloaded";
+	        recommendation = "先压缩低收益安排，只保留必须完成的事项。";
+	      } else if (totalLoadHours > 7) {
+	        status = "紧张";
+	        tone = "tight";
+	        recommendation = "先锁定截止风险，再安排可推迟任务。";
+	      } else if (totalLoadHours > 4) {
+	        status = "正常";
+	        tone = "normal";
+	        recommendation = "保持节奏，优先完成今日到期任务。";
+	      }
+
+	      const biggestRisk = overdueCount
+	        ? `${overdueCount} 项已过期`
+	        : dueTodayCount
+	          ? `${dueTodayCount} 项今日到期`
+	          : dueTomorrowTodos.length
+	            ? `${dueTomorrowTodos.length} 项明日到期`
+	            : pendingHours >= 4
+	              ? "待处理工作量偏高"
+	              : "暂无明显截止风险";
+
+	      overviewJudgment.innerHTML = `
+	        <div class="overview-judgment-main">
+	          <div>
+	            <p class="overview-judgment-kicker">今日状态</p>
+	            <h2 data-tone="${tone}">${escapeHtml(status)}</h2>
+	          </div>
+	          <p>${escapeHtml(recommendation)}</p>
+	        </div>
+	        <div class="overview-judgment-risk">
+	          <span>最大风险</span>
+	          <strong>${escapeHtml(biggestRisk)}</strong>
+	        </div>
+	        <div class="overview-judgment-metrics" aria-label="今日时间指标">
+	          <div>
+	            <span>已安排</span>
+	            <strong>${formatHoursLabel(arrangedHours)}</strong>
+	          </div>
+	          <div>
+	            <span>可用余量</span>
+	            <strong>${formatHoursLabel(freeHours)}</strong>
+	          </div>
+	          <div>
+	            <span>待处理</span>
+	            <strong>${formatHoursLabel(pendingHours)}</strong>
+	          </div>
+	          <div>
+	            <span>未完成</span>
+	            <strong>${activeTodos.length}</strong>
+	          </div>
+	        </div>
+	      `;
+	    }
+
+	    function renderMetrics(list) {
       if (!list.length) {
         setAnimatedText(metricHours, 0, "h", 1);
         setAnimatedText(metricQuality, 0, "", 1);
@@ -249,10 +365,11 @@
       }
     }
 
-    function render(list, categories = []) {
-      const safeList = Array.isArray(list) ? list : [];
-      const safeCategories = Array.isArray(categories) ? categories : [];
-      renderMetrics(safeList);
+	    function render(list, categories = [], context = {}) {
+	      const safeList = Array.isArray(list) ? list : [];
+	      const safeCategories = Array.isArray(categories) ? categories : [];
+	      renderJudgment(context);
+	      renderMetrics(safeList);
       renderInsight(safeList);
       renderBars(safeList, safeCategories);
       renderScatter(safeList);

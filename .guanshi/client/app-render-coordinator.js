@@ -38,6 +38,7 @@
     const renderCategoryManager = requireFunction(deps, "renderCategoryManager");
     const renderSyncSettingsControls = requireFunction(deps, "renderSyncSettingsControls");
     const renderQuoteManager = requireFunction(deps, "renderQuoteManager");
+    const renderAiSettings = typeof deps.renderAiSettings === "function" ? deps.renderAiSettings : () => {};
     const syncSearchAfterRender = requireFunction(deps, "syncSearchAfterRender");
     const scheduleFirstScreenPanelFit = requireFunction(deps, "scheduleFirstScreenPanelFit");
     const closeScoreWheel = requireFunction(deps, "closeScoreWheel");
@@ -46,8 +47,13 @@
     const getCurrentMotivationQuotes = requireFunction(deps, "getCurrentMotivationQuotes");
     const setQuoteStatus = requireFunction(deps, "setQuoteStatus");
     const ensureOptionsLoadedForSettingsView = requireFunction(deps, "ensureOptionsLoadedForSettingsView");
+    const ensureAiSettingsLoadedForSettingsView =
+      typeof deps.ensureAiSettingsLoadedForSettingsView === "function"
+        ? deps.ensureAiSettingsLoadedForSettingsView
+        : () => {};
     const renderTopTodoSyncHub = requireFunction(deps, "renderTopTodoSyncHub");
     const getSelectedTodo = requireFunction(deps, "getSelectedTodo");
+    const syncTodoLayout = typeof deps.syncTodoLayout === "function" ? deps.syncTodoLayout : () => {};
 
     function render() {
       const entries = getEntries();
@@ -63,6 +69,7 @@
       renderCategoryManager();
       renderSyncSettingsControls();
       renderQuoteManager();
+      renderAiSettings();
       syncSearchAfterRender();
       scheduleFirstScreenPanelFit();
     }
@@ -95,14 +102,23 @@
         });
       }
 
+      if (target === "todo") {
+        renderTodos();
+        requestAnimationFrameFn(() => {
+          syncTodoLayout();
+        });
+      }
+
       if (target === "settings") {
         renderCategoryManager();
         renderSyncSettingsControls();
         renderQuoteManager();
+        renderAiSettings();
         if (settingsQuoteStatus) {
           setQuoteStatus(`当前语录 ${getCurrentMotivationQuotes().length} 条。`, "normal");
         }
         ensureOptionsLoadedForSettingsView();
+        ensureAiSettingsLoadedForSettingsView();
       }
 
       renderTopTodoSyncHub(getSelectedTodo());

@@ -447,7 +447,7 @@
       const durationBase = requestedDuration ?? selectedDuration;
 
       if (startText && startMinutes === null) {
-        return { ok: false, message: "预计时段格式无效，请使用 HH:MM。" };
+        return { ok: false, message: "开始时间格式无效，请使用 HH:MM。" };
       }
       if (endText && endMinutes === null) {
         return { ok: false, message: "结束时间格式无效，请使用 HH:MM。" };
@@ -469,7 +469,7 @@
 
       // 规则1：只改开始时间 -> 预计时长保持不变，自动调整结束时间
       if (startChanged && !endChanged && !durationChanged && startMinutes !== null) {
-        return buildRangeFromStartDuration(startMinutes, selectedDuration, "预计时段过晚，无法保持当前预计时长。");
+        return buildRangeFromStartDuration(startMinutes, selectedDuration, "开始时间过晚，无法保持当前预计时长。");
       }
 
       if (!startChanged && endChanged && !durationChanged && endMinutes !== null) {
@@ -496,7 +496,7 @@
         };
       }
 
-      // 规则2：只改预计时长 -> 预计时段保持不变，自动调整结束时间
+      // 规则2：只改预计时长 -> 开始时间保持不变，自动调整结束时间
       if (!startChanged && !endChanged && durationChanged) {
         const anchorStart =
           startMinutes !== null
@@ -508,7 +508,7 @@
       // 其余组合按“任意两者确定第三者”处理
       if (startChanged && endChanged && startMinutes !== null && endMinutes !== null) {
         if (endMinutes <= startMinutes) {
-          return { ok: false, message: "结束时间需要晚于预计时段。" };
+          return { ok: false, message: "结束时间需要晚于开始时间。" };
         }
         return {
           ok: true,
@@ -519,7 +519,7 @@
       }
 
       if (startChanged && durationChanged && startMinutes !== null) {
-        return buildRangeFromStartDuration(startMinutes, durationBase, "预计时段过晚，无法匹配当前预计时长。");
+        return buildRangeFromStartDuration(startMinutes, durationBase, "开始时间过晚，无法匹配当前预计时长。");
       }
 
       if (endChanged && durationChanged && endMinutes !== null) {
@@ -596,10 +596,10 @@
     } = {}) {
       refreshDataRefs();
       const selected = getSelectedTodo();
-      if (!selected) return false;
+      const newTodoFallback = !selected && lenientRequired ? createTodoDraft() : null;
 
       const result = collectTodoFormInput({
-        fallbackTodo: lenientRequired ? selected : null,
+        fallbackTodo: lenientRequired ? (selected || newTodoFallback) : null,
         lenientRequired,
       });
       if (!result.ok) {
@@ -613,6 +613,54 @@
       }
 
       const next = result.value;
+      if (!selected) {
+        const todo = newTodoFallback || createTodoDraft();
+        const resolvedTime = resolveTodoTimeInputForSubmit(todo, next);
+        if (!resolvedTime.ok) {
+          if (showValidationAlert) {
+            window.alert(resolvedTime.message || "待办时间输入无效，请重新调整。");
+          }
+          return false;
+        }
+
+        const nowIso = new Date().toISOString();
+        const nextReminderRepeat = normalizeTodoReminderRepeatValue(next.repeat, "none");
+        const inputPlanLocked = Boolean(next.planLocked);
+        const nextPlanLockExplicit = Boolean(todoDetailModule.isPlanLockTouched());
+        const nextPlanLocked = nextPlanLockExplicit ? inputPlanLocked : isRecurringTodoRepeatMode(nextReminderRepeat);
+        const created = normalizeTodo({
+          ...todo,
+          ...next,
+          startTime: resolvedTime.startTime,
+          endTime: resolvedTime.endTime,
+          estimatedMinutes: resolvedTime.estimatedMinutes,
+          completed: false,
+          calendarSynced: false,
+          syncState: "dirty",
+          lastSyncError: "",
+          reminderLastSyncError: "",
+          reminderCompletedAt: null,
+          reminderPendingCompleteAt: null,
+          planLocked: nextPlanLocked,
+          planLockExplicit: nextPlanLockExplicit,
+          createdAt: todo.createdAt || nowIso,
+          updatedAt: nowIso,
+        });
+        created.orderInDay = getNextTodoOrderForDate(created.dueDate, created.id);
+        const reminderEligible = isTodoEligibleForReminderSync(created);
+        created.reminderSynced = !reminderEligible;
+        created.reminderSyncState = reminderEligible ? "dirty" : "synced";
+
+        todos.unshift(created);
+        setSelectedTodoId(created.id);
+        saveTodos(todos);
+        todoDetailModule.clearSubmitState();
+        if (!skipRender) {
+          render();
+        }
+        return true;
+      }
+
       const oldDueDate = String(selected.dueDate || "").trim();
       const oldStartTime = String(selected.startTime || "").trim();
       const oldEndTime = String(selected.endTime || "").trim();

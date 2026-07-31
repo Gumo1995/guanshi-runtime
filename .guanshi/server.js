@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { createAiRoutes } = require("./ai/ai-routes");
 
 const SERVER_DIR = __dirname;
 const DEV_ROOT = path.resolve(SERVER_DIR, "..", "..");
@@ -2839,10 +2840,33 @@ async function runMacReminderCompleteOnce(payload) {
   return runMacReminderCompleteSwiftOnce(payload);
 }
 
+const aiRoutes = createAiRoutes({
+  dataDir: DATA_DIR,
+  packageVersion: readPackageVersion(),
+  sendJson,
+  collectRequestBody,
+  parseJsonBody,
+});
+
 const server = http.createServer(async (req, res) => {
   const method = req.method || "GET";
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = requestUrl.pathname;
+
+  if (pathname.startsWith("/api/ai/")) {
+    try {
+      const handled = await aiRoutes.handle(req, res, { method, pathname, requestUrl });
+      if (handled) return;
+    } catch (error) {
+      sendJson(res, Number(error?.statusCode || 500), {
+        ok: false,
+        error: String(error?.code || "AI_ROUTE_FAILED"),
+        message: error instanceof Error ? error.message : "AI route failed.",
+        details: error?.details || {},
+      });
+      return;
+    }
+  }
 
   if (method === "GET" && pathname === "/api/runtime/status") {
     const config = readRuntimeConfig();

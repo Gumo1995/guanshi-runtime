@@ -18,12 +18,35 @@
       : 45;
     const TODO_PROJECT_LEVEL_SEPARATOR = String(deps.TODO_PROJECT_LEVEL_SEPARATOR || " / ");
 
+    const TODO_DIMENSION_LABELS = {
+      time: "时间",
+      project: "项目",
+      tag: "标签",
+    };
+    const TODO_SCOPE_LABELS = {
+      all: "全部",
+      history: "历史",
+      recurring: "周期",
+    };
+    const TODO_UNSET_PROJECT_LABEL = "未设置项目";
+    const TODO_UNTAGGED_LABEL = "未标记";
+    const TODO_DRAG_EXPAND_DELAY_MS = 450;
+
+    const todoSortMenu = deps.todoSortMenu || null;
+    const todoSortCurrent = deps.todoSortCurrent || null;
     const todoFilterBar = deps.todoFilterBar || null;
+    const todoScopeMenu = deps.todoScopeMenu || null;
+    const todoScopeCurrent = deps.todoScopeCurrent || null;
+    const todoScopeAllBtn = deps.todoScopeAllBtn || null;
     const todoGroups = deps.todoGroups || null;
     const todoHistoryGroups = deps.todoHistoryGroups || null;
     const todoHistoryToggleBtn = deps.todoHistoryToggleBtn || null;
     const todoRecurringToggleBtn = deps.todoRecurringToggleBtn || null;
 
+    const getTodos = requireFunction(deps, "getTodos");
+    const saveTodos = requireFunction(deps, "saveTodos");
+    const normalizeTodoTags = requireFunction(deps, "normalizeTodoTags");
+    const markTodoPlanningDirty = requireFunction(deps, "markTodoPlanningDirty");
     const escapeHtml = requireFunction(deps, "escapeHtml");
     const formatDate = requireFunction(deps, "formatDate");
     const getTodayDateInputValue = requireFunction(deps, "getTodayDateInputValue");
@@ -37,7 +60,6 @@
     const getTodoDurationMinutes = requireFunction(deps, "getTodoDurationMinutes");
     const formatTodoDurationMinutesLabel = requireFunction(deps, "formatTodoDurationMinutesLabel");
     const formatTodoReminderLabel = requireFunction(deps, "formatTodoReminderLabel");
-    const compactTodoNotePreview = requireFunction(deps, "compactTodoNotePreview");
     const getIncompleteTodosByDate = requireFunction(deps, "getIncompleteTodosByDate");
     const getVisibleTodos = requireFunction(deps, "getVisibleTodos");
     const getTodoHistoryRecords = requireFunction(deps, "getTodoHistoryRecords");
@@ -45,6 +67,8 @@
     const renderTodoDetail = requireFunction(deps, "renderTodoDetail");
     const getSelectedTodoId = requireFunction(deps, "getSelectedTodoId");
     const setSelectedTodoId = requireFunction(deps, "setSelectedTodoId");
+    const isTodoAiHighlighted =
+      typeof deps.isTodoAiHighlighted === "function" ? deps.isTodoAiHighlighted : () => false;
     const getCurrentTodoDimension = requireFunction(deps, "getCurrentTodoDimension");
     const setCurrentTodoDimension = requireFunction(deps, "setCurrentTodoDimension");
     const getShowTodoHistoryInMainList = requireFunction(deps, "getShowTodoHistoryInMainList");
@@ -61,9 +85,16 @@
     const openTodoHistoryRecord = requireFunction(deps, "openTodoHistoryRecord");
     const toggleTodoCompleted = requireFunction(deps, "toggleTodoCompleted");
 
+    const documentRef = globalScope.document || null;
+
     let eventsBound = false;
     let todoPendingScrollToTodayGroup = false;
     let todoListDragState = null;
+    let todoDragGhost = null;
+    let todoDragImageShim = null;
+    let todoDropLine = null;
+    let todoDragExpandTimer = null;
+    let todoDragExpandKey = "";
 
     function bindEvents() {
       if (eventsBound) return;
@@ -72,11 +103,28 @@
       if (todoFilterBar) {
         todoFilterBar.addEventListener("click", handleFilterClick);
       }
+      if (todoSortMenu) {
+        todoSortMenu.addEventListener("toggle", () => {
+          if (todoSortMenu.open) closeToolbarMenu(todoScopeMenu);
+        });
+      }
+      if (todoScopeMenu) {
+        todoScopeMenu.addEventListener("toggle", () => {
+          if (todoScopeMenu.open) closeToolbarMenu(todoSortMenu);
+        });
+      }
+      if (todoScopeAllBtn) {
+        todoScopeAllBtn.addEventListener("click", () => setTodoScope("all"));
+      }
       if (todoHistoryToggleBtn) {
         todoHistoryToggleBtn.addEventListener("click", handleHistoryToggleClick);
       }
       if (todoRecurringToggleBtn) {
         todoRecurringToggleBtn.addEventListener("click", handleRecurringToggleClick);
+      }
+      if (documentRef) {
+        documentRef.addEventListener("click", handleToolbarDocumentClick);
+        documentRef.addEventListener("keydown", handleToolbarDocumentKeydown);
       }
       if (todoGroups) {
         todoGroups.addEventListener("click", handleGroupClick);
@@ -101,30 +149,75 @@
       }
     }
 
+    function closeToolbarMenu(menu) {
+      if (menu && menu.open) {
+        menu.open = false;
+      }
+    }
+
+    function handleToolbarDocumentClick(event) {
+      const target = event.target;
+      if (todoSortMenu && todoSortMenu.open && !todoSortMenu.contains(target)) {
+        closeToolbarMenu(todoSortMenu);
+      }
+      if (todoScopeMenu && todoScopeMenu.open && !todoScopeMenu.contains(target)) {
+        closeToolbarMenu(todoScopeMenu);
+      }
+    }
+
+    function handleToolbarDocumentKeydown(event) {
+      if (event.key !== "Escape") return;
+      closeToolbarMenu(todoSortMenu);
+      closeToolbarMenu(todoScopeMenu);
+    }
+
+    function getTodoScope() {
+      if (getShowRecurringReminderOnlyInMainList()) return "recurring";
+      if (getShowTodoHistoryInMainList()) return "history";
+      return "all";
+    }
+
+    function syncTodoScopeButtons() {
+      const scope = getTodoScope();
+      if (todoScopeCurrent) {
+        todoScopeCurrent.textContent = TODO_SCOPE_LABELS[scope] || TODO_SCOPE_LABELS.all;
+      }
+
+      const scopeButtons = [
+        [todoScopeAllBtn, "all"],
+        [todoHistoryToggleBtn, "history"],
+        [todoRecurringToggleBtn, "recurring"],
+      ];
+      for (const [button, value] of scopeButtons) {
+        if (!button) continue;
+        const isActive = scope === value;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-checked", isActive ? "true" : "false");
+      }
+    }
+
     function syncFilterBarButtons() {
+      const currentDimension = getCurrentTodoDimension();
+      if (todoSortCurrent) {
+        todoSortCurrent.textContent = TODO_DIMENSION_LABELS[currentDimension] || TODO_DIMENSION_LABELS.time;
+      }
       if (todoFilterBar) {
         const buttons = Array.from(todoFilterBar.querySelectorAll("button[data-dimension]"));
         for (const node of buttons) {
           const dimension = String(node.dataset.dimension || "");
-          const isActive = dimension === getCurrentTodoDimension();
+          const isActive = dimension === currentDimension;
           node.classList.toggle("is-active", isActive);
+          node.setAttribute("aria-checked", isActive ? "true" : "false");
           node.disabled = false;
           node.removeAttribute("aria-disabled");
         }
       }
 
-      if (todoRecurringToggleBtn) {
-        const recurringOnly = getShowRecurringReminderOnlyInMainList();
-        todoRecurringToggleBtn.classList.toggle("is-active", recurringOnly);
-        todoRecurringToggleBtn.setAttribute("aria-pressed", recurringOnly ? "true" : "false");
-      }
+      syncTodoScopeButtons();
     }
 
     function syncHistoryToggleButton() {
-      if (!todoHistoryToggleBtn) return;
-      const showHistory = getShowTodoHistoryInMainList();
-      todoHistoryToggleBtn.classList.toggle("is-active", showHistory);
-      todoHistoryToggleBtn.setAttribute("aria-pressed", showHistory ? "true" : "false");
+      syncTodoScopeButtons();
     }
 
     function requestScrollToTodayGroup() {
@@ -176,32 +269,29 @@
       todoGroups.scrollTop = top;
     }
 
-    function handleHistoryToggleClick() {
-      const nextShowHistory = !getShowTodoHistoryInMainList();
-      setShowTodoHistoryInMainList(nextShowHistory);
-      if (nextShowHistory) {
-        if (getShowRecurringReminderOnlyInMainList()) {
-          setShowRecurringReminderOnlyInMainList(false);
-        }
-        if (getCurrentTodoDimension() === "time") {
+    function setTodoScope(scope) {
+      const nextScope = TODO_SCOPE_LABELS[scope] ? scope : "all";
+      const wasHistory = getShowTodoHistoryInMainList();
+      setShowTodoHistoryInMainList(nextScope === "history");
+      setShowRecurringReminderOnlyInMainList(nextScope === "recurring");
+      if (nextScope === "history") {
+        if (!wasHistory && getCurrentTodoDimension() === "time") {
           requestScrollToTodayGroup();
         }
         clearAllRecentlyCompletedForDisplay();
       }
       syncHistoryToggleButton();
       syncFilterBarButtons();
+      closeToolbarMenu(todoScopeMenu);
       renderTodos();
     }
 
+    function handleHistoryToggleClick() {
+      setTodoScope("history");
+    }
+
     function handleRecurringToggleClick() {
-      const nextRecurringOnly = !getShowRecurringReminderOnlyInMainList();
-      setShowRecurringReminderOnlyInMainList(nextRecurringOnly);
-      if (nextRecurringOnly && getShowTodoHistoryInMainList()) {
-        setShowTodoHistoryInMainList(false);
-      }
-      syncHistoryToggleButton();
-      syncFilterBarButtons();
-      renderTodos();
+      setTodoScope("recurring");
     }
 
     function handleFilterClick(event) {
@@ -214,7 +304,164 @@
         requestScrollToTodayGroup();
       }
       syncFilterBarButtons();
+      closeToolbarMenu(todoSortMenu);
       renderTodos();
+    }
+
+    function getTodoProjectDragGroupKey(todo) {
+      return normalizeProjectName(todo?.project || "") || TODO_UNSET_PROJECT_LABEL;
+    }
+
+    function getTodoProjectValueFromDragGroup(groupKey) {
+      const normalized = normalizeProjectName(groupKey);
+      if (!normalized || normalized === TODO_UNSET_PROJECT_LABEL || normalized === "未分组项目") return "";
+      return normalized;
+    }
+
+    function getTodoTagDragGroupKey(todo) {
+      const tags = Array.isArray(todo?.tags) ? todo.tags : normalizeTodoTags(todo?.tags || []);
+      const firstTag = String(tags[0] || "").trim();
+      return firstTag || TODO_UNTAGGED_LABEL;
+    }
+
+    function getTodoTagsForDragGroup(currentTags, groupKey) {
+      const targetTag = String(groupKey || "").trim().replace(/^#/, "");
+      if (!targetTag || targetTag === TODO_UNTAGGED_LABEL) return [];
+      const tags = normalizeTodoTags(currentTags || []);
+      return [
+        targetTag,
+        ...tags.filter((tag) => tag !== targetTag),
+      ].slice(0, 8);
+    }
+
+    function getTodoDragGroupKey(todo, mode) {
+      if (mode === "project") return getTodoProjectDragGroupKey(todo);
+      if (mode === "tag") return getTodoTagDragGroupKey(todo);
+      if (mode === "time") {
+        const dueDate = String(todo?.dueDate || "");
+        return isValidDateInput(dueDate) ? dueDate : "";
+      }
+      return "";
+    }
+
+    function getTodoDragOrderField(mode) {
+      if (mode === "project") return "projectOrder";
+      if (mode === "tag") return "tagOrder";
+      return "";
+    }
+
+    function getFiniteOrderValue(value) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function compareTodosByFallbackOrder(a, b) {
+      const aDate = String(a?.dueDate || "9999-12-31");
+      const bDate = String(b?.dueDate || "9999-12-31");
+      if (aDate !== bDate) return aDate.localeCompare(bDate);
+      const aDayOrder = getFiniteOrderValue(a?.orderInDay);
+      const bDayOrder = getFiniteOrderValue(b?.orderInDay);
+      const safeADayOrder = aDayOrder === null ? Number.MAX_SAFE_INTEGER : aDayOrder;
+      const safeBDayOrder = bDayOrder === null ? Number.MAX_SAFE_INTEGER : bDayOrder;
+      if (safeADayOrder !== safeBDayOrder) return safeADayOrder - safeBDayOrder;
+      const aStart = String(a?.startTime || "");
+      const bStart = String(b?.startTime || "");
+      if (aStart !== bStart) return aStart.localeCompare(bStart);
+      const aCreated = String(a?.createdAt || "");
+      const bCreated = String(b?.createdAt || "");
+      if (aCreated !== bCreated) return aCreated.localeCompare(bCreated);
+      return String(a?.id || "").localeCompare(String(b?.id || ""));
+    }
+
+    function compareTodosByDragOrder(a, b, mode) {
+      const orderField = getTodoDragOrderField(mode);
+      if (orderField) {
+        const aOrder = getFiniteOrderValue(a?.[orderField]);
+        const bOrder = getFiniteOrderValue(b?.[orderField]);
+        if (aOrder !== null && bOrder !== null && aOrder !== bOrder) return aOrder - bOrder;
+        if (aOrder !== null && bOrder === null) return -1;
+        if (aOrder === null && bOrder !== null) return 1;
+      }
+      return compareTodosByFallbackOrder(a, b);
+    }
+
+    function sortTodosByDragOrder(list, mode) {
+      return [...(Array.isArray(list) ? list : [])].sort((a, b) => compareTodosByDragOrder(a, b, mode));
+    }
+
+    function getTodoDragGroupItems(mode, groupKey, excludedTodoId = "") {
+      const normalizedGroupKey = String(groupKey || "");
+      const excludedId = String(excludedTodoId || "");
+      if (mode === "time") {
+        return getIncompleteTodosByDate(normalizedGroupKey)
+          .filter((todo) => String(todo?.id || "") !== excludedId);
+      }
+
+      if (mode !== "project" && mode !== "tag") return [];
+      return sortTodosByDragOrder(
+        getTodos().filter((todo) => {
+          if (!todo || todo.completed) return false;
+          if (excludedId && String(todo.id || "") === excludedId) return false;
+          return getTodoDragGroupKey(todo, mode) === normalizedGroupKey;
+        }),
+        mode,
+      );
+    }
+
+    function getTodoDragGroupItemCount(mode, groupKey) {
+      return getTodoDragGroupItems(mode, groupKey).length;
+    }
+
+    function assignTodoDragOrder(items, orderField, timestampIso) {
+      if (!orderField) return;
+      for (let index = 0; index < items.length; index += 1) {
+        const todo = items[index];
+        if (!todo) continue;
+        if (todo[orderField] !== index) {
+          todo[orderField] = index;
+          markTodoPlanningDirty(todo, timestampIso);
+        }
+      }
+    }
+
+    function moveTodoToGroupedOrder(mode, todoId, targetGroupKey, targetOrder) {
+      if (mode !== "project" && mode !== "tag") return;
+      const todos = getTodos();
+      const todo = todos.find((item) => String(item?.id || "") === String(todoId || ""));
+      if (!todo || todo.completed) return;
+
+      const orderField = getTodoDragOrderField(mode);
+      const sourceGroupKey = getTodoDragGroupKey(todo, mode);
+      const sourceItems = getTodoDragGroupItems(mode, sourceGroupKey, todo.id);
+
+      if (mode === "project") {
+        todo.project = getTodoProjectValueFromDragGroup(targetGroupKey);
+      } else {
+        todo.tags = getTodoTagsForDragGroup(todo.tags, targetGroupKey);
+      }
+
+      const resolvedTargetGroupKey = getTodoDragGroupKey(todo, mode);
+      const targetItems = getTodoDragGroupItems(mode, resolvedTargetGroupKey, todo.id);
+      const safeTargetOrder = Number.isInteger(targetOrder) ? targetOrder : targetItems.length;
+      const insertIndex = Math.max(0, Math.min(targetItems.length, safeTargetOrder));
+      targetItems.splice(insertIndex, 0, todo);
+
+      const timestampIso = new Date().toISOString();
+      markTodoPlanningDirty(todo, timestampIso);
+      if (sourceGroupKey !== resolvedTargetGroupKey) {
+        assignTodoDragOrder(sourceItems, orderField, timestampIso);
+      }
+      assignTodoDragOrder(targetItems, orderField, timestampIso);
+      saveTodos(todos);
+      renderTodos();
+    }
+
+    function moveTodoToProjectGroup(todoId, targetGroupKey, targetOrder) {
+      moveTodoToGroupedOrder("project", todoId, targetGroupKey, targetOrder);
+    }
+
+    function moveTodoToTagGroup(todoId, targetGroupKey, targetOrder) {
+      moveTodoToGroupedOrder("tag", todoId, targetGroupKey, targetOrder);
     }
 
     function clearDragVisualState({ keepDragging = true } = {}) {
@@ -223,7 +470,10 @@
       for (const node of dropTargets) {
         node.classList.remove("is-drop-before", "is-drop-after");
       }
+      clearTodoDropLine();
       if (!keepDragging) {
+        clearTodoDragExpandTimer();
+        clearTodoDragGhost();
         const draggingNodes = todoGroups.querySelectorAll(".todo-item.is-dragging");
         for (const node of draggingNodes) {
           node.classList.remove("is-dragging");
@@ -231,101 +481,339 @@
       }
     }
 
-    function getDragTargetMeta(event) {
+    function clearTodoDropLine() {
+      if (todoDropLine && todoDropLine.parentNode) {
+        todoDropLine.parentNode.removeChild(todoDropLine);
+      }
+      todoDropLine = null;
+    }
+
+    function clearTodoDragExpandTimer() {
+      if (todoDragExpandTimer) {
+        globalScope.clearTimeout(todoDragExpandTimer);
+      }
+      todoDragExpandTimer = null;
+      todoDragExpandKey = "";
+    }
+
+    function clearTodoDragGhost() {
+      if (todoDragGhost && todoDragGhost.parentNode) {
+        todoDragGhost.parentNode.removeChild(todoDragGhost);
+      }
+      if (todoDragImageShim && todoDragImageShim.parentNode) {
+        todoDragImageShim.parentNode.removeChild(todoDragImageShim);
+      }
+      todoDragGhost = null;
+      todoDragImageShim = null;
+    }
+
+    function createTodoDragGhost(rowNode, event) {
+      if (!documentRef || !todoGroups) return;
+      clearTodoDragGhost();
+      const listRect = todoGroups.getBoundingClientRect();
+      const rowRect = rowNode.getBoundingClientRect();
+      const ghost = rowNode.cloneNode(true);
+      ghost.classList.remove("is-dragging", "is-drop-before", "is-drop-after");
+      ghost.classList.add("todo-drag-ghost");
+      ghost.style.left = `${listRect.left}px`;
+      ghost.style.top = `${rowRect.top}px`;
+      ghost.style.width = `${listRect.width}px`;
+      ghost.style.height = `${rowRect.height}px`;
+      documentRef.body.appendChild(ghost);
+
+      todoDragGhost = ghost;
+      todoListDragState.dragOffsetY = event.clientY - rowRect.top;
+      updateTodoDragGhost(event);
+
+      if (event.dataTransfer && typeof event.dataTransfer.setDragImage === "function") {
+        const shim = documentRef.createElement("div");
+        shim.style.width = "1px";
+        shim.style.height = "1px";
+        shim.style.opacity = "0";
+        shim.style.position = "fixed";
+        shim.style.left = "-1000px";
+        shim.style.top = "-1000px";
+        documentRef.body.appendChild(shim);
+        event.dataTransfer.setDragImage(shim, 0, 0);
+        todoDragImageShim = shim;
+      }
+    }
+
+    function updateTodoDragGhost(event) {
+      if (!todoDragGhost || !todoGroups || !todoListDragState) return;
+      const listRect = todoGroups.getBoundingClientRect();
+      const ghostRect = todoDragGhost.getBoundingClientRect();
+      const offsetY = Number.isFinite(todoListDragState.dragOffsetY) ? todoListDragState.dragOffsetY : ghostRect.height / 2;
+      const top = Math.min(
+        Math.max(event.clientY - offsetY, listRect.top),
+        Math.max(listRect.top, listRect.bottom - ghostRect.height),
+      );
+      todoDragGhost.style.left = `${listRect.left}px`;
+      todoDragGhost.style.top = `${top}px`;
+      todoDragGhost.style.width = `${listRect.width}px`;
+    }
+
+    function getDropLineTopForGroup(groupNode, dropPayload = null) {
+      if (!(groupNode instanceof HTMLElement)) return null;
+      const listNode = groupNode.querySelector(":scope > .todo-list");
+      if (listNode instanceof HTMLElement) {
+        const rowNodes = listNode.querySelectorAll(":scope > .todo-item");
+        const firstRow = rowNodes[0];
+        if (dropPayload?.nextOrder === 0 && firstRow instanceof HTMLElement) {
+          return firstRow.getBoundingClientRect().top;
+        }
+        const lastRow = rowNodes[rowNodes.length - 1];
+        if (lastRow instanceof HTMLElement) {
+          return lastRow.getBoundingClientRect().bottom;
+        }
+        return listNode.getBoundingClientRect().top;
+      }
+      const headerNode = groupNode.querySelector(":scope > .todo-group-head, :scope > .todo-project-tree-head");
+      if (headerNode instanceof HTMLElement) {
+        return headerNode.getBoundingClientRect().bottom;
+      }
+      return groupNode.getBoundingClientRect().bottom;
+    }
+
+    function showTodoDropLine(dropPayload) {
+      if (!dropPayload || !documentRef || !todoGroups) return;
+      const isOriginalSlot =
+        dropPayload.mode === todoListDragState?.mode &&
+        dropPayload.groupKey === todoListDragState?.groupKey &&
+        dropPayload.nextOrder === todoListDragState?.fromOrder;
+      if (isOriginalSlot) {
+        clearTodoDropLine();
+        return;
+      }
+
+      const listRect = todoGroups.getBoundingClientRect();
+      let top = null;
+      if (dropPayload.rowTarget?.rowNode instanceof HTMLElement) {
+        const rowRect = dropPayload.rowTarget.rowNode.getBoundingClientRect();
+        top = dropPayload.rowTarget.insertBefore ? rowRect.top : rowRect.bottom;
+      } else if (dropPayload.groupTarget?.groupNode instanceof HTMLElement) {
+        top = getDropLineTopForGroup(dropPayload.groupTarget.groupNode, dropPayload);
+      }
+      if (!Number.isFinite(top)) {
+        clearTodoDropLine();
+        return;
+      }
+
+      if (!todoDropLine) {
+        todoDropLine = documentRef.createElement("div");
+        todoDropLine.className = "todo-drop-line";
+        documentRef.body.appendChild(todoDropLine);
+      }
+      const horizontalInset = Math.min(16, Math.max(8, listRect.width * 0.02));
+      todoDropLine.style.left = `${listRect.left + horizontalInset}px`;
+      todoDropLine.style.top = `${top - 1}px`;
+      todoDropLine.style.width = `${Math.max(24, listRect.width - horizontalInset * 2)}px`;
+    }
+
+    function getDragExpandCollapseKey(event) {
+      if (!(event.target instanceof Element) || !todoGroups) return "";
+      const groupNode = event.target.closest(".todo-group");
+      if (groupNode instanceof HTMLElement && todoGroups.contains(groupNode)) {
+        const toggleNode = groupNode.querySelector("button.todo-group-toggle.is-collapsed[data-group-collapse-key]");
+        if (toggleNode instanceof HTMLElement) return String(toggleNode.dataset.groupCollapseKey || "");
+      }
+
+      const projectNode = event.target.closest(".todo-project-tree-node");
+      if (projectNode instanceof HTMLElement && todoGroups.contains(projectNode)) {
+        const toggleNode = projectNode.querySelector("button.todo-project-tree-toggle.is-collapsed[data-project-path]");
+        if (toggleNode instanceof HTMLElement) return String(toggleNode.dataset.projectPath || "");
+      }
+      return "";
+    }
+
+    function scheduleCollapsedGroupExpand(event) {
+      if (!todoListDragState) return;
+      const key = getDragExpandCollapseKey(event);
+      if (!key) {
+        clearTodoDragExpandTimer();
+        return;
+      }
+      if (todoDragExpandKey === key && todoDragExpandTimer) return;
+
+      clearTodoDragExpandTimer();
+      todoDragExpandKey = key;
+      todoDragExpandTimer = globalScope.setTimeout(() => {
+        todoDragExpandTimer = null;
+        const pendingKey = todoDragExpandKey;
+        todoDragExpandKey = "";
+        if (!todoListDragState || !pendingKey) return;
+        if (!getTodoProjectTreeCollapsedPaths().has(pendingKey)) return;
+        toggleCollapsedTodoProjectPath(pendingKey);
+        renderTodos();
+      }, TODO_DRAG_EXPAND_DELAY_MS);
+    }
+
+    function getDragTargetMeta(event, state = null) {
       if (!(event.target instanceof Element)) return null;
-      const rowNode = event.target.closest(".todo-item[data-id][data-date][data-order-index]");
-      if (!(rowNode instanceof HTMLElement)) return null;
-      const dueDate = String(rowNode.dataset.date || "");
+      const rowNode = event.target.closest(".todo-item[data-id][data-drag-mode][data-drag-group-key][data-order-index]");
+      if (!(rowNode instanceof HTMLElement) || (todoGroups && !todoGroups.contains(rowNode))) return null;
+      const mode = String(rowNode.dataset.dragMode || "");
+      const groupKey = String(rowNode.dataset.dragGroupKey || "");
+      if (!mode || !groupKey) return null;
+      if (state?.mode && mode !== state.mode) return null;
       const orderIndex = Number.parseInt(String(rowNode.dataset.orderIndex || "-1"), 10);
-      if (!isValidDateInput(dueDate) || !Number.isInteger(orderIndex) || orderIndex < 0) return null;
+      if (!Number.isInteger(orderIndex) || orderIndex < 0) return null;
+      const dueDate = String(rowNode.dataset.date || "");
+      if (mode === "time" && !isValidDateInput(dueDate)) return null;
       const rect = rowNode.getBoundingClientRect();
       const insertBefore = event.clientY < rect.top + rect.height / 2;
       return {
         rowNode,
+        mode,
+        groupKey,
         dueDate,
         orderIndex,
         insertBefore,
       };
     }
 
-    function getDragGroupDate(event) {
-      if (!(event.target instanceof Element)) return "";
-      const groupNode = event.target.closest(".todo-group[data-todo-date]");
-      if (!(groupNode instanceof HTMLElement)) return "";
+    function getDragGroupMeta(event, state = null) {
+      if (!(event.target instanceof Element)) return null;
+      const mode = state?.mode ? String(state.mode) : "";
+      const groupSelector = mode === "project"
+        ? ".todo-project-tree-node[data-group-dimension][data-drag-group-key]"
+        : ".todo-group[data-group-dimension][data-drag-group-key]";
+      const groupNode = event.target.closest(groupSelector);
+      if (!(groupNode instanceof HTMLElement) || (todoGroups && !todoGroups.contains(groupNode))) return null;
+      const groupMode = String(groupNode.dataset.groupDimension || "");
+      if (mode && groupMode !== mode) return null;
+      const groupKey = String(groupNode.dataset.dragGroupKey || "");
+      if (!groupMode || !groupKey) return null;
       const dueDate = String(groupNode.dataset.todoDate || "").trim();
-      return isValidDateInput(dueDate) ? dueDate : "";
+      if (groupMode === "time" && !isValidDateInput(dueDate)) return null;
+      const headerSelector = groupMode === "project" ? ".todo-project-tree-head" : ".todo-group-head";
+      const headerNode = groupNode.querySelector(`:scope > ${headerSelector}`);
+      const headerRect = headerNode instanceof HTMLElement ? headerNode.getBoundingClientRect() : null;
+      const isHeaderTarget = Boolean(
+        headerRect &&
+        event.clientY >= headerRect.top &&
+        event.clientY <= headerRect.bottom,
+      );
+      const firstRow = groupNode.querySelector(":scope > .todo-list > .todo-item");
+      const firstRowRect = firstRow instanceof HTMLElement ? firstRow.getBoundingClientRect() : null;
+      const isBeforeFirstItem = Boolean(firstRowRect && event.clientY <= firstRowRect.top);
+      return {
+        groupNode,
+        mode: groupMode,
+        groupKey,
+        dueDate,
+        isHeaderTarget,
+        isBeforeFirstItem,
+      };
     }
 
-    function normalizeDragDropOrder(fromOrder, slotIndex, isSameDate) {
+    function getDragGroupDate(event) {
+      const groupMeta = getDragGroupMeta(event, { mode: "time" });
+      return groupMeta?.dueDate || "";
+    }
+
+    function normalizeDragDropOrder(fromOrder, slotIndex, isSameGroup) {
       if (!Number.isInteger(fromOrder) || !Number.isInteger(slotIndex) || slotIndex < 0) return null;
-      const nextOrder = isSameDate && slotIndex > fromOrder ? slotIndex - 1 : slotIndex;
+      const nextOrder = isSameGroup && slotIndex > fromOrder ? slotIndex - 1 : slotIndex;
       return nextOrder >= 0 ? nextOrder : null;
     }
 
-    function getDragDropOrder(fromOrder, targetMeta, isSameDate) {
+    function getDragDropOrder(fromOrder, targetMeta, isSameGroup) {
       if (!targetMeta) return null;
       const slotIndex = targetMeta.insertBefore ? targetMeta.orderIndex : targetMeta.orderIndex + 1;
-      return normalizeDragDropOrder(fromOrder, slotIndex, isSameDate);
+      return normalizeDragDropOrder(fromOrder, slotIndex, isSameGroup);
     }
 
     function getDragDropPayload(event, state) {
       if (!state) return null;
-      const rowTarget = getDragTargetMeta(event);
+      const rowTarget = getDragTargetMeta(event, state);
       if (rowTarget) {
-        const dueDate = rowTarget.dueDate;
-        const nextOrder = getDragDropOrder(state.fromOrder, rowTarget, dueDate === state.dueDate);
+        const nextOrder = getDragDropOrder(
+          state.fromOrder,
+          rowTarget,
+          rowTarget.groupKey === state.groupKey,
+        );
         if (Number.isInteger(nextOrder)) {
           return {
-            dueDate,
+            mode: rowTarget.mode,
+            groupKey: rowTarget.groupKey,
+            dueDate: rowTarget.dueDate,
             nextOrder,
             rowTarget,
+            groupTarget: null,
           };
         }
       }
 
-      const groupDate = getDragGroupDate(event);
-      if (!groupDate) return null;
-      const dayTodoCount = getIncompleteTodosByDate(groupDate).length;
+      const groupTarget = getDragGroupMeta(event, state);
+      if (!groupTarget) return null;
+      const groupTodoCount = getTodoDragGroupItemCount(groupTarget.mode, groupTarget.groupKey);
+      const shouldInsertAtGroupStart =
+        groupTarget.mode === "time" &&
+        (groupTarget.isHeaderTarget || groupTarget.isBeforeFirstItem);
+      const slotIndex = shouldInsertAtGroupStart ? 0 : groupTodoCount;
       const nextOrder = normalizeDragDropOrder(
         state.fromOrder,
-        dayTodoCount,
-        groupDate === state.dueDate,
+        slotIndex,
+        groupTarget.groupKey === state.groupKey,
       );
       if (!Number.isInteger(nextOrder)) return null;
       return {
-        dueDate: groupDate,
+        mode: groupTarget.mode,
+        groupKey: groupTarget.groupKey,
+        dueDate: groupTarget.dueDate,
         nextOrder,
         rowTarget: null,
+        groupTarget,
       };
     }
 
     function handleGroupDragStart(event) {
       if (!(event.target instanceof Element)) return;
-      const rowNode = event.target.closest(".todo-item[draggable=\"true\"][data-id][data-date][data-order-index]");
+      const rowNode = event.target.closest(".todo-item[draggable=\"true\"][data-id][data-drag-mode][data-drag-group-key][data-order-index]");
       if (!(rowNode instanceof HTMLElement)) return;
       const todoId = String(rowNode.dataset.id || "");
+      const mode = String(rowNode.dataset.dragMode || "");
+      const groupKey = String(rowNode.dataset.dragGroupKey || "");
       const dueDate = String(rowNode.dataset.date || "");
       const fromOrder = Number.parseInt(String(rowNode.dataset.orderIndex || "-1"), 10);
-      if (!todoId || !isValidDateInput(dueDate) || !Number.isInteger(fromOrder) || fromOrder < 0) return;
+      if (!todoId || !mode || !groupKey || !Number.isInteger(fromOrder) || fromOrder < 0) return;
+      if (mode === "time" && !isValidDateInput(dueDate)) return;
 
       todoListDragState = {
         todoId,
+        mode,
+        groupKey,
         dueDate,
         fromOrder,
+        targetMode: mode,
+        targetGroupKey: groupKey,
         targetDueDate: dueDate,
         targetOrder: fromOrder,
+        lastDropPayload: null,
+        dragOffsetY: 0,
       };
       clearDragVisualState({ keepDragging: false });
+      setSelectedTodoId(todoId);
+      const selectedNodes = todoGroups.querySelectorAll(".todo-item.is-selected");
+      for (const node of selectedNodes) {
+        node.classList.remove("is-selected");
+      }
+      rowNode.classList.add("is-selected");
       rowNode.classList.add("is-dragging");
+      renderTodoDetail();
 
       if (event.dataTransfer) {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", todoId);
       }
+      createTodoDragGhost(rowNode, event);
     }
 
     function handleGroupDragOver(event) {
       if (!todoListDragState) return;
+      updateTodoDragGhost(event);
+      scheduleCollapsedGroupExpand(event);
       const dropPayload = getDragDropPayload(event, todoListDragState);
       if (!dropPayload) return;
 
@@ -335,33 +823,49 @@
       }
 
       clearDragVisualState({ keepDragging: true });
-      const isOriginalSlot =
-        dropPayload.dueDate === todoListDragState.dueDate &&
-        dropPayload.nextOrder === todoListDragState.fromOrder;
-      if (dropPayload.rowTarget && !isOriginalSlot) {
-        dropPayload.rowTarget.rowNode.classList.add(dropPayload.rowTarget.insertBefore ? "is-drop-before" : "is-drop-after");
-      }
+      showTodoDropLine(dropPayload);
+      todoListDragState.targetMode = dropPayload.mode;
+      todoListDragState.targetGroupKey = dropPayload.groupKey;
       todoListDragState.targetDueDate = dropPayload.dueDate;
       todoListDragState.targetOrder = dropPayload.nextOrder;
+      todoListDragState.lastDropPayload = dropPayload;
     }
 
     function handleGroupDrop(event) {
       if (!todoListDragState) return;
       event.preventDefault();
 
-      const dropPayload = getDragDropPayload(event, todoListDragState);
-      if (dropPayload) {
-        todoListDragState.targetDueDate = dropPayload.dueDate;
-        todoListDragState.targetOrder = dropPayload.nextOrder;
-      }
-
-      const { todoId, dueDate, fromOrder, targetDueDate, targetOrder } = todoListDragState;
+      const {
+        todoId,
+        mode,
+        groupKey,
+        dueDate,
+        fromOrder,
+        lastDropPayload,
+      } = todoListDragState;
       clearDragVisualState({ keepDragging: false });
       todoListDragState = null;
 
+      const dropPayload = lastDropPayload;
+      if (!dropPayload || dropPayload.mode !== mode) return;
+      const targetGroupKey = dropPayload.groupKey;
+      const targetDueDate = dropPayload.dueDate;
+      const targetOrder = dropPayload.nextOrder;
+      if (mode !== "time") {
+        if (!targetGroupKey || !Number.isInteger(targetOrder)) return;
+        if (targetGroupKey === groupKey && targetOrder === fromOrder) return;
+        if (mode === "project") {
+          moveTodoToProjectGroup(todoId, targetGroupKey, targetOrder);
+          return;
+        }
+        if (mode === "tag") {
+          moveTodoToTagGroup(todoId, targetGroupKey, targetOrder);
+        }
+        return;
+      }
+
       if (!isValidDateInput(targetDueDate) || !Number.isInteger(targetOrder)) return;
       if (targetDueDate === dueDate && targetOrder === fromOrder) return;
-
       if (targetDueDate === dueDate) {
         moveTodoToOrder(todoId, targetOrder);
         return;
@@ -370,6 +874,7 @@
     }
 
     function handleGroupDragEnd() {
+      clearTodoDragExpandTimer();
       clearDragVisualState({ keepDragging: false });
       todoListDragState = null;
     }
@@ -378,6 +883,7 @@
       if (!todoListDragState || !todoGroups) return;
       const nextTarget = event.relatedTarget;
       if (nextTarget instanceof Node && todoGroups.contains(nextTarget)) return;
+      clearTodoDragExpandTimer();
       clearDragVisualState({ keepDragging: true });
     }
 
@@ -387,6 +893,16 @@
         const path = String(projectTreeToggleBtn.dataset.projectPath || "");
         if (path) {
           toggleCollapsedTodoProjectPath(path);
+          renderTodos();
+        }
+        return;
+      }
+
+      const groupToggleBtn = event.target.closest("button.todo-group-toggle[data-group-collapse-key]");
+      if (groupToggleBtn) {
+        const key = String(groupToggleBtn.dataset.groupCollapseKey || "");
+        if (key) {
+          toggleCollapsedTodoProjectPath(key);
           renderTodos();
         }
         return;
@@ -460,20 +976,21 @@
       if (todo.syncState === "error") {
         return '<span class="todo-badge error">失败</span>';
       }
-      if (todo.calendarSynced || todo.syncState === "synced") {
-        return `
-      <span class="todo-badge synced todo-sync-icon-badge" aria-label="已同步" title="已同步">
-        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-          <path d="M6 10.4 8.4 12.8 14.2 7" />
-        </svg>
-      </span>
-    `;
-      }
       return "";
     }
 
-    function renderTodoRowHtml(todo, { allowTimeOrder = false, timeReorderIndexMap = null } = {}) {
+    function renderTodoRowHtml(
+      todo,
+      {
+        allowTimeOrder = false,
+        timeReorderIndexMap = null,
+        dragMode = "",
+        dragGroupKey = "",
+        groupOrderIndex = null,
+      } = {},
+    ) {
       const selectedClass = String(todo.id) === String(getSelectedTodoId()) ? " is-selected" : "";
+      const aiHighlightClass = isTodoAiHighlighted(todo.id) ? " is-ai-highlighted" : "";
       const completedClass = todo.completed ? " is-completed" : "";
       const checkClass = todo.completed ? " is-completed" : "";
       const dateBadge = buildDueBadge(todo);
@@ -497,38 +1014,58 @@
     `
         : "";
       const categoryText = getTodoCategory(todo, todo.project) || "未分类";
-      const projectText = normalizeProjectName(todo.project || "") || "未设置项目";
+      const projectText = normalizeProjectName(todo.project || "");
       const reminderText = formatTodoReminderLabel(todo.reminder, todo.repeat, {
         startTime: todo.startTime,
       });
+      const reminderLabel = String(reminderText || "").trim();
+      const projectContextHtml = projectText
+        ? `<p class=\"todo-item-context-project\">${escapeHtml(projectText)}</p>`
+        : "";
+      const reminderContextHtml = reminderLabel && reminderLabel !== "不提醒"
+        ? `<p class=\"todo-item-context-score\">${escapeHtml(reminderLabel)}</p>`
+        : "";
+      const contextHtml = projectContextHtml || reminderContextHtml
+        ? `<div class=\"todo-item-context\">${projectContextHtml}${reminderContextHtml}</div>`
+        : "";
+      const rowContextClass = contextHtml ? "" : " has-no-context";
       const durationMinutes = getTodoDurationMinutes(todo, TODO_PLAN_NEW_TODO_DURATION_MINUTES);
       const hasNote = Boolean(String(todo.note || "").trim());
-      const notePart = hasNote
-        ? '<span class="todo-subline-sep" aria-hidden="true">·</span><span class="todo-subline-text">有备注</span>'
-        : "";
-      const detailTextHtml = `<span class="todo-subline-text">${escapeHtml(categoryText)}</span><span class="todo-subline-sep" aria-hidden="true">·</span><span class="todo-subline-text">持续${escapeHtml(formatTodoDurationMinutesLabel(durationMinutes))}</span>${notePart}`;
-      const reorderIndex = allowTimeOrder && timeReorderIndexMap instanceof Map
+      const titleMetaHtml = [
+        categoryText,
+        formatTodoDurationMinutesLabel(durationMinutes),
+        hasNote ? "备注" : "",
+      ]
+        .filter(Boolean)
+        .map((item) => `<span class=\"todo-item-title-meta-item\">${escapeHtml(item)}</span>`)
+        .join('<span class=\"todo-subline-sep\" aria-hidden=\"true\">·</span>');
+      const effectiveDragMode = dragMode || (allowTimeOrder ? "time" : "");
+      const effectiveDragGroupKey = String(dragGroupKey || (allowTimeOrder ? todo.dueDate || "" : ""));
+      const reorderIndex = effectiveDragMode === "time" && timeReorderIndexMap instanceof Map
         ? timeReorderIndexMap.get(String(todo.id))
-        : null;
-      const canDragReorder = allowTimeOrder && !todo.completed && !todo.planLocked;
+        : groupOrderIndex;
+      const hasDragOrder = Number.isInteger(reorderIndex) && effectiveDragMode && effectiveDragGroupKey;
+      const canDragReorder =
+        hasDragOrder &&
+        !todo.completed &&
+        (effectiveDragMode !== "time" || !todo.planLocked);
       const rowDragClass = canDragReorder ? " is-draggable" : "";
-      const rowOrderAttrs = allowTimeOrder && Number.isInteger(reorderIndex)
-        ? ` data-date=\"${escapeHtml(String(todo.dueDate || ""))}\" data-order-index=\"${reorderIndex}\"`
+      const rowOrderAttrs = hasDragOrder
+        ? ` data-drag-mode=\"${escapeHtml(effectiveDragMode)}\" data-drag-group-key=\"${escapeHtml(effectiveDragGroupKey)}\" data-order-index=\"${reorderIndex}\"${effectiveDragMode === "time" ? ` data-date=\"${escapeHtml(String(todo.dueDate || ""))}\"` : ""}`
         : "";
       const rowDragAttrs = canDragReorder ? ' draggable="true"' : "";
 
       return `
-    <li class=\"todo-item${selectedClass}${completedClass}${rowDragClass}\" data-id=\"${escapeHtml(String(todo.id))}\"${rowOrderAttrs}${rowDragAttrs}>
+    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${rowDragClass}${rowContextClass}\" data-id=\"${escapeHtml(String(todo.id))}\"${rowOrderAttrs}${rowDragAttrs}>
       <button class=\"todo-check${checkClass}\" data-id=\"${escapeHtml(String(todo.id))}\" type=\"button\">${todo.completed ? "✓" : ""}</button>
       <div class=\"todo-item-main\">
-        <p class=\"todo-item-title\">${escapeHtml(todo.title)}</p>
-        <p class=\"todo-item-subline\">${detailTextHtml}</p>
+        <p class=\"todo-item-title\">
+          <span class=\"todo-item-title-text\">${escapeHtml(todo.title)}</span>
+          <span class=\"todo-item-title-meta\">${titleMetaHtml}</span>
+        </p>
       </div>
-      <div class=\"todo-item-context\">
-        <p class=\"todo-item-context-project\">${escapeHtml(projectText)}</p>
-        <p class=\"todo-item-context-score\">${escapeHtml(reminderText)}</p>
-      </div>
-      <div class=\"todo-badges\">${timeBadge}${dateBadge}${tagBadges}${lockBadge}${syncedBadge}</div>
+      ${contextHtml}
+      <div class=\"todo-badges\">${tagBadges}${timeBadge}${dateBadge}${lockBadge}${syncedBadge}</div>
     </li>
   `;
     }
@@ -544,13 +1081,24 @@
       const reminderText = formatTodoReminderLabel(item.reminder, item.repeat, {
         startTime: item.startTime || item.start,
       });
-      const notePreview = compactTodoNotePreview(item.note, 34);
+      const projectText = normalizeProjectName(item.project || "");
+      const reminderLabel = String(reminderText || "").trim();
+      const projectContextHtml = projectText
+        ? `<p class=\"todo-item-context-project\">${escapeHtml(projectText)}</p>`
+        : "";
+      const reminderContextHtml = reminderLabel && reminderLabel !== "不提醒"
+        ? `<p class=\"todo-item-context-score\">${escapeHtml(reminderLabel)}</p>`
+        : "";
+      const contextHtml = projectContextHtml || reminderContextHtml
+        ? `<div class=\"todo-item-context\">${projectContextHtml}${reminderContextHtml}</div>`
+        : "";
+      const rowContextClass = contextHtml ? "" : " has-no-context";
       const tagBadges = (item.tags || [])
         .slice(0, 2)
         .map((tag) => `<span class=\"todo-badge tag\">#${escapeHtml(tag)}</span>`)
         .join("");
       return `
-    <li class=\"todo-item todo-item-history\" data-source=\"${escapeHtml(item.source)}\" data-history-id=\"${escapeHtml(recordId)}\">
+    <li class=\"todo-item todo-item-history${rowContextClass}\" data-source=\"${escapeHtml(item.source)}\" data-id=\"${escapeHtml(recordId)}\" data-history-id=\"${escapeHtml(recordId)}\">
       <button
         class=\"todo-check is-completed todo-history-restore-btn\"
         type=\"button\"
@@ -560,17 +1108,15 @@
         title=\"恢复为未完成待办\"${restoreDisabledAttr}
       ></button>
       <div class=\"todo-item-main\">
-        <p class=\"todo-item-title\">${escapeHtml(item.title)}</p>
-        <p class=\"todo-item-subline\">${escapeHtml(notePreview || "历史记录")}</p>
+        <p class=\"todo-item-title\">
+          <span class=\"todo-item-title-text\">${escapeHtml(item.title)}</span>
+        </p>
       </div>
-      <div class=\"todo-item-context\">
-        <p class=\"todo-item-context-project\">${escapeHtml(item.project || "记录")}</p>
-        <p class=\"todo-item-context-score\">${escapeHtml(reminderText)}</p>
-      </div>
+      ${contextHtml}
       <div class=\"todo-badges\">
+        ${tagBadges}
         <span class=\"todo-badge due-future\">${escapeHtml(timeText)}</span>
         <span class=\"todo-badge due-future\">${escapeHtml(dateText)}</span>
-        ${tagBadges}
         <span class=\"todo-badge synced\">${escapeHtml(sourceText)}</span>
       </div>
     </li>
@@ -653,6 +1199,9 @@
           sortChildren(item.children);
         }
       };
+      for (const node of nodeMap.values()) {
+        node.todos = sortTodosByDragOrder(node.todos, "project");
+      }
       sortChildren(roots);
       return roots;
     }
@@ -661,14 +1210,13 @@
       const level = Math.max(1, Math.min(3, Number(node.level) || 1));
       const hasChildren = Array.isArray(node.children) && node.children.length > 0;
       const totalCount = node.totalTodoCount + (includeHistory ? node.totalHistoryCount : 0);
-      const summaryParts = [];
-      if (level === 1) {
-        summaryParts.push(`剩余 ${node.pendingTodoCount} 项`);
-        if (includeHistory && node.totalHistoryCount > 0) {
-          summaryParts.push(`历史 ${node.totalHistoryCount} 条`);
-        }
-      }
-      const todoRows = node.todos.map((todo) => renderTodoRowHtml(todo)).join("");
+      const todoRows = node.todos
+        .map((todo, index) => renderTodoRowHtml(todo, {
+          dragMode: "project",
+          dragGroupKey: node.path,
+          groupOrderIndex: index,
+        }))
+        .join("");
       const historyRows = includeHistory
         ? node.history.map((item) => renderTodoHistoryRowHtml(item)).join("")
         : "";
@@ -695,17 +1243,12 @@
     `
         : "";
 
-      const summaryHtml = summaryParts.length
-        ? `<p class="todo-project-tree-summary">${escapeHtml(summaryParts.join(" · "))}</p>`
-        : "";
-
       return `
-    <section class="todo-project-tree-node todo-project-tree-level-${level}" data-project-path="${escapeHtml(node.path)}">
+    <section class="todo-project-tree-node todo-project-tree-level-${level}" data-project-path="${escapeHtml(node.path)}" data-group-dimension="project" data-drag-group-key="${escapeHtml(node.path)}">
       <header class="todo-project-tree-head">
         <div class="todo-project-tree-title-wrap">
           ${toggleHtml}
           <h3>${escapeHtml(node.name)}</h3>
-          ${summaryHtml}
         </div>
         <span class="todo-group-count">${totalCount} 项</span>
       </header>
@@ -748,6 +1291,12 @@
           grouped.set(key, []);
         }
         grouped.get(key).push(todo);
+      }
+
+      if (dimension === "project" || dimension === "tag") {
+        for (const [key, items] of grouped) {
+          grouped.set(key, sortTodosByDragOrder(items, dimension));
+        }
       }
 
       return grouped;
@@ -799,6 +1348,11 @@
       return `date:${todo.dueDate}`;
     }
 
+    function getTodoGroupCollapseKey(dimension, key) {
+      const safeKey = encodeURIComponent(String(key || ""));
+      return buildProjectPathFromSegments(["分组", dimension, safeKey]);
+    }
+
     function renderTodos() {
       if (!todoGroups) return;
 
@@ -847,16 +1401,8 @@
         if (!todoList.length && !historyList.length && !isTodayGroup) continue;
         const allowTimeOrder = effectiveDimension === "time" && key.startsWith("date:");
         const isDateGroup = effectiveDimension === "time" && key.startsWith("date:");
-        const pendingCount = todoList.filter((todo) => !todo.completed).length;
-        const overdueCount = todoList.filter(
-          (todo) => !todo.completed && isValidDateInput(todo.dueDate) && String(todo.dueDate) < today,
-        ).length;
-        const summaryText = pendingCount
-          ? `剩余 ${pendingCount} 项`
-          : (todoList.length ? "已全部完成" : (isTodayGroup ? "今天暂无待办" : "无待办"));
-        const summaryHint = overdueCount ? ` · ${overdueCount} 逾期` : "";
-        const historySummary = getShowTodoHistoryInMainList() && historyList.length ? ` · 历史 ${historyList.length} 条` : "";
         const groupTitleClass = isDateGroup ? "todo-group-title-date" : "";
+        const groupHeadClass = "todo-group-head is-compact-group";
         const todayBadgeHtml = isTodayGroup ? '<span class="todo-group-today-chip">今天</span>' : "";
         const groupTitle = getTodoGroupLabel(key, effectiveDimension);
         const timeReorderIndexMap = new Map();
@@ -870,7 +1416,17 @@
         }
 
         const todoRows = todoList
-          .map((todo) => renderTodoRowHtml(todo, { allowTimeOrder, timeReorderIndexMap }))
+          .map((todo, index) => {
+            const groupDragMode = allowTimeOrder ? "time" : effectiveDimension === "tag" ? "tag" : "";
+            const groupDragKey = allowTimeOrder ? key.slice(5) : effectiveDimension === "tag" ? key : "";
+            return renderTodoRowHtml(todo, {
+              allowTimeOrder,
+              timeReorderIndexMap,
+              dragMode: groupDragMode,
+              dragGroupKey: groupDragKey,
+              groupOrderIndex: index,
+            });
+          })
           .join("");
         const historyRows = historyList
           .map((item) => renderTodoHistoryRowHtml(item))
@@ -880,17 +1436,34 @@
         const dateGroupValue = isDateGroup ? key.slice(5) : "";
         const dateGroupAttr =
           isValidDateInput(dateGroupValue) ? ` data-todo-date=\"${escapeHtml(dateGroupValue)}\"` : "";
+        const dragGroupKey = isDateGroup ? dateGroupValue : effectiveDimension === "tag" ? key : "";
+        const dragGroupAttr = dragGroupKey
+          ? ` data-group-dimension=\"${escapeHtml(isDateGroup ? "time" : effectiveDimension)}\" data-drag-group-key=\"${escapeHtml(dragGroupKey)}\"`
+          : "";
+        const collapseKey = getTodoGroupCollapseKey(effectiveDimension, key);
+        const canToggle = Boolean(itemRows && collapseKey);
+        const isCollapsed = canToggle && getTodoProjectTreeCollapsedPaths().has(collapseKey);
+        const toggleHtml = canToggle
+          ? `<button
+              class=\"todo-group-toggle${isCollapsed ? " is-collapsed" : ""}\"
+              type=\"button\"
+              data-group-collapse-key=\"${escapeHtml(collapseKey)}\"
+              aria-label=\"${isCollapsed ? "展开分组" : "收起分组"}\"
+              title=\"${isCollapsed ? "展开分组" : "收起分组"}\"
+            ></button>`
+          : '<span class=\"todo-group-toggle-placeholder\" aria-hidden=\"true\"></span>';
+        const rowsHtml = !isCollapsed && itemRows ? `<ul class=\"todo-list\">${itemRows}</ul>` : "";
 
         parts.push(`
-      <section class=\"todo-group\" data-group-key=\"${escapeHtml(key)}\"${dateGroupAttr}>
-        <header class=\"todo-group-head\">
+      <section class=\"todo-group\" data-group-key=\"${escapeHtml(key)}\"${dateGroupAttr}${dragGroupAttr}>
+        <header class=\"${groupHeadClass}\">
           <div class=\"todo-group-title-wrap\">
+            ${toggleHtml}
             <h3 class=\"${groupTitleClass}\">${escapeHtml(groupTitle)}${todayBadgeHtml}</h3>
-            <p class=\"todo-group-summary\">${escapeHtml(summaryText + summaryHint + historySummary)}</p>
           </div>
           <span class=\"todo-group-count\">${totalCount} 项</span>
         </header>
-        <ul class=\"todo-list\">${itemRows}</ul>
+        ${rowsHtml}
       </section>
     `);
       }
@@ -971,41 +1544,13 @@
       for (const key of orderedKeys) {
         const list = (grouped.get(key) || []).sort((a, b) => b.timestamp - a.timestamp);
         if (!list.length) continue;
-        const rows = list
-          .map((item) => {
-            const sourceText = item.source === "todo" ? "待办完成" : "日历记录";
-            const timeText = item.start && item.end ? `${item.start}-${item.end}` : "时间未知";
-            const recordId = item.entryId || item.todoId || "";
-            const dateText = item.date ? formatDate(item.date) : "--";
-            const reminderText = formatTodoReminderLabel(item.reminder, item.repeat, {
-              startTime: item.startTime || item.start,
-            });
-            const notePreviewRaw = String(item.note || "").trim();
-            const notePreview = notePreviewRaw.length > 34 ? `${notePreviewRaw.slice(0, 34)}…` : notePreviewRaw;
-            const tagBadge = item.tags?.[0] ? `<span class=\"todo-badge tag\">#${escapeHtml(item.tags[0])}</span>` : "";
-            return `
-          <li class=\"todo-history-item\" data-source=\"${escapeHtml(item.source)}\" data-id=\"${escapeHtml(recordId)}\">
-            <div class=\"todo-history-item-main\">
-              <p class=\"todo-history-item-title\">${escapeHtml(item.title)}</p>
-              <p class=\"todo-history-item-note\">${escapeHtml(notePreview || "无备注")}</p>
-            </div>
-            <p class=\"todo-history-item-project\">${escapeHtml(item.project || "记录")}</p>
-            <div class=\"todo-history-item-right\">
-              <span class=\"todo-badge due-future\">${escapeHtml(timeText)}</span>
-              <span class=\"todo-badge due-future\">${escapeHtml(dateText)}</span>
-              ${tagBadge}
-              <span class=\"todo-badge synced\">${escapeHtml(sourceText)}</span>
-              <span class=\"todo-history-item-score\">${escapeHtml(reminderText)}</span>
-            </div>
-          </li>
-        `;
-          })
-          .join("");
+        const rows = list.map((item) => renderTodoHistoryRowHtml(item)).join("");
 
         sections.push(`
       <section class=\"todo-group todo-history-group\">
         <header class=\"todo-group-head\">
           <div class=\"todo-group-title-wrap\">
+            <span class=\"todo-group-toggle-placeholder\" aria-hidden=\"true\"></span>
             <h3>${escapeHtml(getHistoryGroupLabel(key, dimension))}</h3>
             <p class=\"todo-group-summary\">历史 ${list.length} 条</p>
           </div>
@@ -1020,10 +1565,10 @@
     }
 
     function handleHistoryClick(event) {
-      const item = event.target.closest(".todo-history-item[data-source][data-id]");
+      const item = event.target.closest(".todo-item-history[data-source][data-id], .todo-history-item[data-source][data-id]");
       if (!item) return;
       const source = String(item.dataset.source || "");
-      const id = String(item.dataset.id || "");
+      const id = String(item.dataset.id || item.dataset.historyId || "");
       if (!source || !id) return;
       openTodoHistoryRecord(source, id);
     }

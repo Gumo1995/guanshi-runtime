@@ -5,50 +5,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>观时 | Satori</title>
-  <link rel="shortcut icon" href="./favicon.ico?v=1.5.11" />
+  <link rel="shortcut icon" href="./favicon.ico?v=1.5.13" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.11" />
-  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.11" />
-  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.11" />
-  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.11" />
-  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.11" color="#234f49" />
+  <link rel="icon" type="image/png" href="./assets/app-icons/satori-icon-1024.png?v=1.5.13" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=1.5.13" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/app-icons/satori.iconset/icon_32x32.png?v=1.5.13" />
+  <link rel="apple-touch-icon" href="./assets/app-icons/satori.iconset/icon_256x256.png?v=1.5.13" />
+  <link rel="mask-icon" href="./assets/logos/guanshi-mark.svg?v=1.5.13" color="#234f49" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 
 <body>
   <main class="desktop-app">
-    <header class="topbar">
-      <div class="topbar-right">
-        <div id="global-search-wrap" class="top-search-wrap">
-          <label class="top-search" aria-label="全局搜索">
-            <span class="top-search-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <circle cx="11" cy="11" r="6.5"></circle>
-                <path d="m16 16 4 4"></path>
-              </svg>
-            </span>
-            <input id="global-search-input" type="search" placeholder="搜索待办 / 记录 / 项目 / 备注" />
-          </label>
-          <div id="global-search-results" class="top-search-results" hidden>
-            <ul id="global-search-results-list" class="top-search-results-list" role="listbox" aria-label="搜索结果"></ul>
-            <p id="global-search-results-empty" class="top-search-results-empty" hidden>未找到匹配结果</p>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <section id="install-guide-banner" class="install-guide-banner" aria-live="polite" hidden>
-      <div class="install-guide-banner-main">
-        <strong>安装为独立应用</strong>
-        <span>用 Chrome 安装后，可从启动台或 Dock 像普通 App 一样打开。</span>
-      </div>
-      <div class="install-guide-banner-actions">
-        <button id="install-guide-banner-install-btn" class="btn-primary" type="button">安装</button>
-        <button id="install-guide-banner-settings-btn" class="btn-secondary" type="button">查看步骤</button>
-        <button id="install-guide-banner-dismiss-btn" class="icon-btn" type="button" aria-label="关闭安装提示">×</button>
-      </div>
-    </section>
-
     <div class="workspace">
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-brand">
@@ -73,83 +41,159 @@
           </div>
         </div>
 
-        <nav class="sidebar-nav" aria-label="主导航">
-          <button id="nav-overview" class="sidebar-nav-item is-active" data-view="overview" type="button">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M12 3a9 9 0 1 0 9 9" />
-                <path d="M12 12V3" />
-                <path d="M12 12h9" />
-              </svg>
-            </span>
-            <span class="nav-label">总览</span>
-          </button>
-          <button id="nav-todo" class="sidebar-nav-item" data-view="todo" type="button">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <rect x="4" y="4" width="16" height="16" rx="3" />
-                <path d="M8 12.5 10.5 15 16 9.5" />
-              </svg>
-            </span>
-            <span class="nav-label">待办</span>
-          </button>
-          <button id="nav-calendar" class="sidebar-nav-item" data-view="calendar" type="button">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
-                <path d="M8 3.5v3" />
-                <path d="M16 3.5v3" />
-                <path d="M3.5 9.5h17" />
-              </svg>
-            </span>
-            <span class="nav-label">日历</span>
-          </button>
-          <button id="nav-review" class="sidebar-nav-item" data-view="review" type="button">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <rect x="4" y="3.5" width="16" height="17" rx="2.5" />
-                <path d="M8 8.5h8" />
-                <path d="M8 12h8" />
-                <path d="M8 15.5h5" />
-              </svg>
-            </span>
-            <span class="nav-label">复盘</span>
-          </button>
-          <button id="nav-settings" class="sidebar-nav-item" data-view="settings" type="button">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M4 7h16" />
-                <path d="M4 12h16" />
-                <path d="M4 17h16" />
-                <circle cx="9" cy="7" r="2" />
-                <circle cx="15" cy="12" r="2" />
-                <circle cx="11" cy="17" r="2" />
-              </svg>
-            </span>
-            <span class="nav-label">设置</span>
-          </button>
-        </nav>
+        <section id="sidebar-ai-panel" class="sidebar-ai-panel" aria-label="观时 AI 助手">
+          <div class="sidebar-ai-panel-body">
+            <div class="sidebar-ai-thread-shell" data-ai-thread-viewport>
+              <div class="sidebar-ai-thread" data-ai-thread aria-live="polite"></div>
+            </div>
 
-        <div id="sidebar-taxonomy-range" class="sidebar-taxonomy-range" role="group" aria-label="项目标签统计范围">
-          <button data-range="all" type="button">全部</button>
-          <button data-range="month" type="button">近一月</button>
-          <button data-range="week" type="button">近一周</button>
-        </div>
+            <p id="sidebar-ai-status" class="sidebar-ai-status" aria-live="polite">AI 工作台准备中。</p>
+          </div>
 
-        <section class="sidebar-section" aria-label="项目列表">
-          <h3>项目</h3>
-          <div id="sidebar-project-list" class="sidebar-taxonomy-list"></div>
-        </section>
-
-        <section class="sidebar-section" aria-label="标签列表">
-          <h3>标签</h3>
-          <div id="sidebar-tag-list" class="sidebar-taxonomy-list"></div>
+          <form id="sidebar-ai-form" class="sidebar-ai-form">
+            <div class="sidebar-ai-composer-shell" data-ai-composer-shell>
+              <textarea id="sidebar-ai-input" rows="3" autocomplete="off" placeholder="请观时规划今天、拆解任务、记录一个时间管理原则..."></textarea>
+              <div class="sidebar-ai-composer-bottom">
+                <button class="sidebar-ai-round-tool" type="button" data-ai-action="parse-task" aria-label="解析为待办">+</button>
+                <div class="sidebar-ai-submit-tools">
+                  <button class="sidebar-ai-context-scope" type="button" data-ai-context-scope-button aria-haspopup="menu" aria-expanded="false" aria-label="时间数据参考：每次" title="时间数据参考">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="8.5" />
+                      <path d="M12 7.5v5l3.2 1.9" />
+                    </svg>
+                    <span data-ai-context-scope-label>每次</span>
+                  </button>
+                  <button class="sidebar-ai-provider-switch" type="button" data-ai-provider-switch aria-label="切换 Provider 或 CLI" title="切换 Provider 或 CLI">
+                    <img class="sidebar-ai-provider-logo" data-ai-provider-switch-logo src="./assets/ai-providers/generic.svg" alt="" aria-hidden="true" />
+                    <svg class="sidebar-ai-provider-chevron" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m7 10 5 5 5-5" />
+                    </svg>
+                  </button>
+                  <button class="sidebar-ai-send" type="submit" aria-label="发送">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 12h13" />
+                      <path d="m13 6 6 6-6 6" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </form>
         </section>
       </aside>
 
       <button id="sidebar-resizer" class="sidebar-resizer" type="button" aria-label="调整侧边栏宽度" title="拖动调整侧边栏"></button>
 
-      <section class="main-stage">
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="topbar-logo brand-logo brand-logo--g" role="img" aria-label="观时">
+            <span class="brand-logo-mark" aria-hidden="true"></span>
+            <span class="brand-logo-text">
+              <span class="brand-logo-main">观时</span>
+            </span>
+          </div>
+          <button
+            id="sidebar-toggle-btn"
+            class="topbar-icon-btn sidebar-toggle-btn"
+            type="button"
+            aria-label="隐藏侧边栏"
+            aria-pressed="false"
+            title="隐藏侧边栏"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="5" width="16" height="14" rx="2.5" />
+              <path d="M9 5v14" />
+              <path d="m15 9-3 3 3 3" />
+            </svg>
+          </button>
+          <nav class="topbar-nav" aria-label="主导航">
+            <button id="nav-overview" class="sidebar-nav-item is-active" data-view="overview" type="button" aria-label="总览" title="总览">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 3a9 9 0 1 0 9 9" />
+                  <path d="M12 12V3" />
+                  <path d="M12 12h9" />
+                </svg>
+              </span>
+              <span class="nav-label">总览</span>
+            </button>
+            <button id="nav-todo" class="sidebar-nav-item" data-view="todo" type="button" aria-label="待办" title="待办">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <rect x="4" y="4" width="16" height="16" rx="3" />
+                  <path d="M8 12.5 10.5 15 16 9.5" />
+                </svg>
+              </span>
+              <span class="nav-label">待办</span>
+            </button>
+            <button id="nav-calendar" class="sidebar-nav-item" data-view="calendar" type="button" aria-label="日历" title="日历">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
+                  <path d="M8 3.5v3" />
+                  <path d="M16 3.5v3" />
+                  <path d="M3.5 9.5h17" />
+                </svg>
+              </span>
+              <span class="nav-label">日历</span>
+            </button>
+            <button id="nav-review" class="sidebar-nav-item" data-view="review" type="button" aria-label="复盘" title="复盘">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <rect x="4" y="3.5" width="16" height="17" rx="2.5" />
+                  <path d="M8 8.5h8" />
+                  <path d="M8 12h8" />
+                  <path d="M8 15.5h5" />
+                </svg>
+              </span>
+              <span class="nav-label">复盘</span>
+            </button>
+            <button id="nav-settings" class="sidebar-nav-item" data-view="settings" type="button" aria-label="设置" title="设置">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16" />
+                  <path d="M4 12h16" />
+                  <path d="M4 17h16" />
+                  <circle cx="9" cy="7" r="2" />
+                  <circle cx="15" cy="12" r="2" />
+                  <circle cx="11" cy="17" r="2" />
+                </svg>
+              </span>
+              <span class="nav-label">设置</span>
+            </button>
+          </nav>
+          <div class="topbar-right">
+            <div id="global-search-wrap" class="top-search-wrap">
+              <label class="top-search" aria-label="全局搜索">
+                <span class="top-search-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="6.5"></circle>
+                    <path d="m16 16 4 4"></path>
+                  </svg>
+                </span>
+                <input id="global-search-input" type="search" placeholder="搜索待办 / 记录 / 项目 / 备注" />
+              </label>
+              <div id="global-search-results" class="top-search-results" hidden>
+                <ul id="global-search-results-list" class="top-search-results-list" role="listbox" aria-label="搜索结果"></ul>
+                <p id="global-search-results-empty" class="top-search-results-empty" hidden>未找到匹配结果</p>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section id="install-guide-banner" class="install-guide-banner" aria-live="polite" hidden>
+          <div class="install-guide-banner-main">
+            <strong>安装为独立应用</strong>
+            <span>用 Chrome 安装后，可从启动台或 Dock 像普通 App 一样打开。</span>
+          </div>
+          <div class="install-guide-banner-actions">
+            <button id="install-guide-banner-install-btn" class="btn-primary" type="button">安装</button>
+            <button id="install-guide-banner-settings-btn" class="btn-secondary" type="button">查看步骤</button>
+            <button id="install-guide-banner-dismiss-btn" class="icon-btn" type="button" aria-label="关闭安装提示">×</button>
+          </div>
+        </section>
+
+        <section class="main-stage">
         <section id="view-overview" class="app-view is-active" data-view="overview">
           <header class="hero panel reveal" style="--delay: 0ms">
             <div class="hero-top">
@@ -159,12 +203,14 @@
                 <p class="hero-text">
                   记录每段时间，校准专注、计划与复盘，让日常安排更有方向。
                 </p>
-                <div class="hero-score" id="quality-index-wrap">
-                  <span>综合质感指数</span>
-                  <strong id="quality-index">0</strong>
-                  <small>/ 100</small>
+                <div class="hero-info-grid">
+                  <div class="hero-score" id="quality-index-wrap">
+                    <span>综合质感指数</span>
+                    <strong id="quality-index">0</strong>
+                    <small>/ 100</small>
+                  </div>
+                  <section id="hero-quote" class="hero-quote" aria-live="polite"></section>
                 </div>
-                <section id="hero-quote" class="hero-quote" aria-live="polite"></section>
               </div>
 
               <section class="entry-hub" aria-label="番茄钟记录">
@@ -225,6 +271,10 @@
               </section>
             </div>
           </header>
+
+          <section class="panel reveal overview-judgment-panel" style="--delay: 90ms">
+            <div id="overview-judgment" class="overview-judgment" aria-live="polite"></div>
+          </section>
 
           <section class="panel reveal summary-panel" style="--delay: 140ms">
             <div class="panel-head">
@@ -288,47 +338,39 @@
         </section>
 
         <section id="view-todo" class="app-view" data-view="todo" hidden>
-          <div class="todo-layout">
+          <div id="todo-layout" class="todo-layout">
             <section class="panel todo-panel">
               <div class="panel-head todo-panel-head">
                 <div class="todo-panel-head-title">
                   <h2>待办事项</h2>
-                  <button
-                    id="todo-history-toggle"
-                    class="todo-history-toggle-btn"
-                    type="button"
-                    aria-pressed="false"
-                    aria-label="显示历史"
-                    title="显示历史"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 5a7 7 0 1 1-6.22 3.8" />
-                      <path d="M12 8v4l2.5 2.5" />
-                      <path d="M4 5v4h4" />
-                    </svg>
-                  </button>
-                  <button
-                    id="todo-recurring-toggle"
-                    class="todo-history-toggle-btn todo-recurring-toggle-btn"
-                    type="button"
-                    aria-pressed="false"
-                    aria-label="筛选周期"
-                    title="筛选周期"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="m15.7 4.6 3.2 3.2-3.2 3.2" />
-                      <path d="M5.1 11V9.8a2 2 0 0 1 2-2h11.8" />
-                      <path d="m8.3 19.4-3.2-3.2 3.2-3.2" />
-                      <path d="M18.9 13v1.2a2 2 0 0 1-2 2H5.1" />
-                    </svg>
-                  </button>
                 </div>
                 <div class="todo-panel-head-actions">
-                  <div id="todo-filter-bar" class="todo-filter-bar" role="tablist" aria-label="待办分类维度">
-                    <button class="is-active" data-dimension="time" type="button">时间</button>
-                    <button data-dimension="project" type="button">项目</button>
-                    <button data-dimension="tag" type="button">标签</button>
-                  </div>
+                  <details id="todo-sort-menu" class="todo-toolbar-menu">
+                    <summary class="todo-toolbar-trigger" aria-label="切换排序方式">
+                      <span id="todo-sort-current">时间</span>
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m7 10 5 5 5-5" />
+                      </svg>
+                    </summary>
+                    <div id="todo-filter-bar" class="todo-toolbar-menu-panel" role="menu" aria-label="排序方式">
+                      <button class="todo-toolbar-menu-item is-active" data-dimension="time" type="button" role="menuitemradio" aria-checked="true">时间</button>
+                      <button class="todo-toolbar-menu-item" data-dimension="project" type="button" role="menuitemradio" aria-checked="false">项目</button>
+                      <button class="todo-toolbar-menu-item" data-dimension="tag" type="button" role="menuitemradio" aria-checked="false">标签</button>
+                    </div>
+                  </details>
+                  <details id="todo-scope-menu" class="todo-toolbar-menu">
+                    <summary class="todo-toolbar-trigger" aria-label="切换筛选方式">
+                      <span id="todo-scope-current">全部</span>
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m7 10 5 5 5-5" />
+                      </svg>
+                    </summary>
+                    <div class="todo-toolbar-menu-panel" role="menu" aria-label="筛选方式">
+                      <button id="todo-scope-all" class="todo-toolbar-menu-item is-active" type="button" role="menuitemradio" aria-checked="true">全部</button>
+                      <button id="todo-history-toggle" class="todo-toolbar-menu-item" type="button" role="menuitemradio" aria-checked="false">历史</button>
+                      <button id="todo-recurring-toggle" class="todo-toolbar-menu-item" type="button" role="menuitemradio" aria-checked="false">周期</button>
+                    </div>
+                  </details>
                   <button id="todo-add-button" class="icon-btn" type="button" aria-label="新增待办" title="新增待办">+</button>
                 </div>
               </div>
@@ -336,14 +378,20 @@
               <div id="todo-groups" class="todo-groups" aria-live="polite"></div>
             </section>
 
+            <button
+              id="todo-detail-resizer"
+              class="todo-detail-resizer"
+              type="button"
+              role="separator"
+              aria-label="调整待办事项和任务详情宽度"
+              aria-orientation="vertical"
+              title="拖动调整待办事项和任务详情宽度"
+            ></button>
+
             <section class="panel todo-detail-panel">
               <div class="todo-detail-head">
                 <div class="todo-detail-head-main">
                   <h2>任务详情</h2>
-                  <div class="todo-detail-meta">
-                    <p id="todo-detail-status" class="todo-status-chip">待同步</p>
-                    <p id="todo-detail-id" class="todo-detail-id">todo_</p>
-                  </div>
                 </div>
                 <div class="todo-detail-head-actions">
                   <button
@@ -367,10 +415,27 @@
                     title="开始番茄"
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 5.5c-4.14 0-7.5 3.36-7.5 7.5s3.36 7.5 7.5 7.5 7.5-3.36 7.5-7.5-3.36-7.5-7.5-7.5z" />
-                      <path d="M12 9v4.2" />
-                      <path d="m12 13.2 2.9 1.7" />
-                      <path d="M9.1 3.7h5.8" />
+                      <path d="M12 8.5c4.1 0 7.1 2.7 7.1 6.1 0 3.7-3 6.5-7.1 6.5s-7.1-2.8-7.1-6.5c0-3.4 3-6.1 7.1-6.1z" />
+                      <path d="M12 8.5 9.3 6.1" />
+                      <path d="m12 8.5 2.7-2.4" />
+                      <path d="M12 8.5c-.2-1.7.3-2.9 1.5-3.9" />
+                      <path d="M12 12.1v3.4" />
+                      <path d="m12 15.5 2.5 1.4" />
+                    </svg>
+                  </button>
+                  <button
+                    id="todo-delete-btn"
+                    class="todo-head-icon-btn todo-delete-btn"
+                    type="button"
+                    aria-label="删除待办"
+                    title="删除待办"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4.5 6.5h15" />
+                      <path d="M9 6.5V4.8c0-.9.7-1.6 1.6-1.6h2.8c.9 0 1.6.7 1.6 1.6v1.7" />
+                      <path d="M7.2 6.5 8 19.2c.1.9.8 1.6 1.7 1.6h4.6c.9 0 1.6-.7 1.7-1.6l.8-12.7" />
+                      <path d="M10.5 10.3v6.3" />
+                      <path d="M13.5 10.3v6.3" />
                     </svg>
                   </button>
                 </div>
@@ -398,7 +463,7 @@
                     </div>
                   </label>
                   <label>
-                    <span>预计时段</span>
+                    <span>开始时间</span>
                     <div class="todo-native-input-wrap is-time">
                       <input id="todo-start-time-input" type="time" />
                       <span class="todo-native-input-icon" data-target-input="todo-start-time-input" aria-hidden="true">
@@ -526,10 +591,13 @@
 
                 <label class="todo-note-full">
                   <span>备注</span>
-                  <textarea id="todo-note-input" rows="4" placeholder="补充你的执行要点。"></textarea>
+                  <textarea id="todo-note-input" rows="1" placeholder="补充你的执行要点。"></textarea>
                 </label>
 
               </form>
+              <div class="todo-detail-foot" aria-label="任务信息">
+                <p id="todo-detail-id" class="todo-detail-id">todo_</p>
+              </div>
             </section>
           </div>
         </section>
@@ -675,6 +743,219 @@
               <p>仅保存在当前设备。</p>
             </div>
             <div class="settings-grid" role="list">
+              <article class="settings-card settings-card-ai" role="listitem" aria-labelledby="settings-ai-title">
+                <header class="settings-card-head">
+                  <div class="settings-card-head-main">
+                    <h3 id="settings-ai-title">AI 接入</h3>
+                    <p>Provider / BYOK 与 Codex、Claude、Hermes 等外部 Agent 接入。</p>
+                  </div>
+                  <div class="settings-card-head-side">
+                    <span id="settings-ai-provider-badge" class="settings-card-badge">未配置</span>
+                    <span id="settings-ai-mcp-badge" class="settings-card-badge">MCP 检测中</span>
+                    <span id="settings-ai-actions-badge" class="settings-card-badge">Action 检测中</span>
+                    <span id="settings-ai-memory-badge" class="settings-card-badge">记忆检测中</span>
+                  </div>
+                </header>
+
+                <div class="settings-ai-layout">
+                  <form id="settings-ai-provider-form" class="settings-ai-provider-form">
+                    <div class="settings-ai-section-head">
+                      <span>Provider</span>
+                      <span id="settings-ai-provider-updated">--</span>
+                    </div>
+
+                    <div class="settings-ai-provider-grid">
+                      <label class="settings-ai-field" for="settings-ai-provider-type">
+                        <span>类型</span>
+                        <select id="settings-ai-provider-type">
+                          <option value="openai-compatible">OpenAI-compatible</option>
+                          <option value="anthropic">Anthropic</option>
+                          <option value="hermes-webui">Hermes WebUI</option>
+                          <option value="ollama">Ollama</option>
+                          <option value="lm-studio">LM Studio</option>
+                          <option value="custom">Custom Gateway</option>
+                        </select>
+                      </label>
+                      <label class="settings-ai-field" for="settings-ai-provider-id">
+                        <span>ID</span>
+                        <input id="settings-ai-provider-id" type="text" maxlength="64" placeholder="openai-compatible" />
+                      </label>
+                      <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-provider-base-url">
+                        <span>Base URL</span>
+                        <input id="settings-ai-provider-base-url" type="url" placeholder="https://api.openai.com/v1" />
+                      </label>
+                      <label class="settings-ai-field" for="settings-ai-provider-model">
+                        <span>模型</span>
+                        <input id="settings-ai-provider-model" type="text" maxlength="160" placeholder="gpt-4.1-mini" />
+                      </label>
+                      <label class="settings-ai-field" for="settings-ai-provider-env">
+                        <span>环境变量 Key</span>
+                        <input id="settings-ai-provider-env" type="text" maxlength="100" placeholder="OPENAI_API_KEY" />
+                      </label>
+                      <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-provider-api-key">
+                        <span>API Key</span>
+                        <input id="settings-ai-provider-api-key" type="password" autocomplete="off" placeholder="留空则保留已保存 Key" />
+                      </label>
+                    </div>
+
+                    <div class="settings-ai-provider-actions">
+                      <label class="settings-ai-enable">
+                        <input id="settings-ai-provider-enabled" type="checkbox" checked />
+                        <span>启用为当前 Provider</span>
+                      </label>
+                      <button id="settings-ai-provider-save-btn" class="btn-primary" type="submit">保存 Provider</button>
+                      <button id="settings-ai-provider-test-btn" class="btn-secondary" type="button">本地校验</button>
+                      <button id="settings-ai-provider-network-test-btn" class="btn-secondary" type="button">网络测试</button>
+                    </div>
+
+                    <dl id="settings-ai-provider-summary" class="settings-kv-list settings-ai-kv" aria-label="AI Provider 状态"></dl>
+                    <p id="settings-ai-provider-status" class="settings-ai-status" aria-live="polite"></p>
+                  </form>
+
+                  <section class="settings-ai-mcp" aria-label="MCP 接入">
+                    <div class="settings-ai-section-head">
+                      <span>MCP</span>
+                      <button id="settings-ai-mcp-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                    </div>
+                    <dl id="settings-ai-mcp-summary" class="settings-kv-list settings-ai-kv" aria-label="MCP 状态"></dl>
+                    <div id="settings-ai-mcp-tools" class="settings-ai-mcp-tools" aria-label="MCP 工具列表"></div>
+                    <div class="settings-ai-mcp-actions">
+                      <button id="settings-ai-mcp-copy-http-btn" class="btn-secondary" type="button">复制 HTTP 配置</button>
+                      <button id="settings-ai-mcp-copy-stdio-btn" class="btn-secondary" type="button">复制 stdio 配置</button>
+                    </div>
+                    <p id="settings-ai-mcp-status" class="settings-ai-status" aria-live="polite"></p>
+                  </section>
+
+                  <section class="settings-ai-actions" aria-labelledby="settings-ai-actions-title">
+                    <div class="settings-ai-section-head">
+                      <span id="settings-ai-actions-title">Action 管理</span>
+                      <button id="settings-ai-actions-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                    </div>
+                    <p id="settings-ai-actions-summary" class="settings-ai-actions-summary">正在读取 Action Registry。</p>
+
+                    <div class="settings-ai-actions-workspace">
+                      <section class="settings-ai-actions-pane" aria-label="Action 列表">
+                        <div class="settings-ai-memory-pane-head">
+                          <span>Action</span>
+                          <small>业务能力 / 流程 / 卡片</small>
+                        </div>
+                        <div id="settings-ai-action-list" class="settings-ai-action-list"></div>
+                      </section>
+
+                      <section class="settings-ai-actions-pane" aria-label="Step 列表">
+                        <div class="settings-ai-memory-pane-head">
+                          <span>Step</span>
+                          <small>内部子动作 / 执行类型</small>
+                        </div>
+                        <div id="settings-ai-step-list" class="settings-ai-step-list"></div>
+                      </section>
+                    </div>
+                    <p id="settings-ai-actions-status" class="settings-ai-status" aria-live="polite"></p>
+                  </section>
+
+                  <section class="settings-ai-memory" aria-labelledby="settings-ai-memory-title">
+                    <div class="settings-ai-section-head">
+                      <span id="settings-ai-memory-title">AI 记忆</span>
+                      <div class="settings-ai-memory-head-actions">
+                        <button id="settings-ai-memory-new-btn" class="btn-secondary" type="button">新增记忆</button>
+                        <button id="settings-ai-memory-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                      </div>
+                    </div>
+                    <p id="settings-ai-memory-summary" class="settings-ai-memory-summary">正在读取本地 AI 记忆。</p>
+
+                    <div class="settings-ai-memory-workspace">
+                      <section class="settings-ai-memory-pane" aria-label="正式记忆">
+                        <div class="settings-ai-memory-pane-head">
+                          <span>正式记忆</span>
+                          <small>启用 / 停用 / 编辑</small>
+                        </div>
+                        <div id="settings-ai-memory-list" class="settings-ai-memory-list"></div>
+                      </section>
+
+                      <section class="settings-ai-memory-pane" aria-label="待确认记忆提案">
+                        <div class="settings-ai-memory-pane-head">
+                          <span>待确认提案</span>
+                          <small>确认后才进入 active memory</small>
+                        </div>
+                        <div id="settings-ai-memory-proposal-list" class="settings-ai-memory-list"></div>
+                      </section>
+                    </div>
+
+                    <form id="settings-ai-memory-editor" class="settings-ai-memory-editor" hidden>
+                      <div class="settings-ai-memory-pane-head">
+                        <span id="settings-ai-memory-editor-title">编辑记忆</span>
+                        <small id="settings-ai-memory-editor-hint">保存后会更新本地记忆。</small>
+                      </div>
+                      <div class="settings-ai-memory-editor-grid">
+                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-title-input">
+                          <span>标题</span>
+                          <input id="settings-ai-memory-title-input" type="text" maxlength="160" placeholder="例如：上午深度工作偏好" />
+                        </label>
+                        <label class="settings-ai-field" for="settings-ai-memory-type-select">
+                          <span>类型</span>
+                          <select id="settings-ai-memory-type-select">
+                            <option value="principle">原则</option>
+                            <option value="boundary">边界</option>
+                            <option value="preference">偏好</option>
+                            <option value="habit">习惯</option>
+                            <option value="rule">规则</option>
+                            <option value="profile">画像</option>
+                            <option value="playbook">经验方法</option>
+                            <option value="capability_request">能力需求</option>
+                            <option value="review">复盘观察</option>
+                          </select>
+                        </label>
+                        <label class="settings-ai-field" for="settings-ai-memory-strength-select">
+                          <span>强度</span>
+                          <select id="settings-ai-memory-strength-select">
+                            <option value="soft">soft</option>
+                            <option value="hard">hard</option>
+                            <option value="observed">observed</option>
+                          </select>
+                        </label>
+                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-applies-input">
+                          <span>适用场景</span>
+                          <input id="settings-ai-memory-applies-input" type="text" placeholder="plan_today, plan_week, reflow_unfinished, schedule_draft" />
+                        </label>
+                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-body-input">
+                          <span>内容</span>
+                          <textarea id="settings-ai-memory-body-input" rows="4" maxlength="4000" placeholder="写下这条记忆的正文。"></textarea>
+                        </label>
+                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-rule-input">
+                          <span>结构化规则 JSON</span>
+                          <textarea id="settings-ai-memory-rule-input" rows="3" placeholder='{"kind":"no_work_after","time":"21:30"}'></textarea>
+                        </label>
+                      </div>
+                      <div class="settings-ai-memory-editor-actions">
+                        <label class="settings-ai-enable">
+                          <input id="settings-ai-memory-engine-readable" type="checkbox" checked />
+                          <span>允许进入 AI 上下文 / 排程投影</span>
+                        </label>
+                        <button id="settings-ai-memory-save-btn" class="btn-primary" type="submit">保存</button>
+                        <button id="settings-ai-memory-cancel-btn" class="btn-secondary" type="button">取消</button>
+                      </div>
+                    </form>
+
+                    <div class="settings-ai-memory-preview">
+                      <label class="settings-ai-field" for="settings-ai-memory-preview-action">
+                        <span>调用预览</span>
+                        <select id="settings-ai-memory-preview-action">
+                          <option value="assistant">assistant</option>
+                          <option value="plan_today">plan_today</option>
+                          <option value="plan_week">plan_week</option>
+                          <option value="breakdown_task">breakdown_task</option>
+                          <option value="reflow_unfinished">reflow_unfinished</option>
+                          <option value="review_day">review_day</option>
+                        </select>
+                      </label>
+                      <button id="settings-ai-memory-preview-btn" class="btn-secondary" type="button">查看注入内容</button>
+                      <pre id="settings-ai-memory-preview-body" class="settings-ai-memory-preview-body" hidden></pre>
+                    </div>
+                    <p id="settings-ai-memory-status" class="settings-ai-status" aria-live="polite"></p>
+                  </section>
+                </div>
+              </article>
+
               <article class="settings-card settings-card-sync" role="listitem">
                 <header class="settings-card-head">
                   <div class="settings-card-head-main">
@@ -883,7 +1164,8 @@
             </div>
           </section>
         </section>
-      </section>
+        </section>
+      </div>
     </div>
   </main>
 
@@ -1007,6 +1289,7 @@
   <script src="app-core-utils.js"></script>
   <script src="app-overview.js"></script>
   <script src="app-layout-shell.js"></script>
+  <script src="app-ai-sidebar.js"></script>
   <script src="app-todo-model.js"></script>
   <script src="app-todo-sync-bridge.js"></script>
   <script src="app-sync.js"></script>
@@ -1026,6 +1309,7 @@
   <script src="app-search.js"></script>
   <script src="app-score-wheel.js"></script>
   <script src="app-settings.js"></script>
+  <script src="app-ai-settings.js"></script>
   <script src="app-install-guide.js"></script>
   <script src="app-internal-update.js"></script>
   <script src="app-pomodoro-todo-link.js"></script>

@@ -38,8 +38,10 @@ const {
   CALENDAR_NOW_LINE_REFRESH_MS, GLOBAL_SEARCH_RESULT_LIMIT, GLOBAL_SEARCH_TARGET_HIGHLIGHT_MS,
   REVIEW_VISUAL_LOOKBACK_DAYS, AUTO_BIDIRECTIONAL_SYNC_ENABLED, AUTO_BIDIRECTIONAL_SYNC_DEBOUNCE_MS,
   AUTO_BIDIRECTIONAL_SYNC_PULL_INTERVAL_MS, AUTO_BIDIRECTIONAL_SYNC_START_DELAY_MS, SIDEBAR_WIDTH_STORAGE_KEY,
-  SIDEBAR_TAXONOMY_RANGE_STORAGE_KEY, SIDEBAR_PROJECT_COLLAPSE_STORAGE_KEY, TODO_PROJECT_TREE_COLLAPSE_STORAGE_KEY,
-  SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, UNDO_HISTORY_LIMIT, UNDO_MERGE_WINDOW_MS,
+  SIDEBAR_COLLAPSED_STORAGE_KEY, TODO_DETAIL_WIDTH_STORAGE_KEY, SIDEBAR_TAXONOMY_RANGE_STORAGE_KEY,
+  SIDEBAR_PROJECT_COLLAPSE_STORAGE_KEY, TODO_PROJECT_TREE_COLLAPSE_STORAGE_KEY,
+  SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, TODO_DETAIL_MIN_WIDTH, TODO_DETAIL_MAX_WIDTH, TODO_LIST_MIN_WIDTH,
+  UNDO_HISTORY_LIMIT, UNDO_MERGE_WINDOW_MS,
 } = appConfig;
 
 const coreUtils = (typeof window !== "undefined" && window.TimeQualityCoreUtils) || {};
@@ -273,6 +275,15 @@ if (typeof createSettingsModule !== "function") {
   );
 }
 
+const aiSettingsModuleSource = (typeof window !== "undefined" && window.TimeQualityAiSettingsModule) || {};
+const { createAiSettingsModule } = aiSettingsModuleSource;
+
+if (typeof createAiSettingsModule !== "function") {
+  throw new Error(
+    "TimeQualityAiSettingsModule is missing createAiSettingsModule. Ensure app-ai-settings.js is loaded before app.js.",
+  );
+}
+
 const installGuideModuleSource = (typeof window !== "undefined" && window.TimeQualityInstallGuideModule) || {};
 const { createInstallGuideModule } = installGuideModuleSource;
 
@@ -364,6 +375,15 @@ if (typeof createLayoutShellModule !== "function") {
   );
 }
 
+const aiSidebarModuleSource = (typeof window !== "undefined" && window.TimeQualityAiSidebarModule) || {};
+const { createAiSidebarModule } = aiSidebarModuleSource;
+
+if (typeof createAiSidebarModule !== "function") {
+  throw new Error(
+    "TimeQualityAiSidebarModule is missing createAiSidebarModule. Ensure app-ai-sidebar.js is loaded before app.js.",
+  );
+}
+
 const renderCoordinatorModuleSource =
   (typeof window !== "undefined" && window.TimeQualityRenderCoordinatorModule) || {};
 const { createRenderCoordinatorModule } = renderCoordinatorModuleSource;
@@ -382,22 +402,26 @@ const {
   calendarSyncStatus, calendarEventModal, calendarEventTitle, calendarEventForm, calendarEventEditCategory,
   calendarEventEditDate, calendarEventEditStart, calendarEventEditEnd, calendarEventEditQuality,
   calendarEventEditHappiness, calendarEventEditNote, scoreWheelPopover, scoreWheelTrack, barsWrap,
-  scatterWrap, insight, heroQuote, firstScreenPanels, metricHours, metricQuality, metricHappiness,
+  scatterWrap, insight, heroQuote, overviewJudgment, firstScreenPanels, metricHours, metricQuality, metricHappiness,
   metricGolden, qualityIndex, pomodoroMinutesInput, pomodoroCategory, pomodoroDial, pomodoroDisplay,
   pomodoroRange, pomodoroMinusFiveBtn, pomodoroPlusFiveBtn, pomodoroStartBtn, pomodoroPauseBtn,
   pomodoroResetBtn, pomodoroScoreModal, pomodoroScoreTitle, pomodoroScoreDescription,
   pomodoroQualityScoreSlider, pomodoroHappinessScoreSlider, pomodoroScoreConfirmBtn,
   pomodoroScoreIncompleteBtn, pomodoroScoreCancelBtn, globalSearchWrap, globalSearchInput,
-  globalSearchResultsPanel, globalSearchResultsList, globalSearchResultsEmpty, topSyncRefreshBtn, topSyncHub,
+  globalSearchResultsPanel, globalSearchResultsList, globalSearchResultsEmpty, sidebarToggleBtn, topSyncRefreshBtn, topSyncHub,
   sidebar, sidebarResizer, sidebarProjectList, sidebarTagList, sidebarTaxonomyRangeControl,
-  todoNativeInputIcons, sidebarNavItems, appViews, todoFilterBar, todoGroups, todoHistoryGroups,
+  sidebarAiDockButton, sidebarAiPanel, sidebarAiCloseBtn, sidebarAiForm, sidebarAiInput, sidebarAiStatus,
+  sidebarAiActionButtons,
+  todoNativeInputIcons, sidebarNavItems, appViews, todoSortMenu, todoSortCurrent, todoFilterBar, todoScopeMenu,
+  todoScopeCurrent, todoScopeAllBtn, todoLayout, todoDetailResizer, todoGroups, todoHistoryGroups,
   todoHistoryToggleBtn, todoRecurringToggleBtn, todoAddButton, todoDetailForm, todoDetailPanel,
-  todoDetailStatus, todoDetailId, todoTitleInput, todoDueDateInput, todoProjectSuggestWrap,
+  todoDetailId, todoTitleInput, todoDueDateInput, todoProjectSuggestWrap,
   todoProjectInput, todoProjectSuggestionMenu, todoCategorySuggestWrap, todoCategoryTrigger,
   todoCategoryTriggerLabel, todoCategorySuggestionMenu, todoCategoryInput, todoRepeatSuggestWrap,
   todoRepeatTrigger, todoRepeatTriggerLabel, todoRepeatSuggestionMenu, todoTagSuggestWrap, todoTagsInput,
   todoTagSuggestionMenu, todoNoteInput, todoQualityInput, todoHappinessInput, todoStartTimeInput,
   todoEndTimeInput, todoEstimateInput, todoReminderInput, todoRepeatInput, todoPlanLockBtn, todoFocusBtn,
+  todoDeleteBtn,
   todoSyncMessage, reviewSummary, reviewList, reviewDebugSummary, reviewDebugTbody, reviewLegacyToggleBtn,
   reviewLegacySections, reviewVisualSummary, reviewVisualKpis, reviewChartTrend, reviewChartCategory,
   reviewChartTimeband, reviewChartMatrix, settingsCategoryList, settingsCategoryAddInput, settingsCategoryAddBtn,
@@ -523,6 +547,12 @@ const settingsModule = createSettingsModule({
   scheduleLocalDataBackup: (reason) => localDataBackupModule.scheduleBackup(reason),
   backupLocalDataNow: (reason) => localDataBackupModule.backupNow(reason),
 });
+const aiSettingsModule = createAiSettingsModule({
+  documentRef: document,
+  windowRef: window,
+  locationRef: window.location,
+  navigatorRef: navigator,
+});
 const internalUpdateModule = createInternalUpdateModule({
   INTERNAL_UPDATE_STATUS_URL,
   INTERNAL_UPDATE_CHECK_URL,
@@ -574,6 +604,7 @@ const overviewModule = createOverviewModule({
   metricHappiness,
   metricGolden,
   qualityIndex,
+  overviewJudgment,
   insight,
   barsWrap,
   scatterWrap,
@@ -590,10 +621,55 @@ const layoutShellModule = createLayoutShellModule({
   firstScreenPanels,
   sidebar,
   sidebarResizer,
+  sidebarToggleBtn,
+  todoLayout,
+  todoDetailResizer,
   HARD_SNAP_GUTTER,
   loadSidebarWidth,
   saveSidebarWidth,
   clampSidebarWidth,
+  loadSidebarCollapsed,
+  saveSidebarCollapsed,
+  loadTodoDetailWidth,
+  saveTodoDetailWidth,
+  clampTodoDetailWidth,
+  TODO_DETAIL_MIN_WIDTH,
+  TODO_DETAIL_MAX_WIDTH,
+  TODO_LIST_MIN_WIDTH,
+});
+const aiSidebarModule = createAiSidebarModule({
+  documentRef: document,
+  windowRef: window,
+  sidebar,
+  sidebarAiDockButton,
+  sidebarAiPanel,
+  sidebarAiCloseBtn,
+  sidebarAiForm,
+  sidebarAiInput,
+  sidebarAiStatus,
+  sidebarAiActionButtons,
+  getTodos: () => todos,
+  setTodos: (value) => {
+    todos = Array.isArray(value) ? value : [];
+  },
+  getEntries: () => entries,
+  getSelectedTodo,
+  setSelectedTodoId: (todoId) => {
+    selectedTodoId = todoId ? String(todoId) : null;
+  },
+  setAiHighlightedTodoIds: (todoIds) => {
+    aiHighlightedTodoIds = new Set(Array.isArray(todoIds) ? todoIds.map((id) => String(id)).filter(Boolean) : []);
+  },
+  getCategories: () => categories,
+  getTodayDateInputValue,
+  createTodoDraft,
+  normalizeTodo,
+  getNextTodoOrderForDate,
+  markTodoPlanningDirty,
+  normalizeTodoOrderByClockForDate,
+  saveTodos,
+  setActiveView,
+  render,
 });
 const todoReminderModule = createTodoReminderModule({
   TODO_PLAN_DAY_FIRST_START_MINUTES,
@@ -741,7 +817,6 @@ const todoDetailModule = createTodoDetailModule({
   todoNativeInputIcons,
   todoDetailForm,
   todoDetailPanel,
-  todoDetailStatus,
   todoDetailId,
   todoTitleInput,
   todoDueDateInput,
@@ -770,6 +845,7 @@ const todoDetailModule = createTodoDetailModule({
   todoRepeatInput,
   todoPlanLockBtn,
   todoFocusBtn,
+  todoDeleteBtn,
   scoreWheelPopover,
   escapeHtml,
   normalizeProjectName,
@@ -791,6 +867,7 @@ const todoDetailModule = createTodoDetailModule({
   getActiveView: () => activeView,
   submitTodoDetailFromForm,
   handleTodoFocusStart,
+  handleTodoDelete,
   getCategories: () => categories,
   getProjectLibrary: () => projectLibrary,
   getTagLibrary: () => tagLibrary,
@@ -885,6 +962,8 @@ const dataStoreModule = createDataStoreModule({
   TODO_STORAGE_KEY,
   TODO_REMINDER_DISABLE_QUEUE_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
+  SIDEBAR_COLLAPSED_STORAGE_KEY,
+  TODO_DETAIL_WIDTH_STORAGE_KEY,
   EXTERNAL_CALENDAR_IGNORED_KEY,
   CACHE_RESET_ONCE_KEY,
   QUOTE_LIBRARY_KEY,
@@ -893,6 +972,8 @@ const dataStoreModule = createDataStoreModule({
   CALENDAR_SAMPLE_16_SEEDED_KEY,
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  TODO_DETAIL_MIN_WIDTH,
+  TODO_DETAIL_MAX_WIDTH,
   TODO_PROJECT_LEVEL_SEPARATOR,
   localStorageRef: localStorage,
   normalizeTodo,
@@ -920,6 +1001,7 @@ let currentTodoDimension = "time";
 let showTodoHistoryInMainList = false;
 let showRecurringReminderOnlyInMainList = false;
 let selectedTodoId = todos[0]?.id ?? null;
+let aiHighlightedTodoIds = new Set();
 let reviewLegacyVisible = false;
 
 let calendarWeekStart = getStartOfWeek(new Date());
@@ -995,11 +1077,20 @@ const todoListModule = createTodoListModule({
   TODO_PROJECT_MAX_LEVEL,
   TODO_PLAN_NEW_TODO_DURATION_MINUTES,
   TODO_PROJECT_LEVEL_SEPARATOR,
+  todoSortMenu,
+  todoSortCurrent,
   todoFilterBar,
+  todoScopeMenu,
+  todoScopeCurrent,
+  todoScopeAllBtn,
   todoGroups,
   todoHistoryGroups,
   todoHistoryToggleBtn,
   todoRecurringToggleBtn,
+  getTodos: () => todos,
+  saveTodos,
+  normalizeTodoTags,
+  markTodoPlanningDirty,
   escapeHtml,
   formatDate,
   getTodayDateInputValue,
@@ -1020,6 +1111,7 @@ const todoListModule = createTodoListModule({
   getGlobalSearchTerm,
   renderTodoDetail,
   getSelectedTodoId: () => selectedTodoId,
+  isTodoAiHighlighted: (todoId) => aiHighlightedTodoIds.has(String(todoId || "")),
   setSelectedTodoId: (todoId) => {
     selectedTodoId = String(todoId || "");
   },
@@ -1465,15 +1557,17 @@ const renderCoordinatorModule = createRenderCoordinatorModule({
   isAnalyzableEntry,
   syncProjectTagLibraries,
   renderHeroQuote: () => settingsModule.renderHeroQuote(),
-  renderOverview: (analyzable, categoryList) => overviewModule.render(analyzable, categoryList),
+  renderOverview: (analyzable, categoryList) => overviewModule.render(analyzable, categoryList, { entries, todos }),
   renderCalendar,
   renderTodos,
   renderReview,
   renderCategoryManager: () => settingsModule.renderCategoryManager(),
   renderSyncSettingsControls: () => syncSettingsModule.renderControls(),
   renderQuoteManager: () => settingsModule.renderQuoteManager(),
+  renderAiSettings: () => aiSettingsModule.render(),
   syncSearchAfterRender: () => searchModule.syncAfterRender(),
   scheduleFirstScreenPanelFit: () => layoutShellModule.scheduleFirstScreenPanelFit(),
+  syncTodoLayout: () => layoutShellModule.syncTodoLayout(),
   closeScoreWheel: () => scoreWheelModule.close(),
   setCalendarNeedsViewportReset: (value) => {
     calendarNeedsViewportReset = Boolean(value);
@@ -1482,6 +1576,7 @@ const renderCoordinatorModule = createRenderCoordinatorModule({
   getCurrentMotivationQuotes: () => settingsModule.getCurrentMotivationQuotes(),
   setQuoteStatus: (message, tone) => settingsModule.setQuoteStatus(message, tone),
   ensureOptionsLoadedForSettingsView: () => syncSettingsModule.ensureOptionsLoadedForSettingsView(),
+  ensureAiSettingsLoadedForSettingsView: () => aiSettingsModule.ensureLoadedForSettingsView(),
   renderTopTodoSyncHub,
   getSelectedTodo,
 });
@@ -1491,6 +1586,7 @@ void localDataBackupModule.restoreLatestIfNeeded();
 createStartupModule([
   () => settingsModule.initCategoryConfiguration(), () => settingsModule.initRuntimePortConfiguration(),
   () => localDataBackupModule.initRecoveryControls(),
+  () => aiSettingsModule.init(),
   () => pomodoroModule.init(), initCalendar, initMacCalendarSync,
   initTodo, initAutoBidirectionalSync, initLayoutState, () => installGuideModule.init(),
   () => internalUpdateModule.init(), bindEvents, render,
@@ -1581,6 +1677,7 @@ function bindEvents() {
     reviewRangeSwitch.addEventListener("click", handleRangeSwitchClick);
   }
   sidebarTaxonomyModule.bindEvents();
+  aiSidebarModule.bindEvents();
 
   for (const nav of sidebarNavItems) {
     nav.addEventListener("click", () => {
@@ -1613,6 +1710,7 @@ function bindEvents() {
   }
 
   settingsModule.bindEvents();
+  aiSettingsModule.bindEvents();
   installGuideModule.bindEvents();
   internalUpdateModule.bindEvents();
   syncSettingsModule.bindEvents();
@@ -2799,6 +2897,26 @@ function saveSidebarWidth(...args) {
 
 function clampSidebarWidth(...args) {
   return dataStoreModule.clampSidebarWidth(...args);
+}
+
+function loadSidebarCollapsed(...args) {
+  return dataStoreModule.loadSidebarCollapsed(...args);
+}
+
+function saveSidebarCollapsed(...args) {
+  return dataStoreModule.saveSidebarCollapsed(...args);
+}
+
+function loadTodoDetailWidth(...args) {
+  return dataStoreModule.loadTodoDetailWidth(...args);
+}
+
+function saveTodoDetailWidth(...args) {
+  return dataStoreModule.saveTodoDetailWidth(...args);
+}
+
+function clampTodoDetailWidth(...args) {
+  return dataStoreModule.clampTodoDetailWidth(...args);
 }
 
 function addMinutesToClock(baseClock, minutesToAdd) {

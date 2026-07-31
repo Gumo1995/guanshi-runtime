@@ -44,6 +44,7 @@
     const getActiveView = requireFunction(deps, "getActiveView");
     const submitForm = requireFunction(deps, "submitTodoDetailFromForm");
     const handleTodoFocusStart = requireFunction(deps, "handleTodoFocusStart");
+    const handleTodoDelete = requireFunction(deps, "handleTodoDelete");
     const getCategories = typeof deps.getCategories === "function" ? deps.getCategories : () => [];
     const getProjectLibrary = typeof deps.getProjectLibrary === "function" ? deps.getProjectLibrary : () => [];
     const getTagLibrary = typeof deps.getTagLibrary === "function" ? deps.getTagLibrary : () => [];
@@ -51,7 +52,6 @@
     const todoNativeInputIcons = Array.isArray(deps.todoNativeInputIcons) ? deps.todoNativeInputIcons : [];
     const todoDetailForm = deps.todoDetailForm || null;
     const todoDetailPanel = deps.todoDetailPanel || null;
-    const todoDetailStatus = deps.todoDetailStatus || null;
     const todoDetailId = deps.todoDetailId || null;
     const todoTitleInput = deps.todoTitleInput || null;
     const todoDueDateInput = deps.todoDueDateInput || null;
@@ -80,6 +80,7 @@
     const todoRepeatInput = deps.todoRepeatInput || null;
     const todoPlanLockBtn = deps.todoPlanLockBtn || null;
     const todoFocusBtn = deps.todoFocusBtn || null;
+    const todoDeleteBtn = deps.todoDeleteBtn || null;
     const scoreWheelPopover = deps.scoreWheelPopover || null;
 
     let eventsBound = false;
@@ -330,10 +331,12 @@
       skipRender = false,
     } = {}) {
       if (!todoDetailDirty) return true;
+      const selected = getSelectedTodo();
       return submitForm({
         showValidationAlert,
         focusInvalidField,
         skipRender,
+        lenientRequired: !selected,
       });
     }
 
@@ -344,8 +347,7 @@
       if (todoDetailPanel && todoDetailPanel.contains(target)) return;
       if (scoreWheelPopover && scoreWheelPopover.contains(target)) return;
       const selected = getSelectedTodo();
-      if (!selected) return;
-      const hasPendingChanges = todoDetailDirty || hasPendingChangesFor(selected);
+      const hasPendingChanges = selected ? (todoDetailDirty || hasPendingChangesFor(selected)) : todoDetailDirty;
       if (!hasPendingChanges) return;
 
       const committed = submitForm({
@@ -364,10 +366,13 @@
 
     function handleSubmit(event) {
       event.preventDefault();
+      const selected = getSelectedTodo();
+      if (!selected && !todoDetailDirty) return;
       submitForm({
         showValidationAlert: true,
         focusInvalidField: true,
         skipRender: false,
+        lenientRequired: !selected,
       });
     }
 
@@ -389,9 +394,9 @@
         hideTodoCategorySuggestionMenu();
         hideTodoRepeatSuggestionMenu();
         if (todoDetailId) todoDetailId.textContent = "todo_";
-        if (todoDetailStatus) todoDetailStatus.textContent = "待办";
         if (todoFocusBtn) todoFocusBtn.disabled = true;
         if (todoPlanLockBtn) todoPlanLockBtn.disabled = true;
+        if (todoDeleteBtn) todoDeleteBtn.disabled = true;
         setTodoPlanLockControlEnabled(false);
         renderTopTodoSyncHub(null);
         return;
@@ -407,24 +412,14 @@
       if (todoDetailId) {
         todoDetailId.textContent = String(selected.id);
       }
-      if (todoDetailStatus) {
-        if (selected.completed) {
-          todoDetailStatus.textContent = "已完成";
-        } else if (selected.syncState === "conflict") {
-          todoDetailStatus.textContent = "同步冲突";
-        } else if (selected.syncState === "error") {
-          todoDetailStatus.textContent = "同步失败";
-        } else if (selected.calendarSynced) {
-          todoDetailStatus.textContent = "已同步";
-        } else {
-          todoDetailStatus.textContent = "待同步";
-        }
-      }
       if (todoFocusBtn) {
         todoFocusBtn.disabled = Boolean(selected.completed);
       }
       if (todoPlanLockBtn) {
         todoPlanLockBtn.disabled = Boolean(selected.completed);
+      }
+      if (todoDeleteBtn) {
+        todoDeleteBtn.disabled = false;
       }
 
       if (todoTitleInput) todoTitleInput.value = selected.title || "";
@@ -1085,10 +1080,13 @@
       if (!(isHtmlInput(target) || isHtmlSelect(target))) return;
 
       event.preventDefault();
+      const selected = getSelectedTodo();
+      if (!selected && !todoDetailDirty) return;
       submitForm({
         showValidationAlert: true,
         focusInvalidField: true,
         skipRender: false,
+        lenientRequired: !selected,
       });
     }
 
@@ -1218,6 +1216,11 @@
       }
       if (todoFocusBtn) {
         todoFocusBtn.addEventListener("click", handleTodoFocusStart);
+      }
+      if (todoDeleteBtn) {
+        todoDeleteBtn.addEventListener("click", () => {
+          handleTodoDelete();
+        });
       }
 
       if (documentRef) {
