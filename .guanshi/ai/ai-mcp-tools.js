@@ -338,6 +338,17 @@ function normalizeText(value, maxLength = 4000) {
   return String(value || "").trim().slice(0, maxLength);
 }
 
+function getDefaultMemoryScope(type, rule = {}) {
+  const memoryType = normalizeText(type, 40);
+  const kind = normalizeText(rule?.kind, 80);
+  if (kind === "no_work_after") return ["assistant", "parse_task", "plan_today", "plan_week", "reflow_unfinished", "schedule_draft"];
+  if (["task_duration_estimate", "task_duration_policy", "task_estimation", "breakdown_time_allocation"].includes(kind)) {
+    return ["assistant", "parse_task", "breakdown_task"];
+  }
+  if (memoryType === "playbook" || kind === "workflow_playbook") return ["assistant", "breakdown_task", "review_day"];
+  return ["plan_today", "plan_week", "reflow_unfinished", "schedule_draft"];
+}
+
 function clampInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isInteger(parsed)) return fallback;
@@ -993,7 +1004,7 @@ function createMcpToolRuntime(options = {}) {
     const localData = readLocalData(dataDir);
     const todos = filterTodos(localData.todos, { dateFrom: date, dateTo }).map(todoSummaryToSchedulerTodo);
     const busyBlocks = getSchedulerBusyBlocks({ dateFrom: date, dateTo });
-    const projections = args.includeMemory === false ? [] : memoryStore.getEngineProjections("schedule_draft");
+    const projections = args.includeMemory === false ? [] : memoryStore.getEngineProjections({ target: "scheduler", action: "schedule_draft" });
     const hardConstraints = projections.filter((item) => item.strength === "hard");
     const softPreferences = projections.filter((item) => item.strength !== "hard");
     return {
@@ -1110,7 +1121,7 @@ function createMcpToolRuntime(options = {}) {
         },
         todos: todos.length ? todos : proposedTodos,
         busyBlocks: Array.isArray(args.busyBlocks) ? args.busyBlocks : getSchedulerBusyBlocks({ dateFrom: date, dateTo: end }),
-        memoryProjections: Array.isArray(args.memoryProjections) ? args.memoryProjections : memoryStore.getEngineProjections(action),
+        memoryProjections: Array.isArray(args.memoryProjections) ? args.memoryProjections : memoryStore.getEngineProjections({ target: "scheduler", action }),
         progressSummary: normalizeText(args.reason, 1000) || null,
         options: {
           workingWindows: Array.isArray(args.workingWindows) ? args.workingWindows : [],
@@ -1162,6 +1173,7 @@ function createMcpToolRuntime(options = {}) {
     }
     const actionReview = reviewMcpToolDefinition(getToolDefinition("guanshi.propose_memory_entry"), args);
     const createResult = () => {
+      const rule = args.rule && typeof args.rule === "object" && !Array.isArray(args.rule) ? args.rule : null;
       const proposal = memoryStore.createProposal({
         schema: "guanshi-ai-memory-proposal-v1",
         proposalId: `proposal_mcp_${makeSafeId(clientRequestId)}`,
@@ -1170,9 +1182,19 @@ function createMcpToolRuntime(options = {}) {
         title,
         body,
         strength: normalizeText(args.strength || (type === "boundary" || type === "rule" ? "hard" : "soft"), 40),
-        appliesTo: Array.isArray(args.scope) && args.scope.length ? args.scope : ["plan_today", "plan_week", "reflow_unfinished", "schedule_draft"],
-        engineReadable: args.engineReadable !== false,
-        rule: args.rule && typeof args.rule === "object" && !Array.isArray(args.rule) ? args.rule : null,
+        appliesTo: Array.isArray(args.scope) && args.scope.length ? args.scope : getDefaultMemoryScope(type, rule),
+        modelReadable: args.modelReadable !== false,
+        engineReadable: typeof args.engineReadable === "boolean"
+          ? args.engineReadable
+          : Boolean(rule && ["boundary", "rule", "habit"].includes(type)),
+        subjectKey: normalizeText(args.subjectKey, 160),
+        matchMode: normalizeText(args.matchMode, 40),
+        match: args.match && typeof args.match === "object" && !Array.isArray(args.match) ? args.match : {},
+        rule,
+        validFrom: normalizeText(args.validFrom, 80),
+        validUntil: normalizeText(args.validUntil, 80),
+        reviewAfter: normalizeText(args.reviewAfter, 80),
+        confidence: args.confidence,
         evidence: {
           source: "mcp_agent",
           clientRequestId,

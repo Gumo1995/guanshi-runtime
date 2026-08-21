@@ -31,7 +31,10 @@
 
     const CORE_DATA_KEYS = new Set([STORAGE_KEY, TODO_STORAGE_KEY, CATEGORY_STORAGE_KEY]);
     const BACKUP_DEBOUNCE_MS = 60 * 1000;
+    const RESTORE_CONFIRM_TIMEOUT_MS = 15 * 1000;
     let backupTimer = null;
+    let restoreConfirmTimer = null;
+    let pendingRestoreSnapshotId = "";
     let restoreCheckComplete = false;
     let recoveryEventsBound = false;
     let recoveryBusy = false;
@@ -206,10 +209,36 @@
       if (settingsDataSnapshotSelect) settingsDataSnapshotSelect.disabled = recoveryBusy || snapshots.length === 0;
       if (settingsDataSnapshotRefreshBtn) settingsDataSnapshotRefreshBtn.disabled = recoveryBusy || !fetchFn;
       if (settingsDataSnapshotPreviewBtn) settingsDataSnapshotPreviewBtn.disabled = !available;
-      if (settingsDataSnapshotRestoreBtn) settingsDataSnapshotRestoreBtn.disabled = !available;
+      if (settingsDataSnapshotRestoreBtn) {
+        settingsDataSnapshotRestoreBtn.disabled = !available;
+        settingsDataSnapshotRestoreBtn.textContent =
+          available && pendingRestoreSnapshotId === selected.id ? "确认恢复" : "恢复此快照";
+      }
       if (settingsDataSnapshotDeleteBtn) {
         settingsDataSnapshotDeleteBtn.disabled = !available || Boolean(selected?.isLatest);
       }
+    }
+
+    function clearRestoreConfirmation() {
+      if (restoreConfirmTimer) clearTimeoutFn(restoreConfirmTimer);
+      restoreConfirmTimer = null;
+      pendingRestoreSnapshotId = "";
+    }
+
+    function requestRestoreConfirmation(snapshot) {
+      clearRestoreConfirmation();
+      pendingRestoreSnapshotId = snapshot.id;
+      restoreConfirmTimer = setTimeoutFn(() => {
+        if (pendingRestoreSnapshotId !== snapshot.id || recoveryBusy) return;
+        clearRestoreConfirmation();
+        syncRecoveryButtons();
+        setRecoveryStatus("恢复确认已失效，未修改当前数据。", "normal");
+      }, RESTORE_CONFIRM_TIMEOUT_MS);
+      setRecoveryStatus(
+        `准备恢复：${formatSnapshotPreview(snapshot)} 请在 15 秒内再次点击“确认恢复”。`,
+        "warning",
+      );
+      syncRecoveryButtons();
     }
 
     function renderSnapshotOptions(selectedId = "") {
@@ -253,6 +282,7 @@
 
     async function refreshSnapshotList({ silent = false } = {}) {
       if (!fetchFn) return;
+      clearRestoreConfirmation();
       recoveryBusy = true;
       if (!silent) setRecoveryStatus("正在读取本地快照。", "normal");
       syncRecoveryButtons();
@@ -283,13 +313,11 @@
     async function restoreSelectedSnapshot() {
       const selected = getSelectedSnapshot();
       if (!selected || recoveryBusy) return;
-      const confirmed = confirmFn(
-        "恢复此快照会覆盖当前浏览器中的待办、日历记录、评分、分类和其他观时本地数据。\n\n观时会先保存一份“恢复前快照”。此操作不会修改 macOS 日历或提醒事项。是否继续？",
-      );
-      if (!confirmed) {
-        setRecoveryStatus("已取消恢复。", "normal");
+      if (pendingRestoreSnapshotId !== selected.id) {
+        requestRestoreConfirmation(selected);
         return;
       }
+      clearRestoreConfirmation();
       recoveryBusy = true;
       setRecoveryStatus("正在保存恢复前快照。", "normal");
       syncRecoveryButtons();
@@ -322,6 +350,8 @@
     async function deleteSelectedSnapshot() {
       const selected = getSelectedSnapshot();
       if (!selected || selected.isLatest || recoveryBusy) return;
+      clearRestoreConfirmation();
+      syncRecoveryButtons();
       const confirmed = confirmFn(`删除 ${formatSnapshotLabel(selected)} 吗？删除后无法恢复该快照。`);
       if (!confirmed) return;
       recoveryBusy = true;
@@ -356,6 +386,7 @@
           void deleteSelectedSnapshot();
         });
         settingsDataSnapshotSelect?.addEventListener("change", () => {
+          clearRestoreConfirmation();
           syncRecoveryButtons();
           previewSelectedSnapshot();
         });
@@ -405,6 +436,8 @@
       scheduleBackup,
       restoreLatestIfNeeded,
       initRecoveryControls,
+      refreshSnapshotList,
+      restoreSelectedSnapshot,
     };
   }
 

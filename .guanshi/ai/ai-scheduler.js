@@ -206,7 +206,7 @@ function isWorkLikeTodo(todo) {
   return ["deep_work", "admin", "communication", "learning"].includes(todo.taskType);
 }
 
-function buildHardBoundaryMap(memoryProjections) {
+function buildHardBoundaryMap(memoryProjections, usedMemoryIds = null) {
   const boundaries = {};
   for (const memory of memoryProjections || []) {
     if (!memory || memory.status !== "active" || memory.strength !== "hard" || !memory.rule) continue;
@@ -215,13 +215,14 @@ function buildHardBoundaryMap(memoryProjections) {
       const minutes = parseClockToMinutes(memory.rule.time);
       if (minutes !== null) {
         boundaries.noWorkAfter = Math.min(boundaries.noWorkAfter ?? minutes, minutes);
+        if (usedMemoryIds && memory.memoryId) usedMemoryIds.add(normalizeText(memory.memoryId, 120));
       }
     }
   }
   return boundaries;
 }
 
-function buildFixedBreakBlocks(memoryProjections, dates) {
+function buildFixedBreakBlocks(memoryProjections, dates, usedMemoryIds = null) {
   const blocks = [];
   for (const memory of memoryProjections || []) {
     if (!memory || memory.status !== "active" || memory.strength !== "hard" || !memory.rule) continue;
@@ -229,6 +230,7 @@ function buildFixedBreakBlocks(memoryProjections, dates) {
     const start = parseClockToMinutes(memory.rule.start);
     const end = parseClockToMinutes(memory.rule.end);
     if (start === null || end === null || end <= start) continue;
+    if (usedMemoryIds && memory.memoryId) usedMemoryIds.add(normalizeText(memory.memoryId, 120));
     for (const date of dates) {
       blocks.push({
         id: `${memory.memoryId || "memory"}:${date}`,
@@ -399,10 +401,7 @@ function createScheduleDraft(input = {}, options = {}) {
   const strategy = normalizeText(request.options?.strategy || "balanced", 80);
   const allowSplitLongTasks = request.options?.allowSplitLongTasks !== false;
   const memoryProjections = Array.isArray(request.memoryProjections) ? request.memoryProjections : [];
-  const memoryUsed = memoryProjections
-    .filter((memory) => memory && memory.status === "active")
-    .map((memory) => normalizeText(memory.memoryId, 120))
-    .filter(Boolean);
+  const usedMemoryIds = new Set();
 
   const windowsByDate = new Map();
   const configuredWindows = Array.isArray(request.options?.workingWindows) ? request.options.workingWindows : [];
@@ -418,12 +417,12 @@ function createScheduleDraft(input = {}, options = {}) {
   const busyBlocks = (Array.isArray(request.busyBlocks) ? request.busyBlocks : [])
     .map(normalizeBusyBlock)
     .filter(Boolean);
-  busyBlocks.push(...buildFixedBreakBlocks(memoryProjections, dates));
+  busyBlocks.push(...buildFixedBreakBlocks(memoryProjections, dates, usedMemoryIds));
 
   const todos = (Array.isArray(request.todos) ? request.todos : [])
     .map(normalizeTodo)
     .filter((todo) => !todo.completed)
-    .filter((todo) => !todo.dueDate || dates.includes(todo.dueDate));
+    .filter((todo) => action === "reflow_unfinished" || !todo.dueDate || dates.includes(todo.dueDate));
 
   const blockedByDate = new Map();
   for (const block of busyBlocks) {
@@ -442,7 +441,7 @@ function createScheduleDraft(input = {}, options = {}) {
     addBlockedInterval(blockedByDate, date, range.start, range.end, defaultGapMinutes);
   }
 
-  const boundaries = buildHardBoundaryMap(memoryProjections);
+  const boundaries = buildHardBoundaryMap(memoryProjections, usedMemoryIds);
   const { ordered, conflicts: dependencyConflicts } = reorderByDependencies(sortTodos(todos.filter((todo) => !todo.planLocked), strategy));
   const changes = [];
   const conflicts = [...dependencyConflicts];
@@ -504,6 +503,7 @@ function createScheduleDraft(input = {}, options = {}) {
 
   const changedTodoIds = Array.from(new Set(changes.map((change) => change.todoId)));
   const draftId = normalizeText(request.draftId, 120) || `draft_${now.replace(/[^0-9]/g, "").slice(0, 14)}`;
+  const actionable = changes.length > 0;
   return {
     schema: SCHEDULE_DRAFT_SCHEMA,
     draftId,
@@ -513,19 +513,22 @@ function createScheduleDraft(input = {}, options = {}) {
       action,
       client: normalizeText(source.client, 120),
     },
-    status: "pending",
+    status: actionable ? "pending" : "not_actionable",
+    actionable,
     dateRange: {
       start: dates[0],
       end: dates[dates.length - 1],
     },
-    summary: `安排 ${changes.length} 个时间块，影响 ${changedTodoIds.length} 个任务。`,
+    summary: actionable
+      ? `安排 ${changes.length} 个时间块，影响 ${changedTodoIds.length} 个任务。`
+      : "没有生成可执行的排程变更。",
     changes,
     conflicts,
     impact: {
       todosChanged: changedTodoIds.length,
       calendarBlocksAdded: 0,
       remindersChanged: 0,
-      memoryUsed,
+      memoryUsed: Array.from(usedMemoryIds),
       progressUsed: request.progressSummary ? ["summary"] : [],
       unscheduledTodos,
     },

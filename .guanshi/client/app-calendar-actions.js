@@ -58,6 +58,8 @@
       formatDateForInput,
       formatTimeForInput,
       getStartOfWeek,
+      enqueueTodoCalendarDelete,
+      createTodoFromCalendarDraft,
     } = deps;
 
     [
@@ -98,7 +100,12 @@
       ["formatDateForInput", formatDateForInput],
       ["formatTimeForInput", formatTimeForInput],
       ["getStartOfWeek", getStartOfWeek],
+      ["enqueueTodoCalendarDelete", enqueueTodoCalendarDelete],
+      ["createTodoFromCalendarDraft", createTodoFromCalendarDraft],
     ].forEach(([name, value]) => assertFunction(name, value));
+
+    const scheduleAutoBidirectionalSync =
+      typeof deps.scheduleAutoBidirectionalSync === "function" ? deps.scheduleAutoBidirectionalSync : () => {};
 
     if (typeof todoPlanModule.applyDirectEditDraftForTodoPlan !== "function") {
       throw new Error("TimeQualityCalendarActionsModule requires dependency: todoPlanModule.applyDirectEditDraftForTodoPlan");
@@ -158,6 +165,13 @@
         ignoredExternalCalendarIds.add(String(targetEntry.externalId));
         saveIgnoredExternalCalendarIds(ignoredExternalCalendarIds);
       }
+      if (targetEntry.externalId) {
+        enqueueTodoCalendarDelete({
+          id: entryId,
+          title: targetEntry.title,
+          externalCalendarId: targetEntry.externalId,
+        }, nowIso);
+      }
 
       const linkedTodoId = String(targetEntry.linkedTodoId || "");
       if (linkedTodoId) {
@@ -203,6 +217,9 @@
         duration: draft.duration,
         needsReview: Boolean(previousEntry?.needsReview),
         updatedAt: new Date().toISOString(),
+        calendarSynced: false,
+        calendarSyncState: "dirty",
+        calendarLastSyncError: "",
       };
 
       const linkedTodoId = String(previousEntry?.linkedTodoId || "");
@@ -219,6 +236,7 @@
       }
 
       saveEntries(entries);
+      scheduleAutoBidirectionalSync("calendar-entry-edit");
       render();
       return true;
     }
@@ -285,6 +303,18 @@
 
       if (editingCalendarEntryId === null) {
         closeCalendarEventModal();
+        if (skipScoreForFutureEntry) {
+          createTodoFromCalendarDraft({
+            title: normalizedTitle,
+            date,
+            start,
+            end,
+            category,
+            note,
+            duration: validation.duration,
+          });
+          return;
+        }
         addEntry({
           title: normalizedTitle,
           date,
@@ -318,6 +348,10 @@
         note,
         duration: validation.duration,
         needsReview: skipScoreForFutureEntry ? true : false,
+        updatedAt: new Date().toISOString(),
+        calendarSynced: false,
+        calendarSyncState: "dirty",
+        calendarLastSyncError: "",
       };
 
       const linkedTodoId = String(entries[targetIndex].linkedTodoId || "");
@@ -339,6 +373,7 @@
       }
 
       saveEntries(entries);
+      scheduleAutoBidirectionalSync("calendar-entry-edit");
       closeCalendarEventModal();
       render();
     }
@@ -361,6 +396,10 @@
       externalId = "",
       externalTitle = "",
       calendarGroup = "",
+      calendarSynced = false,
+      calendarSyncState = "dirty",
+      calendarLastSyncError = "",
+      calendarSyncedAt = null,
     }) {
       refreshDataRefs();
       const entry = {
@@ -383,10 +422,17 @@
         externalId: externalId ? String(externalId) : undefined,
         externalTitle: externalTitle ? String(externalTitle) : undefined,
         calendarGroup: calendarGroup ? String(calendarGroup) : undefined,
+        calendarSynced: Boolean(calendarSynced),
+        calendarSyncState: String(calendarSyncState || (calendarSynced ? "synced" : "dirty")),
+        calendarLastSyncError: String(calendarLastSyncError || ""),
+        calendarSyncedAt: calendarSyncedAt ? String(calendarSyncedAt) : null,
       };
 
       entries.unshift(entry);
       saveEntries(entries);
+      if (entry.calendarSyncState === "dirty") {
+        scheduleAutoBidirectionalSync("calendar-entry-create");
+      }
       render();
       return entry;
     }

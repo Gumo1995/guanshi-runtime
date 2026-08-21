@@ -15,7 +15,7 @@ const {
   AI_TURN_TRACE_SCHEMA,
   AI_WRITER_PROMPT_SCHEMA,
   AI_WRITER_TASK_SCHEMA,
-  buildAnswerWriterMessages,
+  buildAnswerWriterMessageBundle,
   buildAssistantResultFromPlan,
   createAssistantAnswerStreamFilter,
   executeAiAssistantTurn,
@@ -39,7 +39,7 @@ const {
   summarizeModelMemoryContext,
 } = require("./ai-context-composer");
 
-const AI_ROUTE_MAX_BODY_BYTES = 256 * 1024;
+const AI_ROUTE_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const AI_ASSISTANT_STREAM_TEXT_CHUNK_SIZE = 36;
 const AI_ASSISTANT_STREAM_TEXT_DELAY_MS = 12;
 const AI_ASSISTANT_PROMPT_AUDIT_SCHEMA = "guanshi-ai-assistant-prompt-audit-v1";
@@ -159,13 +159,17 @@ function buildPromptAuditRecord(result, options = {}) {
     contextGrant: snapshot.contextGrant || result?.contextSnapshot?.contextGrant || null,
     contextGuard: snapshot.contextGuard || result?.contextGuard || result?.decision?.contextGuard || null,
     contextAccessPolicy: snapshot.context?.contextAccessPolicy || result?.contextSnapshot?.context?.contextAccessPolicy || null,
+    contextResolution: snapshot.contextResolution || {},
+    modelInputBudget: snapshot.modelInputBudget || {},
     context: snapshot.context || {},
     memory: {
       included: snapshot.memory?.included === true,
+      reason: snapshot.memory?.reason || "",
       mode: snapshot.memory?.mode || "",
       action: snapshot.memory?.action || "",
       count: Number(snapshot.memory?.count || 0) || 0,
       entries: Array.isArray(snapshot.memory?.entries) ? snapshot.memory.entries : [],
+      excluded: Array.isArray(snapshot.memory?.excluded) ? snapshot.memory.excluded : [],
       promptBlock: snapshot.memory?.promptBlock || "",
     },
     modelInput,
@@ -315,8 +319,17 @@ function createAiRoutes(options = {}) {
   const maxBodyBytes = Number.isInteger(options.maxBodyBytes) ? options.maxBodyBytes : AI_ROUTE_MAX_BODY_BYTES;
 
   async function readRequestJson(req) {
-    const rawBody = await collectRequestBody(req, maxBodyBytes);
-    return parseJsonBody(rawBody);
+    try {
+      const rawBody = await collectRequestBody(req, maxBodyBytes);
+      return parseJsonBody(rawBody);
+    } catch (error) {
+      if (error instanceof Error && error.message === "BODY_TOO_LARGE") {
+        error.code = "AI_REQUEST_BODY_TOO_LARGE";
+        error.statusCode = 413;
+        error.details = { maxBodyBytes };
+      }
+      throw error;
+    }
   }
 
   async function readProviderErrorText(response) {
@@ -392,11 +405,13 @@ function createAiRoutes(options = {}) {
       stage: "answer_writer",
       label: "生成回答",
     });
-    const writerMessages = buildAnswerWriterMessages(plannerResult.request, plannerResult.decision, plannerResult.toolCatalog, {
+    const writerMessageBundle = buildAnswerWriterMessageBundle(plannerResult.request, plannerResult.decision, plannerResult.toolCatalog, {
       modelContext: plannerResult.modelContext,
       memoryPromptBlock: plannerResult.memoryPromptBlock,
       memoryStore,
+      provider: plannerResult.provider,
     });
+    const writerMessages = writerMessageBundle.messages;
     const visibleStream = createAssistantAnswerStreamFilter((delta) => {
       writeSseEvent(res, "text_delta", {
         schema: "guanshi-ai-run-event-v1",
@@ -437,6 +452,7 @@ function createAiRoutes(options = {}) {
       answer,
       stream: true,
       writerMessages,
+      writerBudgetReport: writerMessageBundle.report,
       writerOutput: writerAnswer || answer,
       writerRequestTrace: writerResult.requestTrace,
       writerResponseTrace: writerResult.responseTrace,
@@ -674,11 +690,12 @@ function createAiRoutes(options = {}) {
           fetchImpl: options.fetchImpl,
           getProvider: (providerId) => store.getProvider(providerId),
           memoryStore,
+          draftStore,
           now: options.now,
           onEvent: emitRouteAssistantEvent,
         });
         let result;
-        if (plannerResult.decision.type === "need_more_context") {
+        if (["need_more_context", "need_context_recompose"].includes(plannerResult.decision.type)) {
           result = buildAssistantResultFromPlan(plannerResult, null, { stream: false, now: options.now });
           await emitAssistantTurnResult(res, result);
         } else if (plannerResult.decision.type === "answer") {
@@ -731,7 +748,13 @@ function createAiRoutes(options = {}) {
         attachPromptAudit(dataDir, result, { now: options.now });
         sendJson(res, 200, {
           ok: true,
-          message: result.mode === "need_more_context" ? "AI assistant requested more context" : result.mode === "tool" ? "AI assistant selected a tool" : "AI assistant answered",
+          message: result.mode === "need_context_recompose"
+            ? "AI assistant requested registered surface context"
+            : result.mode === "need_more_context"
+              ? "AI assistant requested more context"
+              : result.mode === "tool"
+                ? "AI assistant selected a tool"
+                : "AI assistant answered",
           result,
         });
       } catch (error) {
@@ -752,15 +775,58 @@ function createAiRoutes(options = {}) {
       return true;
     }
 
+    if (method === "PATCH" && pathname === "/api/ai/memory/config") {
+      try {
+        const parsed = await readRequestJson(req);
+        sendJson(res, 200, {
+          ok: true,
+          message: "AI memory config updated",
+          result: { config: memoryStore.patchConfig(parsed) },
+        });
+      } catch (error) {
+        sendRouteError(sendJson, res, error, "AI_MEMORY_CONFIG_UPDATE_FAILED");
+      }
+      return true;
+    }
+
     if (method === "GET" && pathname === "/api/ai/memory/projections") {
       const action = route?.requestUrl?.searchParams?.get("action") || "";
+      const target = route?.requestUrl?.searchParams?.get("target") || "scheduler";
       sendJson(res, 200, {
         ok: true,
         message: "AI memory projections loaded",
         result: {
           action,
-          projections: memoryStore.getEngineProjections(action),
+          target,
+          projections: memoryStore.getEngineProjections({ action, target }),
         },
+      });
+      return true;
+    }
+
+    if (method === "GET" && pathname === "/api/ai/memory/rule-registry") {
+      sendJson(res, 200, {
+        ok: true,
+        message: "AI memory rule registry loaded",
+        result: memoryStore.getRuleRegistry(),
+      });
+      return true;
+    }
+
+    if (method === "GET" && pathname === "/api/ai/memory/health") {
+      sendJson(res, 200, {
+        ok: true,
+        message: "AI memory health loaded",
+        result: memoryStore.getHealth(),
+      });
+      return true;
+    }
+
+    if (method === "GET" && pathname === "/api/ai/memory/repair-plan") {
+      sendJson(res, 200, {
+        ok: true,
+        message: "AI memory repair plan loaded",
+        result: memoryStore.getRepairPlan(),
       });
       return true;
     }
@@ -768,14 +834,16 @@ function createAiRoutes(options = {}) {
     if (method === "GET" && pathname === "/api/ai/memory/system-prompt") {
       const searchParams = route?.requestUrl?.searchParams;
       const action = searchParams?.get("action") || "";
+      const userText = searchParams?.get("text") || "";
       const includeMemory = searchParams?.get("includeMemory") || "active_index_only";
-      const maxItems = searchParams?.get("maxItems") || "";
+      const maxMemoryItems = searchParams?.get("maxMemoryItems") || searchParams?.get("maxItems") || "";
       const memoryContext = buildModelMemoryContext({
         memoryStore,
         action,
+        userText,
         contextPolicy: {
           includeMemory,
-          ...(maxItems ? { maxItems } : {}),
+          ...(maxMemoryItems ? { maxMemoryItems } : {}),
         },
       });
       sendJson(res, 200, {
@@ -799,6 +867,20 @@ function createAiRoutes(options = {}) {
           proposals: memoryStore.listProposals(status),
         },
       });
+      return true;
+    }
+
+    if (method === "POST" && pathname === "/api/ai/memory/proposals/validate") {
+      try {
+        const parsed = await readRequestJson(req);
+        sendJson(res, 200, {
+          ok: true,
+          message: "AI memory proposal validated",
+          result: memoryStore.validateProposal(parsed),
+        });
+      } catch (error) {
+        sendRouteError(sendJson, res, error, "AI_MEMORY_PROPOSAL_VALIDATE_FAILED");
+      }
       return true;
     }
 
@@ -944,7 +1026,7 @@ function createAiRoutes(options = {}) {
           ...parsed,
           memoryProjections: Array.isArray(parsed?.memoryProjections)
             ? parsed.memoryProjections
-            : memoryStore.getEngineProjections(action),
+            : memoryStore.getEngineProjections({ target: "scheduler", action }),
         };
         const draft = draftStore.createDraft(input);
         sendJson(res, 200, {

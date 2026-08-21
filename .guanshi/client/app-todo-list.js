@@ -67,6 +67,20 @@
     const renderTodoDetail = requireFunction(deps, "renderTodoDetail");
     const getSelectedTodoId = requireFunction(deps, "getSelectedTodoId");
     const setSelectedTodoId = requireFunction(deps, "setSelectedTodoId");
+    const getSelectedTodoIds =
+      typeof deps.getSelectedTodoIds === "function" ? deps.getSelectedTodoIds : () => {
+        const selectedId = String(getSelectedTodoId() || "");
+        return selectedId ? [selectedId] : [];
+      };
+    const setSelectedTodoIds =
+      typeof deps.setSelectedTodoIds === "function"
+        ? deps.setSelectedTodoIds
+        : (todoIds, primaryTodoId = null) => {
+          const ids = normalizeTodoIdList(todoIds);
+          setSelectedTodoId(primaryTodoId || ids.at(-1) || null);
+        };
+    const toggleSelectedTodoId =
+      typeof deps.toggleSelectedTodoId === "function" ? deps.toggleSelectedTodoId : (todoId) => setSelectedTodoId(todoId);
     const isTodoAiHighlighted =
       typeof deps.isTodoAiHighlighted === "function" ? deps.isTodoAiHighlighted : () => false;
     const getCurrentTodoDimension = requireFunction(deps, "getCurrentTodoDimension");
@@ -81,9 +95,20 @@
     const moveTodoOrder = requireFunction(deps, "moveTodoOrder");
     const moveTodoToOrder = requireFunction(deps, "moveTodoToOrder");
     const moveTodoToDateOrder = requireFunction(deps, "moveTodoToDateOrder");
+    const moveTodosToDateOrder =
+      typeof deps.moveTodosToDateOrder === "function"
+        ? deps.moveTodosToDateOrder
+        : (todoIds, nextDueDate, nextOrderInDay) => {
+          let moved = false;
+          normalizeTodoIdList(todoIds).forEach((id, index) => {
+            moved = moveTodoToDateOrder(id, nextDueDate, nextOrderInDay + index) || moved;
+          });
+          return moved;
+        };
     const restoreHistoryItemToTodo = requireFunction(deps, "restoreHistoryItemToTodo");
     const openTodoHistoryRecord = requireFunction(deps, "openTodoHistoryRecord");
     const toggleTodoCompleted = requireFunction(deps, "toggleTodoCompleted");
+    const isTodoOverdue = requireFunction(deps, "isTodoOverdue");
 
     const documentRef = globalScope.document || null;
 
@@ -95,6 +120,7 @@
     let todoDropLine = null;
     let todoDragExpandTimer = null;
     let todoDragExpandKey = "";
+    let todoSelectionAnchorId = "";
 
     function bindEvents() {
       if (eventsBound) return;
@@ -355,6 +381,72 @@
       return Number.isFinite(parsed) ? parsed : null;
     }
 
+    function normalizeTodoIdList(todoIds) {
+      const source = Array.isArray(todoIds) ? todoIds : [todoIds];
+      const seen = new Set();
+      const ids = [];
+      for (const value of source) {
+        const id = String(value || "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      return ids;
+    }
+
+    function getVisibleTodoRowIds() {
+      if (!todoGroups) return [];
+      const rowNodes = todoGroups.querySelectorAll(".todo-item[data-id]");
+      const seen = new Set();
+      const ids = [];
+      for (const node of rowNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        const id = String(node.dataset.id || "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      return ids;
+    }
+
+    function getTodoSelectionAnchorId(visibleIds, clickedId) {
+      const visibleIdSet = new Set(visibleIds);
+      const anchorId = String(todoSelectionAnchorId || "");
+      if (anchorId && visibleIdSet.has(anchorId)) return anchorId;
+
+      const activeId = String(getSelectedTodoId() || "");
+      if (activeId && visibleIdSet.has(activeId)) return activeId;
+
+      const selectedIds = normalizeTodoIdList(getSelectedTodoIds());
+      for (const id of selectedIds) {
+        if (visibleIdSet.has(id)) return id;
+      }
+
+      return visibleIdSet.has(clickedId) ? clickedId : "";
+    }
+
+    function getTodoRangeSelectionIds(clickedId) {
+      const id = String(clickedId || "").trim();
+      if (!id) return [];
+      const visibleIds = getVisibleTodoRowIds();
+      const clickedIndex = visibleIds.indexOf(id);
+      if (clickedIndex < 0) return [];
+
+      const anchorId = getTodoSelectionAnchorId(visibleIds, id);
+      const anchorIndex = visibleIds.indexOf(anchorId);
+      if (anchorIndex < 0) {
+        todoSelectionAnchorId = id;
+        return [id];
+      }
+
+      if (!todoSelectionAnchorId || !visibleIds.includes(todoSelectionAnchorId)) {
+        todoSelectionAnchorId = anchorId;
+      }
+      const startIndex = Math.min(anchorIndex, clickedIndex);
+      const endIndex = Math.max(anchorIndex, clickedIndex);
+      return visibleIds.slice(startIndex, endIndex + 1);
+    }
+
     function compareTodosByFallbackOrder(a, b) {
       const aDate = String(a?.dueDate || "9999-12-31");
       const bDate = String(b?.dueDate || "9999-12-31");
@@ -413,55 +505,107 @@
     }
 
     function assignTodoDragOrder(items, orderField, timestampIso) {
-      if (!orderField) return;
+      if (!orderField) return false;
+      let changed = false;
       for (let index = 0; index < items.length; index += 1) {
         const todo = items[index];
         if (!todo) continue;
         if (todo[orderField] !== index) {
           todo[orderField] = index;
           markTodoPlanningDirty(todo, timestampIso);
+          changed = true;
         }
       }
+      return changed;
+    }
+
+    function moveTodoIdsToGroupedOrder(mode, todoIds, targetGroupKey, targetOrder) {
+      if (mode !== "project" && mode !== "tag") return false;
+      const ids = normalizeTodoIdList(todoIds);
+      if (!ids.length) return false;
+      const todos = getTodos();
+      const todoById = new Map(
+        todos
+          .filter((item) => item && item.id)
+          .map((item) => [String(item.id), item]),
+      );
+      const movingTodos = ids
+        .map((id) => todoById.get(id))
+        .filter((todo) => todo && !todo.completed);
+      if (!movingTodos.length) return false;
+      const movingTodoIds = new Set(movingTodos.map((todo) => String(todo.id)));
+
+      const orderField = getTodoDragOrderField(mode);
+      const sourceGroupKeys = new Set(
+        movingTodos
+          .map((todo) => getTodoDragGroupKey(todo, mode))
+          .filter(Boolean),
+      );
+      const timestampIso = new Date().toISOString();
+      let changed = false;
+
+      for (const todo of movingTodos) {
+        if (mode === "project") {
+          const nextProject = getTodoProjectValueFromDragGroup(targetGroupKey);
+          if (normalizeProjectName(todo.project || "") !== normalizeProjectName(nextProject)) {
+            todo.project = nextProject;
+            markTodoPlanningDirty(todo, timestampIso);
+            changed = true;
+          }
+        } else {
+          const currentTags = normalizeTodoTags(todo.tags || []);
+          const nextTags = getTodoTagsForDragGroup(todo.tags, targetGroupKey);
+          if (currentTags.join("\n") !== nextTags.join("\n")) {
+            todo.tags = nextTags;
+            markTodoPlanningDirty(todo, timestampIso);
+            changed = true;
+          }
+        }
+      }
+
+      const resolvedTargetGroupKey = getTodoDragGroupKey(movingTodos[0], mode);
+      if (!resolvedTargetGroupKey) return false;
+      sourceGroupKeys.add(resolvedTargetGroupKey);
+
+      for (const sourceGroupKey of sourceGroupKeys) {
+        if (!sourceGroupKey || sourceGroupKey === resolvedTargetGroupKey) continue;
+        const sourceItems = getTodoDragGroupItems(mode, sourceGroupKey)
+          .filter((todo) => !movingTodoIds.has(String(todo?.id || "")));
+        changed = assignTodoDragOrder(sourceItems, orderField, timestampIso) || changed;
+      }
+
+      const targetItems = getTodoDragGroupItems(mode, resolvedTargetGroupKey)
+        .filter((todo) => !movingTodoIds.has(String(todo?.id || "")));
+      const safeTargetOrder = Number.isInteger(targetOrder) ? targetOrder : targetItems.length;
+      const insertIndex = Math.max(0, Math.min(targetItems.length, safeTargetOrder));
+      const reorderedTargetItems = [...targetItems];
+      reorderedTargetItems.splice(insertIndex, 0, ...movingTodos);
+
+      changed = assignTodoDragOrder(reorderedTargetItems, orderField, timestampIso) || changed;
+      if (!changed) return false;
+      saveTodos(todos);
+      renderTodos();
+      return true;
     }
 
     function moveTodoToGroupedOrder(mode, todoId, targetGroupKey, targetOrder) {
-      if (mode !== "project" && mode !== "tag") return;
-      const todos = getTodos();
-      const todo = todos.find((item) => String(item?.id || "") === String(todoId || ""));
-      if (!todo || todo.completed) return;
-
-      const orderField = getTodoDragOrderField(mode);
-      const sourceGroupKey = getTodoDragGroupKey(todo, mode);
-      const sourceItems = getTodoDragGroupItems(mode, sourceGroupKey, todo.id);
-
-      if (mode === "project") {
-        todo.project = getTodoProjectValueFromDragGroup(targetGroupKey);
-      } else {
-        todo.tags = getTodoTagsForDragGroup(todo.tags, targetGroupKey);
-      }
-
-      const resolvedTargetGroupKey = getTodoDragGroupKey(todo, mode);
-      const targetItems = getTodoDragGroupItems(mode, resolvedTargetGroupKey, todo.id);
-      const safeTargetOrder = Number.isInteger(targetOrder) ? targetOrder : targetItems.length;
-      const insertIndex = Math.max(0, Math.min(targetItems.length, safeTargetOrder));
-      targetItems.splice(insertIndex, 0, todo);
-
-      const timestampIso = new Date().toISOString();
-      markTodoPlanningDirty(todo, timestampIso);
-      if (sourceGroupKey !== resolvedTargetGroupKey) {
-        assignTodoDragOrder(sourceItems, orderField, timestampIso);
-      }
-      assignTodoDragOrder(targetItems, orderField, timestampIso);
-      saveTodos(todos);
-      renderTodos();
+      return moveTodoIdsToGroupedOrder(mode, [todoId], targetGroupKey, targetOrder);
     }
 
     function moveTodoToProjectGroup(todoId, targetGroupKey, targetOrder) {
       moveTodoToGroupedOrder("project", todoId, targetGroupKey, targetOrder);
     }
 
+    function moveTodoIdsToProjectGroup(todoIds, targetGroupKey, targetOrder) {
+      return moveTodoIdsToGroupedOrder("project", todoIds, targetGroupKey, targetOrder);
+    }
+
     function moveTodoToTagGroup(todoId, targetGroupKey, targetOrder) {
       moveTodoToGroupedOrder("tag", todoId, targetGroupKey, targetOrder);
+    }
+
+    function moveTodoIdsToTagGroup(todoIds, targetGroupKey, targetOrder) {
+      return moveTodoIdsToGroupedOrder("tag", todoIds, targetGroupKey, targetOrder);
     }
 
     function clearDragVisualState({ keepDragging = true } = {}) {
@@ -505,6 +649,54 @@
       }
       todoDragGhost = null;
       todoDragImageShim = null;
+    }
+
+    function getTodoDragIdsForRow(rowNode, mode) {
+      if (!(rowNode instanceof HTMLElement) || !todoGroups) return [];
+      const todoId = String(rowNode.dataset.id || "");
+      if (!todoId) return [];
+
+      const selectedIds = normalizeTodoIdList(getSelectedTodoIds());
+      if (selectedIds.length <= 1 || !selectedIds.includes(todoId)) return [todoId];
+
+      const selectedIdSet = new Set(selectedIds);
+      const rowNodes = todoGroups.querySelectorAll(
+        '.todo-item[draggable="true"][data-id][data-drag-mode][data-drag-group-key][data-order-index]',
+      );
+      const dragIds = [];
+      for (const node of rowNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (String(node.dataset.dragMode || "") !== mode) continue;
+        const id = String(node.dataset.id || "");
+        if (!selectedIdSet.has(id)) continue;
+        dragIds.push(id);
+      }
+
+      return dragIds.includes(todoId) ? normalizeTodoIdList(dragIds) : [todoId];
+    }
+
+    function applyTodoDragStartVisualState(rowNode, todoIds) {
+      if (!(rowNode instanceof HTMLElement) || !todoGroups) return;
+      const dragIds = normalizeTodoIdList(todoIds);
+      const dragIdSet = new Set(dragIds);
+      if (dragIds.length <= 1) {
+        const selectedNodes = todoGroups.querySelectorAll(".todo-item.is-selected");
+        for (const node of selectedNodes) {
+          node.classList.remove("is-selected");
+        }
+        rowNode.classList.add("is-selected");
+        rowNode.classList.add("is-dragging");
+        return;
+      }
+
+      const rowNodes = todoGroups.querySelectorAll(".todo-item[data-id]");
+      for (const node of rowNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        const id = String(node.dataset.id || "");
+        if (!dragIdSet.has(id)) continue;
+        node.classList.add("is-selected");
+        node.classList.add("is-dragging");
+      }
     }
 
     function createTodoDragGhost(rowNode, event) {
@@ -577,7 +769,9 @@
 
     function showTodoDropLine(dropPayload) {
       if (!dropPayload || !documentRef || !todoGroups) return;
+      const dragTodoIds = normalizeTodoIdList(todoListDragState?.todoIds);
       const isOriginalSlot =
+        dragTodoIds.length <= 1 &&
         dropPayload.mode === todoListDragState?.mode &&
         dropPayload.groupKey === todoListDragState?.groupKey &&
         dropPayload.nextOrder === todoListDragState?.fromOrder;
@@ -652,6 +846,7 @@
       if (!(event.target instanceof Element)) return null;
       const rowNode = event.target.closest(".todo-item[data-id][data-drag-mode][data-drag-group-key][data-order-index]");
       if (!(rowNode instanceof HTMLElement) || (todoGroups && !todoGroups.contains(rowNode))) return null;
+      if (rowNode.dataset.overdueDragSource === "true") return null;
       const mode = String(rowNode.dataset.dragMode || "");
       const groupKey = String(rowNode.dataset.dragGroupKey || "");
       if (!mode || !groupKey) return null;
@@ -724,10 +919,24 @@
       return normalizeDragDropOrder(fromOrder, slotIndex, isSameGroup);
     }
 
+    function getDragDropBlockOrder(dropPayload, todoIds) {
+      const slotIndex = Number.parseInt(String(dropPayload?.slotIndex ?? ""), 10);
+      if (!Number.isInteger(slotIndex) || slotIndex < 0) return null;
+      const movingIds = new Set(normalizeTodoIdList(todoIds));
+      if (!movingIds.size) return slotIndex;
+      const targetItems = getTodoDragGroupItems(dropPayload.mode, dropPayload.groupKey);
+      const movingBeforeSlot = targetItems
+        .slice(0, Math.min(targetItems.length, slotIndex))
+        .filter((todo) => movingIds.has(String(todo?.id || "")))
+        .length;
+      return Math.max(0, slotIndex - movingBeforeSlot);
+    }
+
     function getDragDropPayload(event, state) {
       if (!state) return null;
       const rowTarget = getDragTargetMeta(event, state);
       if (rowTarget) {
+        const slotIndex = rowTarget.insertBefore ? rowTarget.orderIndex : rowTarget.orderIndex + 1;
         const nextOrder = getDragDropOrder(
           state.fromOrder,
           rowTarget,
@@ -739,6 +948,7 @@
             groupKey: rowTarget.groupKey,
             dueDate: rowTarget.dueDate,
             nextOrder,
+            slotIndex,
             rowTarget,
             groupTarget: null,
           };
@@ -763,6 +973,7 @@
         groupKey: groupTarget.groupKey,
         dueDate: groupTarget.dueDate,
         nextOrder,
+        slotIndex,
         rowTarget: null,
         groupTarget,
       };
@@ -779,9 +990,11 @@
       const fromOrder = Number.parseInt(String(rowNode.dataset.orderIndex || "-1"), 10);
       if (!todoId || !mode || !groupKey || !Number.isInteger(fromOrder) || fromOrder < 0) return;
       if (mode === "time" && !isValidDateInput(dueDate)) return;
+      const todoIds = getTodoDragIdsForRow(rowNode, mode);
 
       todoListDragState = {
         todoId,
+        todoIds,
         mode,
         groupKey,
         dueDate,
@@ -794,13 +1007,11 @@
         dragOffsetY: 0,
       };
       clearDragVisualState({ keepDragging: false });
-      setSelectedTodoId(todoId);
-      const selectedNodes = todoGroups.querySelectorAll(".todo-item.is-selected");
-      for (const node of selectedNodes) {
-        node.classList.remove("is-selected");
+      if (todoIds.length <= 1) {
+        setSelectedTodoId(todoId);
+        todoSelectionAnchorId = todoId;
       }
-      rowNode.classList.add("is-selected");
-      rowNode.classList.add("is-dragging");
+      applyTodoDragStartVisualState(rowNode, todoIds);
       renderTodoDetail();
 
       if (event.dataTransfer) {
@@ -837,6 +1048,7 @@
 
       const {
         todoId,
+        todoIds,
         mode,
         groupKey,
         dueDate,
@@ -850,22 +1062,39 @@
       if (!dropPayload || dropPayload.mode !== mode) return;
       const targetGroupKey = dropPayload.groupKey;
       const targetDueDate = dropPayload.dueDate;
-      const targetOrder = dropPayload.nextOrder;
+      const normalizedTodoIds = normalizeTodoIdList(todoIds);
+      const movedTodoIds = normalizedTodoIds.length ? normalizedTodoIds : [todoId];
+      const isMultiTodoDrag = movedTodoIds.length > 1;
+      const targetOrder = isMultiTodoDrag
+        ? getDragDropBlockOrder(dropPayload, movedTodoIds)
+        : dropPayload.nextOrder;
       if (mode !== "time") {
         if (!targetGroupKey || !Number.isInteger(targetOrder)) return;
-        if (targetGroupKey === groupKey && targetOrder === fromOrder) return;
+        if (!isMultiTodoDrag && targetGroupKey === groupKey && targetOrder === fromOrder) return;
         if (mode === "project") {
+          if (isMultiTodoDrag) {
+            moveTodoIdsToProjectGroup(movedTodoIds, targetGroupKey, targetOrder);
+            return;
+          }
           moveTodoToProjectGroup(todoId, targetGroupKey, targetOrder);
           return;
         }
         if (mode === "tag") {
+          if (isMultiTodoDrag) {
+            moveTodoIdsToTagGroup(movedTodoIds, targetGroupKey, targetOrder);
+            return;
+          }
           moveTodoToTagGroup(todoId, targetGroupKey, targetOrder);
         }
         return;
       }
 
       if (!isValidDateInput(targetDueDate) || !Number.isInteger(targetOrder)) return;
-      if (targetDueDate === dueDate && targetOrder === fromOrder) return;
+      if (!isMultiTodoDrag && targetDueDate === dueDate && targetOrder === fromOrder) return;
+      if (isMultiTodoDrag) {
+        moveTodosToDateOrder(movedTodoIds, targetDueDate, targetOrder);
+        return;
+      }
       if (targetDueDate === dueDate) {
         moveTodoToOrder(todoId, targetOrder);
         return;
@@ -949,7 +1178,33 @@
       if (!itemNode) return;
       const id = String(itemNode.dataset.id || "");
       if (!id) return;
+      const isRangeSelect = event.shiftKey === true;
+      const isMultiSelect = event.metaKey === true || event.ctrlKey === true;
+      if (isRangeSelect) {
+        const rangeIds = getTodoRangeSelectionIds(id);
+        if (rangeIds.length) {
+          const nextIds = isMultiSelect
+            ? normalizeTodoIdList([...getSelectedTodoIds(), ...rangeIds])
+            : rangeIds;
+          setSelectedTodoIds(nextIds, id);
+        }
+        renderTodos();
+        return;
+      }
+      if (isMultiSelect) {
+        toggleSelectedTodoId(id);
+        todoSelectionAnchorId = id;
+        renderTodos();
+        return;
+      }
+      if (getSelectedTodoIds().includes(id)) {
+        setSelectedTodoId(null);
+        todoSelectionAnchorId = "";
+        renderTodos();
+        return;
+      }
       setSelectedTodoId(id);
+      todoSelectionAnchorId = id;
       renderTodos();
     }
 
@@ -960,7 +1215,7 @@
 
       const today = getTodayDateInputValue();
       let tone = "due-future";
-      if (todo.dueDate < today && !todo.completed) {
+      if (isTodoOverdue(todo) && !todo.completed) {
         tone = "due-overdue";
       } else if (todo.dueDate === today && !todo.completed) {
         tone = "due-today";
@@ -987,9 +1242,11 @@
         dragMode = "",
         dragGroupKey = "",
         groupOrderIndex = null,
+        overdueDragSource = false,
       } = {},
     ) {
-      const selectedClass = String(todo.id) === String(getSelectedTodoId()) ? " is-selected" : "";
+      const selectedIds = new Set(getSelectedTodoIds().map((id) => String(id)));
+      const selectedClass = selectedIds.has(String(todo.id)) ? " is-selected" : "";
       const aiHighlightClass = isTodoAiHighlighted(todo.id) ? " is-ai-highlighted" : "";
       const completedClass = todo.completed ? " is-completed" : "";
       const checkClass = todo.completed ? " is-completed" : "";
@@ -1054,9 +1311,10 @@
         ? ` data-drag-mode=\"${escapeHtml(effectiveDragMode)}\" data-drag-group-key=\"${escapeHtml(effectiveDragGroupKey)}\" data-order-index=\"${reorderIndex}\"${effectiveDragMode === "time" ? ` data-date=\"${escapeHtml(String(todo.dueDate || ""))}\"` : ""}`
         : "";
       const rowDragAttrs = canDragReorder ? ' draggable="true"' : "";
+      const overdueDragSourceAttr = overdueDragSource ? ' data-overdue-drag-source="true"' : "";
 
       return `
-    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${rowDragClass}${rowContextClass}\" data-id=\"${escapeHtml(String(todo.id))}\"${rowOrderAttrs}${rowDragAttrs}>
+    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${rowDragClass}${rowContextClass}\" data-id=\"${escapeHtml(String(todo.id))}\"${rowOrderAttrs}${rowDragAttrs}${overdueDragSourceAttr}>
       <button class=\"todo-check${checkClass}\" data-id=\"${escapeHtml(String(todo.id))}\" type=\"button\">${todo.completed ? "✓" : ""}</button>
       <div class=\"todo-item-main\">
         <p class=\"todo-item-title\">
@@ -1316,6 +1574,7 @@
       }
 
       const ordered = [];
+      if (grouped.has("overdue")) ordered.push("overdue");
       const dateKeys = keys
         .filter((key) => key.startsWith("date:"))
         .sort((a, b) => a.slice(5).localeCompare(b.slice(5)));
@@ -1335,6 +1594,7 @@
       }
 
       const labels = {
+        overdue: "已过期",
         unscheduled: "未排期",
         done: "已完成",
         undated: "未标注日期",
@@ -1344,6 +1604,7 @@
 
     function getTodoTimeKey(todo) {
       if (todo.completed && !todo.__recentlyCompleted) return "done";
+      if (isTodoOverdue(todo)) return "overdue";
       if (!todo.dueDate) return "unscheduled";
       return `date:${todo.dueDate}`;
     }
@@ -1399,8 +1660,9 @@
         const historyList = (historyGrouped.get(key) || []).sort((a, b) => b.timestamp - a.timestamp);
         const isTodayGroup = shouldAlwaysShowTodayGroup && key === todayKey;
         if (!todoList.length && !historyList.length && !isTodayGroup) continue;
-        const allowTimeOrder = effectiveDimension === "time" && key.startsWith("date:");
         const isDateGroup = effectiveDimension === "time" && key.startsWith("date:");
+        const isOverdueGroup = effectiveDimension === "time" && key === "overdue";
+        const allowTimeOrder = isDateGroup || isOverdueGroup;
         const groupTitleClass = isDateGroup ? "todo-group-title-date" : "";
         const groupHeadClass = "todo-group-head is-compact-group";
         const todayBadgeHtml = isTodayGroup ? '<span class="todo-group-today-chip">今天</span>' : "";
@@ -1418,13 +1680,16 @@
         const todoRows = todoList
           .map((todo, index) => {
             const groupDragMode = allowTimeOrder ? "time" : effectiveDimension === "tag" ? "tag" : "";
-            const groupDragKey = allowTimeOrder ? key.slice(5) : effectiveDimension === "tag" ? key : "";
+            const groupDragKey = allowTimeOrder
+              ? isOverdueGroup ? String(todo.dueDate || "") : key.slice(5)
+              : effectiveDimension === "tag" ? key : "";
             return renderTodoRowHtml(todo, {
               allowTimeOrder,
               timeReorderIndexMap,
               dragMode: groupDragMode,
               dragGroupKey: groupDragKey,
               groupOrderIndex: index,
+              overdueDragSource: isOverdueGroup,
             });
           })
           .join("");

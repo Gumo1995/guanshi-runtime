@@ -70,6 +70,7 @@
     const todoTagSuggestWrap = deps.todoTagSuggestWrap || null;
     const todoTagsInput = deps.todoTagsInput || null;
     const todoTagSuggestionMenu = deps.todoTagSuggestionMenu || null;
+    const todoPriorityInput = deps.todoPriorityInput || null;
     const todoNoteInput = deps.todoNoteInput || null;
     const todoQualityInput = deps.todoQualityInput || null;
     const todoHappinessInput = deps.todoHappinessInput || null;
@@ -96,6 +97,11 @@
 
     function isNode(node) {
       return typeof globalScope.Node !== "undefined" && node instanceof globalScope.Node;
+    }
+
+    function normalizeTodoPriorityValue(value) {
+      const text = String(value || "").trim().toUpperCase();
+      return ["P0", "P1", "P2", "P3", "P4"].includes(text) ? text : "P3";
     }
 
     function isElement(node) {
@@ -226,6 +232,9 @@
       const tags = normalizeTodoTags(todoTagsInput?.value || "");
       if (tags.join(",") !== selectedTags.join(",")) return true;
 
+      const priority = normalizeTodoPriorityValue(todoPriorityInput?.value);
+      if (priority !== normalizeTodoPriorityValue(selected.priority)) return true;
+
       const note = String(todoNoteInput?.value || "").trim();
       if (note !== String(selected.note || "").trim()) return true;
 
@@ -266,6 +275,7 @@
       let project = normalizeProjectName(todoProjectInput?.value || "");
       let category = normalizeTodoCategoryValue(todoCategoryInput?.value, project);
       let tags = normalizeTodoTags(todoTagsInput?.value || "");
+      const priority = normalizeTodoPriorityValue(todoPriorityInput?.value);
       let note = String(todoNoteInput?.value || "").trim();
       const qualityRaw = String(todoQualityInput?.value || "").trim();
       const happinessRaw = String(todoHappinessInput?.value || "").trim();
@@ -312,6 +322,7 @@
           project,
           category,
           tags,
+          priority,
           note: normalizeTodoNoteValue(note),
           qualityScore,
           happinessScore,
@@ -379,12 +390,7 @@
     function renderTodoDetail() {
       if (!todoDetailForm) return;
 
-      let selected = getSelectedTodo();
-      const todos = getTodos();
-      if (!selected && todos.length) {
-        setSelectedTodoId(String(todos[0].id));
-        selected = todos[0];
-      }
+      const selected = getSelectedTodo();
       if (!selected) {
         clearSubmitState();
         todoDetailForm.reset();
@@ -393,6 +399,7 @@
         syncTodoRepeatTriggerLabel();
         hideTodoCategorySuggestionMenu();
         hideTodoRepeatSuggestionMenu();
+        if (todoPriorityInput) todoPriorityInput.value = "P3";
         if (todoDetailId) todoDetailId.textContent = "todo_";
         if (todoFocusBtn) todoFocusBtn.disabled = true;
         if (todoPlanLockBtn) todoPlanLockBtn.disabled = true;
@@ -429,6 +436,7 @@
       syncTodoCategoryTriggerLabel();
       updateTodoCategorySuggestionOptions({ forceShow: false });
       if (todoTagsInput) todoTagsInput.value = Array.isArray(selected.tags) ? selected.tags.join(", ") : "";
+      if (todoPriorityInput) todoPriorityInput.value = normalizeTodoPriorityValue(selected.priority);
       if (todoNoteInput) todoNoteInput.value = selected.note || "";
       if (todoQualityInput) {
         const quality = parseOptionalScore(selected.qualityScore);

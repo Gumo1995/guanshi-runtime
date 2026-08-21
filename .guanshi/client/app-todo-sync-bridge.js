@@ -38,6 +38,7 @@
     const normalizeTodoReminderDisableItem = requireFunction(deps, "normalizeTodoReminderDisableItem");
     const getPendingTodoReminderDisables = requireFunction(deps, "getPendingTodoReminderDisables");
     const saveTodoReminderDisableQueue = requireFunction(deps, "saveTodoReminderDisableQueue");
+    const isTodoOverdue = typeof deps.isTodoOverdue === "function" ? deps.isTodoOverdue : () => false;
 
     const TODO_PLAN_DAY_FIRST_START_MINUTES = Number(deps.TODO_PLAN_DAY_FIRST_START_MINUTES) || 0;
     const TODO_REMINDER_DEFAULT_LEAD_MINUTES = Number.isFinite(Number(deps.TODO_REMINDER_DEFAULT_LEAD_MINUTES))
@@ -62,6 +63,9 @@
       }
       if (!String(todo.dueDate || "").trim()) {
         return { ok: false, message: "请先填写截止日期后再同步。" };
+      }
+      if (isTodoOverdue(todo)) {
+        return { ok: false, code: "TODO_OVERDUE", message: "待办已自动进入过期库，不再参与 Calendar 计划同步。" };
       }
 
       const start = String(todo.startTime || "").trim() || formatMinutesForInput(TODO_PLAN_DAY_FIRST_START_MINUTES);

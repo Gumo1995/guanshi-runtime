@@ -13,6 +13,8 @@ const PROVIDER_TYPES = {
     requiresApiKey: true,
     supportsStreaming: true,
     supportsJsonMode: true,
+    defaultContextWindowTokens: 128000,
+    defaultPreferredInputBudgetTokens: 96000,
     envKeyNames: ["OPENAI_API_KEY"],
   },
   anthropic: {
@@ -25,6 +27,8 @@ const PROVIDER_TYPES = {
     requiresApiKey: true,
     supportsStreaming: true,
     supportsJsonMode: false,
+    defaultContextWindowTokens: 200000,
+    defaultPreferredInputBudgetTokens: 150000,
     envKeyNames: ["ANTHROPIC_API_KEY"],
   },
   "hermes-webui": {
@@ -37,6 +41,8 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: false,
+    defaultContextWindowTokens: 128000,
+    defaultPreferredInputBudgetTokens: 96000,
     envKeyNames: [],
   },
   ollama: {
@@ -49,6 +55,8 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: true,
+    defaultContextWindowTokens: 32768,
+    defaultPreferredInputBudgetTokens: 24000,
     envKeyNames: [],
   },
   "lm-studio": {
@@ -61,6 +69,8 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: true,
+    defaultContextWindowTokens: 32768,
+    defaultPreferredInputBudgetTokens: 24000,
     envKeyNames: [],
   },
   custom: {
@@ -73,6 +83,8 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: false,
+    defaultContextWindowTokens: 128000,
+    defaultPreferredInputBudgetTokens: 96000,
     envKeyNames: [],
   },
 };
@@ -112,6 +124,12 @@ function normalizeProviderId(value) {
 function normalizeOptionalString(value, maxLength = 500) {
   const text = String(value || "").trim();
   return text.slice(0, maxLength);
+}
+
+function normalizeInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  const resolved = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.max(min, Math.min(max, resolved));
 }
 
 function normalizeEnvKeyName(value) {
@@ -213,6 +231,18 @@ function normalizeProviderConfig(input, existing = {}) {
   }
 
   const apiKeyEnvName = normalizeEnvKeyName(source.apiKeyEnvName ?? existing.apiKeyEnvName ?? definition.envKeyNames[0] ?? "");
+  const contextWindowTokens = normalizeInteger(
+    source.contextWindowTokens ?? existing.contextWindowTokens,
+    definition.defaultContextWindowTokens,
+    8192,
+    2000000,
+  );
+  const preferredInputBudgetTokens = normalizeInteger(
+    source.preferredInputBudgetTokens ?? existing.preferredInputBudgetTokens,
+    Math.min(definition.defaultPreferredInputBudgetTokens, contextWindowTokens - 4096),
+    4096,
+    Math.max(4096, contextWindowTokens - 4096),
+  );
   let apiKey = String(existing.apiKey || "");
   if (source.clearApiKey === true) {
     apiKey = "";
@@ -226,6 +256,8 @@ function normalizeProviderConfig(input, existing = {}) {
     enabled,
     baseUrl,
     model,
+    contextWindowTokens,
+    preferredInputBudgetTokens,
     apiKey,
     apiKeyEnvName,
     apiKeyTail: getSecretTail(apiKey),
@@ -237,6 +269,12 @@ function sanitizeProviderConfig(provider, env = process.env) {
   const source = provider && typeof provider === "object" ? provider : {};
   const definition = getProviderType(source.type || "custom");
   const apiKey = resolveProviderApiKey(source, env);
+  const contextWindowTokens = normalizeInteger(
+    source.contextWindowTokens,
+    definition.defaultContextWindowTokens,
+    8192,
+    2000000,
+  );
   return {
     id: source.id,
     type: definition.type,
@@ -244,6 +282,13 @@ function sanitizeProviderConfig(provider, env = process.env) {
     enabled: Boolean(source.enabled),
     baseUrl: normalizeOptionalString(source.baseUrl, 500),
     model: normalizeOptionalString(source.model, 160),
+    contextWindowTokens,
+    preferredInputBudgetTokens: normalizeInteger(
+      source.preferredInputBudgetTokens,
+      Math.min(definition.defaultPreferredInputBudgetTokens, contextWindowTokens - 4096),
+      4096,
+      Math.max(4096, contextWindowTokens - 4096),
+    ),
     requiresApiKey: Boolean(definition.requiresApiKey),
     apiKeyConfigured: Boolean(apiKey.configured),
     apiKeySource: apiKey.source,

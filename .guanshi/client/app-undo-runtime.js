@@ -157,7 +157,7 @@
         if (preferredTodoId && todos.some((item) => String(item.id) === preferredTodoId)) {
           setSelectedTodoId(preferredTodoId);
         } else {
-          setSelectedTodoId(todos[0]?.id ?? null);
+          setSelectedTodoId(null);
         }
         saveEntries(entries, { skipUndoSnapshot: true });
         saveTodos(todos, { skipSyncSchedule: true, skipUndoSnapshot: true });

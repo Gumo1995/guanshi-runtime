@@ -14,6 +14,19 @@
     return Number.isInteger(parsed) ? parsed : fallback;
   }
 
+  function normalizeTodoIdList(todoIds) {
+    const source = Array.isArray(todoIds) ? todoIds : [todoIds];
+    const seen = new Set();
+    const ids = [];
+    for (const value of source) {
+      const id = String(value || "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
+  }
+
   function pad2(value) {
     return String(value).padStart(2, "0");
   }
@@ -48,6 +61,7 @@
     const getCurrentClockMinutes = requireFunction(deps, "getCurrentClockMinutes");
     const getTodos = requireFunction(deps, "getTodos");
     const getEntries = requireFunction(deps, "getEntries");
+    const isTodoOverdue = typeof deps.isTodoOverdue === "function" ? deps.isTodoOverdue : () => false;
 
     const getCategories = typeof deps.getCategories === "function" ? deps.getCategories : () => [];
 
@@ -553,7 +567,7 @@
     }
 
     function createTodoPlanEntry(todo) {
-      if (!todo || todo.completed) return null;
+      if (!todo || todo.completed || isTodoOverdue(todo)) return null;
       const dueDate = String(todo.dueDate || "").trim();
       if (!isValidDateInput(dueDate)) return null;
       const range = getTodoClockRange(todo);
@@ -704,62 +718,86 @@
       return true;
     }
 
-    function moveTodoToDateOrder(todoId, nextDueDate, nextOrderInDay) {
-      const id = String(todoId || "");
+    function assignTodoOrderInDay(items, timestampIso) {
+      let changed = false;
+      items.forEach((item, index) => {
+        const currentOrder = Number.isFinite(Number(item.orderInDay)) ? Number(item.orderInDay) : null;
+        if (currentOrder === index) return;
+        item.orderInDay = index;
+        markTodoPlanningDirty(item, timestampIso);
+        changed = true;
+      });
+      return changed;
+    }
+
+    function moveTodosToDateOrder(todoIds, nextDueDate, nextOrderInDay) {
+      const ids = normalizeTodoIdList(todoIds);
       const targetDate = String(nextDueDate || "").trim();
       const requestedOrder = Number.parseInt(String(nextOrderInDay ?? ""), 10);
-      if (!id || !isValidDateInput(targetDate) || !Number.isInteger(requestedOrder)) return false;
+      if (!ids.length || !isValidDateInput(targetDate) || !Number.isInteger(requestedOrder)) return false;
 
       const todos = getTodos();
-      const todo = todos.find((item) => String(item.id) === id);
-      if (!todo || todo.completed || !isValidDateInput(todo.dueDate)) return false;
+      const todoById = new Map(
+        todos
+          .filter((item) => item && item.id)
+          .map((item) => [String(item.id), item]),
+      );
+      const movingTodos = ids
+        .map((id) => todoById.get(id))
+        .filter((todo) => todo && !todo.completed && isValidDateInput(todo.dueDate));
+      if (!movingTodos.length) return false;
 
-      const sourceDate = String(todo.dueDate);
-      if (sourceDate === targetDate) {
-        return moveTodoToOrder(id, requestedOrder);
+      const movingTodoIds = new Set(movingTodos.map((todo) => String(todo.id)));
+      const sourceDates = new Set(
+        movingTodos
+          .map((todo) => String(todo.dueDate || "").trim())
+          .filter((date) => isValidDateInput(date)),
+      );
+      for (const sourceDate of sourceDates) {
+        normalizeTodoOrderForDate(sourceDate);
       }
-
-      normalizeTodoOrderForDate(sourceDate);
       normalizeTodoOrderForDate(targetDate);
 
-      const sourceDayTodos = getIncompleteTodosByDate(sourceDate);
-      const sourceIndex = sourceDayTodos.findIndex((item) => String(item.id) === id);
-      if (sourceIndex < 0) return false;
-
-      const targetDayTodos = getIncompleteTodosByDate(targetDate).filter((item) => String(item.id) !== id);
+      const targetDayTodos = getIncompleteTodosByDate(targetDate)
+        .filter((item) => !movingTodoIds.has(String(item.id)));
       const targetIndex = Math.max(0, Math.min(targetDayTodos.length, requestedOrder));
       const nowIso = new Date().toISOString();
+      let changed = false;
 
-      const reorderedSource = sourceDayTodos.filter((item) => String(item.id) !== id);
-      reorderedSource.forEach((item, index) => {
-        const currentOrder = Number.isFinite(Number(item.orderInDay)) ? Number(item.orderInDay) : null;
-        if (currentOrder === index) return;
-        item.orderInDay = index;
-        markTodoPlanningDirty(item, nowIso);
-      });
+      for (const sourceDate of sourceDates) {
+        if (sourceDate === targetDate) continue;
+        const sourceDayTodos = getIncompleteTodosByDate(sourceDate)
+          .filter((item) => !movingTodoIds.has(String(item.id)));
+        changed = assignTodoOrderInDay(sourceDayTodos, nowIso) || changed;
+      }
 
-      todo.dueDate = targetDate;
+      for (const todo of movingTodos) {
+        if (String(todo.dueDate || "") === targetDate) continue;
+        todo.dueDate = targetDate;
+        markTodoPlanningDirty(todo, nowIso);
+        changed = true;
+      }
+
       const reorderedTarget = [...targetDayTodos];
-      reorderedTarget.splice(targetIndex, 0, todo);
-      reorderedTarget.forEach((item, index) => {
-        const currentOrder = Number.isFinite(Number(item.orderInDay)) ? Number(item.orderInDay) : null;
-        if (currentOrder === index) return;
-        item.orderInDay = index;
-        markTodoPlanningDirty(item, nowIso);
-      });
-      markTodoPlanningDirty(todo, nowIso);
+      reorderedTarget.splice(targetIndex, 0, ...movingTodos);
+      changed = assignTodoOrderInDay(reorderedTarget, nowIso) || changed;
 
-      reflowTodoDayByMovePolicy(sourceDate, {
-        markDirty: true,
-        timestampIso: nowIso,
-      });
-      reflowTodoDayByMovePolicy(targetDate, {
-        markDirty: true,
-        timestampIso: nowIso,
-      });
+      sourceDates.add(targetDate);
+      for (const affectedDate of sourceDates) {
+        changed = reflowTodoDayByMovePolicy(affectedDate, {
+          markDirty: true,
+          timestampIso: nowIso,
+        }) || changed;
+      }
+
+      if (!changed) return false;
       saveTodos(todos);
       render();
       return true;
+    }
+
+    function moveTodoToDateOrder(todoId, nextDueDate, nextOrderInDay) {
+      return moveTodosToDateOrder([todoId], nextDueDate, nextOrderInDay);
     }
 
     function applyDirectEditDraftForTodoPlan(state, draft) {
@@ -826,6 +864,7 @@
       findOverlappingCalendarItem,
       moveTodoOrder,
       moveTodoToOrder,
+      moveTodosToDateOrder,
       moveTodoToDateOrder,
       applyDirectEditDraftForTodoPlan,
     };

@@ -56,7 +56,26 @@ const TIME_ACTION_REGISTRY = [
     intent: "把用户明确表达的偏好、原则或边界整理成待确认记忆。",
     action_kind: "draft",
     execution_mode: "registry_pipeline",
-    planner_fields: ["memoryType", "title", "body", "appliesTo", "evidence"],
+    planner_fields: [
+      "type",
+      "subjectKey",
+      "title",
+      "body",
+      "strength",
+      "appliesTo",
+      "modelReadable",
+      "engineReadable",
+      "matchMode",
+      "match",
+      "rule",
+      "validFrom",
+      "validUntil",
+      "reviewAfter",
+      "confidence",
+      "operationIntent",
+      "targetMemoryIds",
+      "evidence",
+    ],
     steps: [
       "time.step.context.collect",
       "time.step.memory.extract_candidate",
@@ -64,7 +83,7 @@ const TIME_ACTION_REGISTRY = [
       "time.step.policy.confirm_draft",
     ],
     prompt_refs: ["time.prompt.memory.generate_proposal"],
-    policy_refs: ["time.policy.confirm.memory_proposal"],
+    policy_refs: ["time.policy.memory.correctness_v2", "time.policy.confirm.memory_proposal"],
     ui_ref: "time.ui.card.memory_proposal",
     output_schema: "time.schema.TimeMemoryProposal",
   },
@@ -96,6 +115,10 @@ const TIME_ACTION_REGISTRY = [
     action_kind: "draft",
     execution_mode: "registry_pipeline",
     planner_fields: ["parentTask", "subtasks", "assumptions", "parentSchedule"],
+    minimum_context: {
+      required: ["selectedTodo"],
+      scope_mode: "selected_todo",
+    },
     steps: [
       "time.step.context.collect",
       "time.step.todo.resolve_target",
@@ -118,6 +141,10 @@ const TIME_ACTION_REGISTRY = [
     action_kind: "draft",
     execution_mode: "registry_pipeline",
     planner_fields: ["dateRange", "todos", "busyBlocks", "memoryRefs", "strategy"],
+    minimum_context: {
+      required: ["todos", "busyBlocks"],
+      scope_mode: "today",
+    },
     steps: [
       "time.step.context.collect",
       "time.step.time.resolve_reference_scope",
@@ -139,6 +166,10 @@ const TIME_ACTION_REGISTRY = [
     action_kind: "draft",
     execution_mode: "registry_pipeline",
     planner_fields: ["dateRange", "todos", "busyBlocks", "memoryRefs", "strategy"],
+    minimum_context: {
+      required: ["todos", "busyBlocks"],
+      scope_mode: "week",
+    },
     steps: [
       "time.step.context.collect",
       "time.step.time.resolve_reference_scope",
@@ -160,6 +191,10 @@ const TIME_ACTION_REGISTRY = [
     action_kind: "draft",
     execution_mode: "registry_pipeline",
     planner_fields: ["dateRange", "unfinishedTodos", "busyBlocks", "strategy"],
+    minimum_context: {
+      required: ["todos", "busyBlocks"],
+      scope_mode: "reflow_unfinished",
+    },
     steps: [
       "time.step.context.collect",
       "time.step.todo.collect_unfinished",
@@ -181,6 +216,10 @@ const TIME_ACTION_REGISTRY = [
     action_kind: "insight",
     execution_mode: "registry_pipeline",
     planner_fields: ["period", "metrics", "progressSummary", "insights"],
+    minimum_context: {
+      required: ["todos", "entries", "busyBlocks"],
+      scope_mode: "today",
+    },
     steps: [
       "time.step.context.collect",
       "time.step.time.resolve_reference_scope",
@@ -433,7 +472,7 @@ const TIME_PROMPT_REGISTRY = [
     prompt_id: "time.prompt.memory.generate_proposal",
     label: "记忆提案生成",
     owner: "planner",
-    status: "planner_fields",
+    status: "code_prompt_policy_v2_field_passthrough",
     output_schema: "time.schema.TimeMemoryProposal",
   },
   {
@@ -489,6 +528,13 @@ const TIME_PROMPT_REGISTRY = [
 
 const TIME_POLICY_REGISTRY = [
   {
+    policy_id: "time.policy.memory.correctness_v2",
+    label: "记忆分类 匹配 冲突 有效期和执行能力校验",
+    risk: "L1",
+    requires_confirmation: false,
+    allow_auto_apply: false,
+  },
+  {
     policy_id: "time.policy.answer.no_write",
     label: "纯回复不写入本地数据",
     risk: "L0",
@@ -541,6 +587,83 @@ const TIME_POLICY_REGISTRY = [
 ];
 
 const TIME_UI_REGISTRY = [
+  {
+    ui_id: "time.ui.surface.todo",
+    label: "待办工作区上下文",
+    surface: "context_surface",
+    component: "TodoView",
+    editable: false,
+    allow_regenerate: false,
+    context_surface: {
+      view: "todo",
+      surface_ids: ["todo", "todo.list", "todo.detail"],
+      provides: ["todos", "selectedTodo"],
+      context_modes: [
+        "selected_todo",
+        "selected_with_today",
+        "today",
+        "week",
+        "unfinished",
+        "reflow_unfinished",
+        "view_todo_selected",
+        "view_todo_summary",
+        "granted_range",
+      ],
+      action_refs: ["time.breakdown_task"],
+      intent_terms: ["待办", "任务", "事项", "todo", "task"],
+      priority: 4,
+      reaction: {
+        schema: "guanshi-ui-reaction-v1",
+        trigger: "before_context_request",
+        view: "todo",
+        scroll: "today_group",
+      },
+    },
+  },
+  {
+    ui_id: "time.ui.surface.calendar",
+    label: "日历工作区上下文",
+    surface: "context_surface",
+    component: "CalendarView",
+    editable: false,
+    allow_regenerate: false,
+    context_surface: {
+      view: "calendar",
+      surface_ids: ["calendar.day", "calendar.week"],
+      provides: ["todos", "busyBlocks"],
+      context_modes: ["today", "week", "selected_with_today", "reflow_unfinished", "view_calendar_day", "view_calendar_week", "granted_range"],
+      action_refs: ["time.plan_today", "time.plan_week", "time.reflow_unfinished"],
+      intent_terms: ["日历", "日程", "排程", "时间块", "空档", "有空", "忙闲", "冲突", "calendar", "schedule"],
+      priority: 3,
+      reaction: {
+        schema: "guanshi-ui-reaction-v1",
+        trigger: "before_context_request",
+        view: "calendar",
+      },
+    },
+  },
+  {
+    ui_id: "time.ui.surface.review",
+    label: "复盘工作区上下文",
+    surface: "context_surface",
+    component: "ReviewView",
+    editable: false,
+    allow_regenerate: false,
+    context_surface: {
+      view: "review",
+      surface_ids: ["review", "review.range"],
+      provides: ["todos", "entries", "busyBlocks"],
+      context_modes: ["today", "week", "view_review_range", "granted_range"],
+      action_refs: ["time.review_day"],
+      intent_terms: ["复盘", "回顾", "总结", "review"],
+      priority: 2,
+      reaction: {
+        schema: "guanshi-ui-reaction-v1",
+        trigger: "before_context_request",
+        view: "review",
+      },
+    },
+  },
   {
     ui_id: "time.ui.answer.plain",
     label: "普通回复",

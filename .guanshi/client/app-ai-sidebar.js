@@ -4,6 +4,11 @@
   const AI_ASSISTANT_SCHEMA = "guanshi-ai-assistant-request-v1";
   const AI_CONTEXT_SNAPSHOT_SCHEMA = "guanshi-ai-context-snapshot-v1";
   const AI_SEMANTIC_FEEDBACK_SCHEMA = "guanshi-ai-semantic-feedback-v1";
+  const AI_VIEW_CONTEXT_SCHEMA = "guanshi-ai-view-context-v1";
+  const AI_SELECTED_OBJECTS_CONTEXT_SCHEMA = "guanshi-ai-selected-objects-context-v1";
+  const AI_PAGE_WORK_CONTEXT_SCHEMA = "guanshi-ai-page-work-context-v1";
+  const AI_GLOBAL_BACKGROUND_CONTEXT_SCHEMA = "guanshi-ai-global-background-context-v1";
+  const AI_CONTEXT_CANDIDATES_SCHEMA = "guanshi-ai-context-candidates-v1";
 
   const ACTION_CONFIG = {
     assistant: {
@@ -106,9 +111,65 @@
     granted_range: "本轮授权范围",
     selected_with_today: "当前待办+今天",
     reflow_unfinished: "重排未完成",
+    view_todo_selected: "当前选中待办",
+    view_todo_summary: "待办页摘要",
+    view_calendar_day: "当前日历日",
+    view_calendar_week: "当前日历周",
+    view_review_range: "当前复盘范围",
   };
   const AI_CONTEXT_RERUN_MAX = 2;
   const AI_CONTEXT_CONVERSATION_TTL_MS = 60 * 60 * 1000;
+  const AI_MEMORY_TYPE_LABELS = {
+    profile: "画像",
+    preference: "偏好",
+    habit: "习惯",
+    principle: "原则",
+    boundary: "边界",
+    rule: "规则",
+    playbook: "方法",
+    review: "复盘",
+    capability_request: "能力需求",
+  };
+  const AI_MEMORY_STRENGTH_LABELS = {
+    hard: "硬约束",
+    soft: "软偏好",
+    observed: "观察到",
+  };
+  const AI_MEMORY_ROLE_LABELS = {
+    planner: "Planner",
+    writer: "Writer",
+    scheduler: "排程引擎",
+  };
+  const AI_MEMORY_SELECTION_REASON_LABELS = {
+    included: "符合本轮场景",
+    selected: "已选入本轮",
+    no_matching_memory: "没有符合本轮场景的正式记忆",
+    no_match_constraints: "没有额外标签限制",
+    match_required_not_hit: "匹配条件没有命中",
+  };
+  const AI_MEMORY_EXCLUDED_REASON_LABELS = {
+    invalid_entry: "记忆数据不完整",
+    status_not_active: "已停用或归档",
+    not_user_confirmed: "还没有经过用户确认",
+    model_read_disabled: "已关闭 AI 可读",
+    engine_read_disabled: "已关闭本地规则执行",
+    type_excluded: "这类记忆默认不进入模型上下文",
+    applies_to_mismatch: "不适用于本轮动作",
+    rule_not_projectable: "规则不能投射给排程引擎",
+    empty_body: "没有可注入内容",
+    over_limit: "超过本轮记忆上限",
+    subject_conflict: "同一主题存在冲突，已停止注入",
+    superseded: "已被新版本替代",
+    validity_expired: "已过有效期",
+    validity_not_started: "尚未到生效时间",
+    request_policy_disabled: "本轮请求关闭了记忆注入",
+    memory_disabled: "记忆系统已关闭",
+    memory_auto_inject_disabled: "自动注入已关闭",
+    memory_external_read_disabled: "外部读取已关闭",
+    memory_store_unavailable: "记忆库不可用",
+    memory_config_unreadable: "记忆配置读取失败",
+    memory_entries_unreadable: "记忆条目读取失败",
+  };
 
   const AI_DISPLAY_FLUSH_INTERVAL_MS = 40;
   const AI_DISPLAY_MIN_CHARS = 8;
@@ -121,6 +182,8 @@
   const AI_TURN_SCROLL_MIN_DELTA_PX = 6;
   const AI_NEXT_ACTION_IDLE_DELAY_MS = 5000;
   const AI_NEXT_ACTION_VISIBLE_MARGIN_PX = 12;
+  const AI_ASSISTANT_ELAPSED_TICK_MS = 1000;
+  const AI_ASSISTANT_THINKING_TEXT = "Thinking......";
   const AI_PROVIDER_LOGO_BASE = "./assets/ai-providers/";
   const AI_PROVIDER_LOGO_FILES = {
     generic: "generic.svg",
@@ -148,6 +211,12 @@
         : typeof windowRef.fetch === "function"
           ? windowRef.fetch.bind(windowRef)
           : null;
+    const confirmFn =
+      typeof deps.confirmFn === "function"
+        ? deps.confirmFn
+        : typeof windowRef.confirm === "function"
+          ? windowRef.confirm.bind(windowRef)
+          : () => false;
     const nextActionIdleDelayMs = Number.isFinite(Number(deps.nextActionIdleDelayMs))
       ? Math.max(0, Number(deps.nextActionIdleDelayMs))
       : AI_NEXT_ACTION_IDLE_DELAY_MS;
@@ -155,6 +224,7 @@
     const getTodos = typeof deps.getTodos === "function" ? deps.getTodos : () => [];
     const getEntries = typeof deps.getEntries === "function" ? deps.getEntries : () => [];
     const getSelectedTodo = typeof deps.getSelectedTodo === "function" ? deps.getSelectedTodo : () => null;
+    const getViewContext = typeof deps.getViewContext === "function" ? deps.getViewContext : () => ({});
     const getCategories = typeof deps.getCategories === "function" ? deps.getCategories : () => [];
     const getTodayDateInputValue =
       typeof deps.getTodayDateInputValue === "function"
@@ -182,7 +252,10 @@
     const setTodos = typeof deps.setTodos === "function" ? deps.setTodos : () => {};
     const setSelectedTodoId = typeof deps.setSelectedTodoId === "function" ? deps.setSelectedTodoId : () => {};
     const setActiveView = typeof deps.setActiveView === "function" ? deps.setActiveView : () => {};
+    const setSettingsTab = typeof deps.setSettingsTab === "function" ? deps.setSettingsTab : () => {};
     const render = typeof deps.render === "function" ? deps.render : () => {};
+    const uiReactionsModule =
+      deps.uiReactionsModule && typeof deps.uiReactionsModule === "object" ? deps.uiReactionsModule : null;
     const setAiHighlightedTodoIds =
       typeof deps.setAiHighlightedTodoIds === "function" ? deps.setAiHighlightedTodoIds : () => {};
     const postApplyHighlightMs = Math.max(
@@ -214,6 +287,7 @@
     let activeTurnScroll = null;
     let threadScrollAnimation = null;
     let nextActionsTimer = null;
+    let assistantElapsedTimer = null;
     let postApplyHighlightTimer = null;
     let actionRegistryPayload = null;
     let actionRegistryRequest = null;
@@ -299,12 +373,12 @@
         const lines = block.split(/\n/).map((line) => line.trim()).filter(Boolean);
         const unorderedItems = lines.map((line) => /^[-*]\s+(.+)$/.exec(line));
         if (lines.length && unorderedItems.every(Boolean)) {
-          html.push(`<ul>${unorderedItems.map((match) => `<li>${renderInlineMarkdown(match[1])}</li>`).join("")}</ul>`);
+          html.push(`<ul class="sidebar-ai-markdown-list sidebar-ai-markdown-list--unordered">${unorderedItems.map((match) => `<li>${renderInlineMarkdown(match[1])}</li>`).join("")}</ul>`);
           continue;
         }
         const orderedItems = lines.map((line) => /^\d+[.)]\s+(.+)$/.exec(line));
         if (lines.length && orderedItems.every(Boolean)) {
-          html.push(`<ol>${orderedItems.map((match) => `<li>${renderInlineMarkdown(match[1])}</li>`).join("")}</ol>`);
+          html.push(`<ol class="sidebar-ai-markdown-list sidebar-ai-markdown-list--ordered">${orderedItems.map((match) => `<li>${renderInlineMarkdown(match[1])}</li>`).join("")}</ol>`);
           continue;
         }
         if (block.startsWith("```")) {
@@ -363,16 +437,36 @@
       return `${source}${trigger}`;
     }
 
+    function renderAssistantElapsedLabel(message, options = {}) {
+      const label = getAssistantElapsedTimeLabel(message, options);
+      if (!label) return "";
+      return `<span class="sidebar-ai-message-elapsed">${escapeHtml(label)}</span>`;
+    }
+
+    function isAssistantThinkingPlaceholder(message) {
+      if (message?.role !== "assistant") return false;
+      if (normalizeText(message.streamText)) return false;
+      const paragraphs = Array.isArray(message.paragraphs) ? message.paragraphs : [message.text || ""];
+      return paragraphs.length === 1 && normalizeText(paragraphs[0]) === AI_ASSISTANT_THINKING_TEXT;
+    }
+
     function renderMessageParagraphs(message) {
       const paragraphs = Array.isArray(message.paragraphs) ? message.paragraphs : [message.text || ""];
-      const html = message.role === "assistant"
-        ? renderAssistantMarkdown(paragraphs)
-        : paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("");
+      const html = message.role === "assistant" && isAssistantThinkingPlaceholder(message)
+        ? `<p>${escapeHtml(AI_ASSISTANT_THINKING_TEXT)} ${renderAssistantElapsedLabel(message, { live: true })}</p>`
+        : message.role === "assistant"
+          ? renderAssistantMarkdown(paragraphs)
+          : paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("");
       return appendInlineContextTrigger(html, renderContextTrigger(message));
     }
 
     function normalizeText(value, fallback = "") {
       return String(value || fallback).trim();
+    }
+
+    function normalizeLimitedText(value, maxLength = 4000) {
+      const limit = Math.max(1, Number.parseInt(String(maxLength), 10) || 4000);
+      return normalizeText(value).slice(0, limit);
     }
 
     function trimDisplayText(value, maxLength = 160) {
@@ -632,6 +726,165 @@
       return Array.isArray(value) ? value.length : 0;
     }
 
+    function normalizeContextMemoryEntries(value) {
+      return Array.isArray(value)
+        ? value.filter((entry) => entry && typeof entry === "object")
+        : [];
+    }
+
+    function getMemoryTypeLabel(entry) {
+      const type = normalizeText(entry?.type);
+      return normalizeText(entry?.typeLabel) || AI_MEMORY_TYPE_LABELS[type] || type || "记忆";
+    }
+
+    function getMemoryStrengthLabel(value) {
+      const strength = normalizeText(value);
+      return AI_MEMORY_STRENGTH_LABELS[strength] || strength || "";
+    }
+
+    function getMemoryRoleLabel(value) {
+      const role = normalizeText(value);
+      return AI_MEMORY_ROLE_LABELS[role] || role || "";
+    }
+
+    function getMemoryReasonLabel(reason, fallbackMap = AI_MEMORY_SELECTION_REASON_LABELS) {
+      const text = normalizeText(reason);
+      if (!text) return "";
+      if (fallbackMap[text]) return fallbackMap[text];
+      const prefixed = /^([a-z_]+):(.+)$/i.exec(text);
+      if (prefixed) {
+        const prefixLabels = {
+          keyword: "关键词",
+          task_type: "任务类型",
+          project: "项目",
+          category: "分类",
+          time_hint: "时间线索",
+        };
+        return `${prefixLabels[prefixed[1]] || prefixed[1]}：${prefixed[2]}`;
+      }
+      return text;
+    }
+
+    function formatMemoryReasonText(reason, fallbackMap = AI_MEMORY_SELECTION_REASON_LABELS) {
+      return normalizeText(reason)
+        .split(",")
+        .map((item) => getMemoryReasonLabel(item, fallbackMap))
+        .filter(Boolean)
+        .slice(0, 4)
+        .join("、");
+    }
+
+    function formatMemoryMatchText(match) {
+      if (!match || typeof match !== "object" || Array.isArray(match)) return "";
+      const parts = [];
+      const labels = {
+        keywords: "关键词",
+        taskType: "任务类型",
+        project: "项目",
+        category: "分类",
+        timeHint: "时间线索",
+      };
+      for (const [key, label] of Object.entries(labels)) {
+        const values = normalizeDisplayList(match[key], 4, 48);
+        if (values.length) parts.push(`${label}：${values.join("、")}`);
+      }
+      return parts.join("；");
+    }
+
+    function renderContextMemoryChips(chips) {
+      const items = (Array.isArray(chips) ? chips : []).map((item) => normalizeText(item)).filter(Boolean);
+      if (!items.length) return "";
+      return `<div class="sidebar-ai-context-memory-chips">${items.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`;
+    }
+
+    function renderContextMemoryUsedCard(entry) {
+      const title = normalizeText(entry?.title) || normalizeText(entry?.memoryId) || "未命名记忆";
+      const projection = normalizeText(entry?.projection) || (normalizeText(entry?.body) ? `[${normalizeText(entry?.strength, "soft")} ${normalizeText(entry?.type, "memory")}] ${normalizeText(entry?.body)}` : "");
+      const reason = formatMemoryReasonText(entry?.reason);
+      const matchText = formatMemoryMatchText(entry?.match);
+      const chips = [
+        getMemoryTypeLabel(entry),
+        getMemoryStrengthLabel(entry?.strength),
+        getMemoryRoleLabel(entry?.usedBy),
+        entry?.hasRule ? "可投射规则" : "",
+      ];
+      return `
+        <article class="sidebar-ai-context-memory-card sidebar-ai-context-memory-card--active">
+          <div class="sidebar-ai-context-memory-head">
+            <strong>${escapeHtml(title)}</strong>
+            <span>已注入</span>
+          </div>
+          ${renderContextMemoryChips(chips)}
+          <p><b>给模型：</b>${escapeHtml(projection || "未记录")}</p>
+          ${reason ? `<small>命中依据：${escapeHtml(reason)}</small>` : ""}
+          ${matchText ? `<small>筛选标签：${escapeHtml(matchText)}</small>` : ""}
+        </article>
+      `;
+    }
+
+    function renderContextMemoryExcludedCard(entry) {
+      const title = normalizeText(entry?.title) || normalizeText(entry?.memoryId) || "未命名记忆";
+      const reason = formatMemoryReasonText(entry?.reason, AI_MEMORY_EXCLUDED_REASON_LABELS) || "本轮未选入";
+      const chips = [
+        getMemoryTypeLabel(entry),
+        getMemoryRoleLabel(entry?.usedBy),
+      ];
+      return `
+        <article class="sidebar-ai-context-memory-card sidebar-ai-context-memory-card--attention">
+          <div class="sidebar-ai-context-memory-head">
+            <strong>${escapeHtml(title)}</strong>
+            <span>未注入</span>
+          </div>
+          ${renderContextMemoryChips(chips)}
+          <p>${escapeHtml(reason)}</p>
+        </article>
+      `;
+    }
+
+    function renderContextMemoryUsage(snapshot) {
+      const memory = snapshot?.memory && typeof snapshot.memory === "object" ? snapshot.memory : {};
+      const entries = normalizeContextMemoryEntries(memory.entries);
+      const excluded = normalizeContextMemoryEntries(memory.excluded);
+      const promptBlock = normalizeText(memory.promptBlock);
+      const disabledReason = AI_MEMORY_EXCLUDED_REASON_LABELS[normalizeText(memory.reason)]
+        ? formatMemoryReasonText(memory.reason, AI_MEMORY_EXCLUDED_REASON_LABELS)
+        : "";
+      const memoryReason = disabledReason
+        || formatMemoryReasonText(memory.reason)
+        || "本轮没有符合条件的正式记忆。";
+      return `
+        <div class="sidebar-ai-context-memory-usage">
+          <section class="sidebar-ai-context-section">
+            <div class="sidebar-ai-context-section-head">
+              <span>已使用记忆</span>
+              <strong>${entries.length} 条</strong>
+            </div>
+            ${entries.length
+              ? entries.map((entry) => renderContextMemoryUsedCard(entry)).join("")
+              : `<div class="sidebar-ai-context-empty">${escapeHtml(memoryReason)}</div>`}
+          </section>
+          <section class="sidebar-ai-context-section">
+            <div class="sidebar-ai-context-section-head">
+              <span>未使用记忆</span>
+              <strong>${excluded.length} 条</strong>
+            </div>
+            ${excluded.length
+              ? excluded.slice(0, 8).map((entry) => renderContextMemoryExcludedCard(entry)).join("")
+              : `<div class="sidebar-ai-context-empty">没有被后端选择器排除的记忆。</div>`}
+          </section>
+          <section class="sidebar-ai-context-section">
+            <div class="sidebar-ai-context-section-head">
+              <span>实际注入文本</span>
+              <strong>${promptBlock ? `${promptBlock.length} 字` : "空"}</strong>
+            </div>
+            ${promptBlock
+              ? `<pre class="sidebar-ai-context-memory-prompt">${escapeHtml(promptBlock)}</pre>`
+              : `<div class="sidebar-ai-context-empty">本轮没有向模型注入记忆文本。</div>`}
+          </section>
+        </div>
+      `;
+    }
+
     function formatConfirmableText(actionReview) {
       if (!actionReview) return "未记录";
       if (actionReview.status === "blocked") return "已拦截";
@@ -702,11 +955,26 @@
       ];
     }
 
+    function getPlannerBudgetReport(snapshot) {
+      const report = snapshot?.modelInputBudget?.planner;
+      return report && typeof report === "object" && !Array.isArray(report) ? report : {};
+    }
+
+    function formatBudgetSectionLabels(items) {
+      return (Array.isArray(items) ? items : [])
+        .map((item) => normalizeText(item?.label || item?.key))
+        .filter(Boolean)
+        .join("、");
+    }
+
     function buildContextDetailSteps(message) {
       const snapshot = message?.contextSnapshot || {};
       const turnTrace = getContextTurnTrace(snapshot);
       const previousUser = getPreviousUserMessage(message?.id);
       const inputTurns = getContextModelInputTurns(snapshot);
+      const plannerBudget = getPlannerBudgetReport(snapshot);
+      const budgetUsage = plannerBudget.usage || {};
+      const budgetLimits = plannerBudget.limits || {};
       const steps = [];
 
       steps.push({
@@ -740,16 +1008,27 @@
           ["参考范围", getReferenceScopeLabel(snapshot.context?.referenceScope)],
           ["时间数据参考", snapshot.context?.contextAccessPolicy?.label || snapshot.context?.contextAccessPolicy?.mode || "未记录"],
           ["已确认记忆", `${Number(snapshot.memory?.count || 0) || 0} 条`],
+          ["未注入记忆", `${countList(snapshot.memory?.excluded)} 条`],
           ["待办上下文", `${countList(snapshot.context?.todos)} 条`],
           ["时间记录", `${countList(snapshot.context?.entries)} 条`],
           ["忙碌块", `${countList(snapshot.context?.busyBlocks)} 条`],
+          ["材料", `${countList(snapshot.context?.materials)} 份`],
+          ["执行候选待办", `${Number(snapshot.contextResolution?.executionTodoCount || 0) || 0} 条`],
+          ["模型输入估算", budgetUsage.estimatedTokens ? `约 ${Number(budgetUsage.estimatedTokens).toLocaleString("zh-CN")} tokens` : "未记录"],
+          ["本轮输入预算", budgetLimits.inputBudgetTokens ? `${Number(budgetLimits.inputBudgetTokens).toLocaleString("zh-CN")} tokens` : "未记录"],
+          ["已读取", formatBudgetSectionLabels(plannerBudget.included) || "未记录"],
+          ["已压缩", formatBudgetSectionLabels(plannerBudget.compressed) || "无"],
+          ["未带入", formatBudgetSectionLabels(plannerBudget.omitted) || "无"],
         ],
+        extraHtml: renderContextMemoryUsage(snapshot),
         raw: {
           context: snapshot.context || {},
           memory: snapshot.memory || {},
           semanticFeedback: snapshot.semanticFeedback || null,
           contextRequest: snapshot.contextRequest || null,
           contextGrant: snapshot.contextGrant || null,
+          contextResolution: snapshot.contextResolution || {},
+          modelInputBudget: snapshot.modelInputBudget || {},
         },
         traceSource: "context composer",
         traceNote: "这是注入模型前由本地上下文整理出的原始上下文包和记忆块。",
@@ -759,6 +1038,8 @@
           semanticFeedback: snapshot.semanticFeedback || null,
           contextRequest: snapshot.contextRequest || null,
           contextGrant: snapshot.contextGrant || null,
+          contextResolution: snapshot.contextResolution || {},
+          modelInputBudget: snapshot.modelInputBudget || {},
         },
       });
 
@@ -1158,6 +1439,7 @@
       return `
         <p class="sidebar-ai-context-step-summary">${escapeHtml(step.summary || "")}</p>
         ${renderContextRows(step.rows)}
+        ${step.extraHtml || ""}
       `;
     }
 
@@ -1335,13 +1617,73 @@
       return Number(windowRef.performance?.now?.() || Date.now());
     }
 
-    function formatAssistantElapsedTime(startedAt, endedAt = getAnimationTime()) {
-      const elapsedMs = Math.max(0, Number(endedAt || 0) - Number(startedAt || 0));
-      const totalSeconds = Math.max(1, Math.round(elapsedMs / 1000));
+    function formatAssistantElapsedSeconds(totalSeconds) {
       if (totalSeconds < 60) return `${totalSeconds}s`;
       const minutes = Math.floor(totalSeconds / 60);
       const seconds = totalSeconds % 60;
       return seconds ? `${minutes}min ${seconds}s` : `${minutes}min`;
+    }
+
+    function formatAssistantElapsedTime(startedAt, endedAt = getAnimationTime()) {
+      const elapsedMs = Math.max(0, Number(endedAt || 0) - Number(startedAt || 0));
+      const totalSeconds = Math.max(1, Math.round(elapsedMs / 1000));
+      return formatAssistantElapsedSeconds(totalSeconds);
+    }
+
+    function getMessageTimerStartedAt(message) {
+      const startedAt = Number(message?.startedAt || 0);
+      return Number.isFinite(startedAt) && startedAt > 0 ? startedAt : 0;
+    }
+
+    function getMessageElapsedMs(message, now = getAnimationTime()) {
+      const storedElapsedMs = Math.max(0, Number(message?.elapsedMs || 0));
+      const startedAt = getMessageTimerStartedAt(message);
+      if (!startedAt || !message?.timerActive) return storedElapsedMs;
+      return Math.max(storedElapsedMs, Math.max(0, Number(now || 0) - startedAt));
+    }
+
+    function getAssistantElapsedTimeLabel(message, options = {}) {
+      if (message?.role !== "assistant") return "";
+      const elapsedMs = getMessageElapsedMs(message);
+      const minimumSeconds = options.live ? 0 : 1;
+      const totalSeconds = Math.max(minimumSeconds, Math.floor(elapsedMs / 1000));
+      return formatAssistantElapsedSeconds(totalSeconds);
+    }
+
+    function hasActiveAssistantElapsedTimer() {
+      return messages.some((message) => message?.role === "assistant" && message.timerActive);
+    }
+
+    function syncAssistantElapsedTimer() {
+      if (hasActiveAssistantElapsedTimer()) {
+        if (!assistantElapsedTimer) {
+          assistantElapsedTimer = scheduleTimeout(refreshAssistantElapsedTimers, AI_ASSISTANT_ELAPSED_TICK_MS);
+        }
+        return;
+      }
+      clearScheduledTimeout(assistantElapsedTimer);
+      assistantElapsedTimer = null;
+    }
+
+    function refreshAssistantElapsedTimers() {
+      assistantElapsedTimer = null;
+      if (!hasActiveAssistantElapsedTimer()) return;
+      const now = getAnimationTime();
+      messages = messages.map((message) => {
+        if (message?.role !== "assistant" || !message.timerActive) return message;
+        return { ...message, elapsedMs: getMessageElapsedMs(message, now) };
+      });
+      renderMessages({ scroll: activeTurnScroll ? "active-turn" : "preserve" });
+      syncAssistantElapsedTimer();
+    }
+
+    function finalizeAssistantElapsedTimer(message, endedAt = getAnimationTime()) {
+      if (message?.role !== "assistant") return message;
+      return {
+        ...message,
+        elapsedMs: getMessageElapsedMs(message, endedAt),
+        timerActive: false,
+      };
     }
 
     function startActiveTurnScroll(userMessageId, assistantMessageId) {
@@ -1471,7 +1813,7 @@
 
     function getMemoryProposalLabel(proposal = {}) {
       const type = normalizeText(proposal.type);
-      if (type === "capability_request") return "能力需求";
+      if (type === "capability_request") return "历史需求记录";
       if (type === "playbook") return "经验方法";
       if (type === "boundary") return "时间边界";
       if (type === "rule") return "执行规则";
@@ -1483,9 +1825,21 @@
 
     function getMemoryProposalPendingEffect(proposal = {}) {
       const type = normalizeText(proposal.type);
+      const relation = proposal.relation && typeof proposal.relation === "object" ? proposal.relation : {};
       if (type === "capability_request") {
-        return "现在只是能力需求提案；确认后会进入需求池，不代表功能已经可用，也不会注入给模型当作执行规则。";
+        return "这是旧版本遗留的能力需求记录。新版本不再把产品需求保存为用户记忆，也不能确认这类新提案。";
       }
+      if (relation.kind === "update") {
+        return "系统已识别为现有记忆的更新；确认后会保留原记忆 ID 并修改内容，旧版本进入修订归档，不会平行新建一条。";
+      }
+      if (relation.kind === "conflict") {
+        const count = Array.isArray(relation.relatedMemoryIds) ? relation.relatedMemoryIds.length : 0;
+        const titles = Array.isArray(relation.relatedMemories)
+          ? relation.relatedMemories.map((item) => normalizeText(item?.title || item?.id)).filter(Boolean)
+          : [];
+        return `系统发现 ${count || "多"} 条范围重叠的旧记忆${titles.length ? `（${titles.join("、")}）` : ""}；确认后会合并为一个版本，其余版本停用并保留归档。`;
+      }
+      if (relation.kind === "unresolved_update") return "系统没有找到要更新的原记忆，需要先编辑主题或目标后才能确认。";
       if (type === "playbook") {
         return "现在只是经验方法提案；确认后会进入 active memory，帮助后续拆解任务、复盘和对话表达。";
       }
@@ -1494,8 +1848,16 @@
 
     function getMemoryProposalConfirmedMessage(proposal = {}) {
       const type = normalizeText(proposal.type);
+      const relation = proposal.relation && typeof proposal.relation === "object" ? proposal.relation : {};
       if (type === "capability_request") {
-        return "这条能力需求已经进入需求池；它不会作为已启用功能执行，也不会注入给模型当作规则。";
+        return "这是旧版本遗留记录，不作为用户记忆或已启用功能使用。";
+      }
+      if (relation.kind === "update") {
+        return "原记忆已经更新，记忆 ID 保持不变；旧版本已进入修订归档。";
+      }
+      if (relation.kind === "conflict") {
+        const count = Array.isArray(relation.relatedMemoryIds) ? relation.relatedMemoryIds.length : 0;
+        return `相关的 ${count || "多"} 条旧记忆已合并为一个版本；原始版本仍保留在归档中。`;
       }
       if (type === "playbook") {
         return "这条经验方法已经进入 active memory，会用于后续拆解任务、复盘和相关对话。";
@@ -1560,7 +1922,7 @@
                     </div>
                     ${preview}
                     <div class="sidebar-ai-confirm-actions">
-                      <button class="primary" type="button" data-ai-pending-action="confirm" data-ai-pending-id="${escapeHtml(item.id)}">${item.type === "context_request" ? "允许" : "确认"}</button>
+                      <button class="primary" type="button" data-ai-pending-action="confirm" data-ai-pending-id="${escapeHtml(item.id)}">${item.type === "context_request" ? "允许" : item.type === "memory_proposal" && item.payload?.relation?.kind === "conflict" ? "合并并更新" : "确认"}</button>
                       <button class="secondary" type="button" data-ai-pending-action="edit" data-ai-pending-id="${escapeHtml(item.id)}">${item.type === "context_request" ? "修改问题" : "编辑"}</button>
                       <button class="danger" type="button" data-ai-pending-action="reject" data-ai-pending-id="${escapeHtml(item.id)}">${item.type === "context_request" ? "不允许" : "拒绝"}</button>
                     </div>
@@ -1624,7 +1986,18 @@
       return review?.status === "blocked" ? "风险" : "提示";
     }
 
-    function renderSemanticActionBlock(value, reviewValue, messageId = "") {
+    function getSemanticConfidenceText(semantic) {
+      return semantic?.confidence === null ? "--" : `${Math.round(semantic.confidence * 100)}%`;
+    }
+
+    function getSemanticConfidenceTone(semantic) {
+      if (semantic?.confidence === null) return "unknown";
+      if (semantic.confidence >= 0.8) return "high";
+      if (semantic.confidence >= 0.55) return "medium";
+      return "low";
+    }
+
+    function renderSemanticActionBlock(value, reviewValue, messageId = "", expanded = false) {
       const semantic = normalizeSemanticAction(value);
       const review = normalizeActionReview(reviewValue);
       if (!semantic) return "";
@@ -1633,7 +2006,8 @@
         ...semantic.contextRefs,
         ...semantic.memoryRefs.map((item) => `记忆：${item}`),
       ];
-      const confidenceText = semantic.confidence === null ? "" : `${Math.round(semantic.confidence * 100)}%`;
+      const confidenceText = getSemanticConfidenceText(semantic);
+      const confidenceTone = getSemanticConfidenceTone(semantic);
       const reviewLabel = getActionReviewLabel(review);
       const rows = [
         renderSemanticRow("我理解为", semantic.normalizedGoal),
@@ -1643,21 +2017,29 @@
         renderSemanticChipRow("假设", semantic.assumptions),
         renderSemanticChipRow(getMissingFieldLabel(review), semantic.missingFields, "is-warning"),
         renderSemanticChipRow(getWarningLabel(review), semantic.warnings, review?.status === "blocked" ? "is-danger" : "is-warning"),
-        renderSemanticRow("可信度", confidenceText),
       ].filter(Boolean);
       if (!rows.length) return "";
+      const isExpanded = expanded === true;
+      const contentId = `semantic_content_${messageId || "item"}`;
       return `
-        <section class="sidebar-ai-semantic-card" aria-label="AI 理解与操作">
-          <div class="sidebar-ai-section-head">
+        <section class="sidebar-ai-semantic-card${isExpanded ? " is-expanded" : ""}" aria-label="AI 理解与操作" data-ai-semantic-expanded="${isExpanded ? "true" : "false"}">
+          <div class="sidebar-ai-section-head sidebar-ai-semantic-head">
             <span>理解与操作</span>
-            <span class="sidebar-ai-count">${escapeHtml(reviewLabel || (semantic.requiresConfirmation ? "需确认" : "建议"))}</span>
+            <button class="sidebar-ai-semantic-toggle" type="button" data-ai-semantic-toggle="${escapeHtml(messageId)}" aria-expanded="${isExpanded ? "true" : "false"}" aria-controls="${escapeHtml(contentId)}" aria-label="${escapeHtml(isExpanded ? "收起理解与操作" : "展开理解与操作")}">
+              <span class="sidebar-ai-semantic-confidence" data-tone="${escapeHtml(confidenceTone)}">${escapeHtml(confidenceText)}</span>
+              <svg class="sidebar-ai-semantic-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="m6 9 6 6 6-6"></path>
+              </svg>
+            </button>
           </div>
-          <div class="sidebar-ai-semantic-list">
-            ${rows.join("")}
-          </div>
-          <div class="sidebar-ai-semantic-actions">
-            <button type="button" data-ai-semantic-retry="${escapeHtml(messageId)}">重新理解</button>
-          </div>
+          ${isExpanded ? `
+            <div class="sidebar-ai-semantic-list" id="${escapeHtml(contentId)}">
+              ${rows.join("")}
+            </div>
+            <div class="sidebar-ai-semantic-actions">
+              <button type="button" data-ai-semantic-retry="${escapeHtml(messageId)}">重新理解</button>
+            </div>
+          ` : ""}
         </section>
       `;
     }
@@ -1706,6 +2088,7 @@
           message.semanticAction || message.contextSnapshot?.semanticAction,
           message.actionReview || message.contextSnapshot?.actionReview,
           message.id,
+          message.semanticExpanded === true,
         ),
         renderGeneratedBlock(generated),
         renderPendingBlock(pending),
@@ -1750,13 +2133,15 @@
       return "•";
     }
 
-    function renderMessageState(message, state) {
-      const text = normalizeText(state, message.role === "user" ? "刚刚" : "完成");
-      if (message.role !== "assistant") {
-        return `<span class="sidebar-ai-message-state sidebar-ai-message-state--user">${escapeHtml(text)}</span>`;
-      }
+	    function renderMessageState(message, state) {
+	      const text = normalizeText(state, message.role === "user" ? "刚刚" : "完成");
+	      if (message.role !== "assistant") {
+	        return `<span class="sidebar-ai-message-state sidebar-ai-message-state--user">${escapeHtml(text)}</span>`;
+	      }
       if (text === "连接中") {
-        return `<span class="sidebar-ai-message-state sidebar-ai-message-state--thinking" aria-label="正在连接">connecting......</span>`;
+        const elapsedLabel = getAssistantElapsedTimeLabel(message, { live: true });
+        const ariaLabel = elapsedLabel ? `正在连接，已用 ${elapsedLabel}` : "正在连接";
+        return `<span class="sidebar-ai-message-state sidebar-ai-message-state--thinking" aria-label="${escapeHtml(ariaLabel)}">connecting......</span>`;
       }
       const icon = getAssistantStateIcon(text);
       const tone = text === "失败" || text === "已拒绝"
@@ -1766,8 +2151,27 @@
           : text === "生成中" || text === "运行中"
             ? "active"
             : "done";
-      return `<span class="sidebar-ai-message-state sidebar-ai-message-state--icon sidebar-ai-message-state--${tone}" aria-label="${escapeHtml(text)}" title="${escapeHtml(text)}">${escapeHtml(icon)}</span>`;
-    }
+      const elapsedLabel = message.timerActive && (text === "生成中" || text === "运行中")
+        ? getAssistantElapsedTimeLabel(message, { live: true })
+        : "";
+      const stateLabel = elapsedLabel ? `${text} · ${elapsedLabel}` : text;
+	      return `<span class="sidebar-ai-message-state sidebar-ai-message-state--icon sidebar-ai-message-state--${tone}" aria-label="${escapeHtml(stateLabel)}" title="${escapeHtml(stateLabel)}">${escapeHtml(icon)}</span>`;
+	    }
+
+	    function shouldRenderMessageHead(message, previousMessage = null) {
+	      if (!message || message.role !== "assistant") return true;
+	      return previousMessage?.role !== "assistant";
+	    }
+
+	    function renderMessageHead(message, state, previousMessage = null) {
+	      if (!shouldRenderMessageHead(message, previousMessage)) return "";
+	      return `
+	        <div class="sidebar-ai-message-head">
+	          ${renderMessageAuthor(message)}
+	          ${renderMessageState(message, state)}
+	        </div>
+	      `;
+	    }
 
     function shouldRenderActiveTurnSpacer(message) {
       if (!activeTurnScroll) return false;
@@ -1946,25 +2350,26 @@
       }
     }
 
-    function renderMessages(options = {}) {
-      if (!thread) return;
-      thread.innerHTML = messages
-        .slice(-24)
-        .map((message) => {
-          const state = message.state || (message.role === "user" ? "刚刚" : "完成");
-          const paragraphs = renderMessageParagraphs(message);
-          const meta = message.meta
-            ? `<div class="sidebar-ai-message-meta"><span>${escapeHtml(message.meta)}</span></div>`
-            : "";
-          return `
-            <article class="sidebar-ai-message sidebar-ai-message--${message.role}" data-ai-message-id="${escapeHtml(message.id)}" data-ai-message-role="${escapeHtml(message.role)}">
-              <div class="sidebar-ai-message-head">
-                ${renderMessageAuthor(message)}
-                ${renderMessageState(message, state)}
-              </div>
-              ${paragraphs}
-              ${meta}
-              ${renderMessageBlocks(message)}
+	    function renderMessages(options = {}) {
+	      if (!thread) return;
+	      const visibleMessages = messages.slice(-24);
+	      thread.innerHTML = visibleMessages
+	        .map((message, index) => {
+	          const previousMessage = index > 0 ? visibleMessages[index - 1] : null;
+	          const state = message.state || (message.role === "user" ? "刚刚" : "完成");
+	          const paragraphs = renderMessageParagraphs(message);
+	          const meta = message.meta
+	            ? `<div class="sidebar-ai-message-meta"><span>${escapeHtml(message.meta)}</span></div>`
+	            : "";
+	          const continuationClass = message.role === "assistant" && !shouldRenderMessageHead(message, previousMessage)
+	            ? " sidebar-ai-message--continuation"
+	            : "";
+	          return `
+	            <article class="sidebar-ai-message sidebar-ai-message--${message.role}${continuationClass}" data-ai-message-id="${escapeHtml(message.id)}" data-ai-message-role="${escapeHtml(message.role)}">
+	              ${renderMessageHead(message, state, previousMessage)}
+	              ${paragraphs}
+	              ${meta}
+	              ${renderMessageBlocks(message)}
             </article>
             ${renderActiveTurnSpacer(message)}
           `;
@@ -1985,11 +2390,15 @@
         pendingIds: Array.isArray(message.pendingIds) ? message.pendingIds : [],
         semanticAction: message.semanticAction && typeof message.semanticAction === "object" ? message.semanticAction : null,
         actionReview: message.actionReview && typeof message.actionReview === "object" ? message.actionReview : null,
+        semanticExpanded: message.semanticExpanded === true,
         decision: message.decision && typeof message.decision === "object" ? message.decision : null,
         workflow: message.workflow && typeof message.workflow === "object" ? message.workflow : null,
         showActions: Boolean(message.showActions),
         actionsPending: Boolean(message.actionsPending),
         streamText: message.streamText || "",
+        startedAt: getMessageTimerStartedAt(message),
+        elapsedMs: Math.max(0, Number(message.elapsedMs || 0)),
+        timerActive: Boolean(message.timerActive),
         contextSnapshot: message.contextSnapshot && typeof message.contextSnapshot === "object" ? message.contextSnapshot : null,
       };
       if (normalized.role === "assistant") {
@@ -2002,6 +2411,7 @@
       if (options.render !== false) {
         renderMessages({ scroll: options.scroll || (activeTurnScroll ? "active-turn" : "bottom") });
       }
+      syncAssistantElapsedTimer();
       return normalized;
     }
 
@@ -2051,6 +2461,7 @@
         return nextMessage;
       });
       renderMessages();
+      syncAssistantElapsedTimer();
       return nextMessage;
     }
 
@@ -2345,6 +2756,16 @@
       if (code === "AI_EXTERNAL_REQUEST_NOT_CONFIRMED") {
         return "这次请求需要明确允许调用外部 AI Provider。请重新发送，或先检查 AI 接入设置。";
       }
+      if (code === "AI_CHAT_MESSAGE_TOO_LONG") {
+        const length = Number(error?.details?.length || 0) || 0;
+        const maxLength = Number(error?.details?.maxLength || 50000) || 50000;
+        return length
+          ? `整理后的单条模型消息有 ${length.toLocaleString("zh-CN")} 字，超过 ${maxLength.toLocaleString("zh-CN")} 字保护线。系统会记录本轮上下文预算，请重试；若仍出现，请在上下文详情中查看被压缩的部分。`
+          : "整理后的单条模型消息超过保护线。请重试，并在上下文详情中查看本轮压缩情况。";
+      }
+      if (code === "AI_REQUEST_BODY_TOO_LARGE") {
+        return "本轮原始输入和上下文超过本地请求保护上限。长资料应作为材料分段读取；当前可缩小参考范围后重试。";
+      }
       if (code === "AI_ASSISTANT_PROVIDER_HTTP_STATUS" || stage === "provider_response") {
         const httpStatus = error?.details?.httpStatus;
         if (httpStatus === 503 && /busy|service_unavailable|too busy|繁忙|不可用/i.test(providerMessage || providerBody)) {
@@ -2356,6 +2777,35 @@
       }
       if (stage === "provider_request" || code === "AI_PROVIDER_FETCH_UNAVAILABLE") {
         return "暂时无法连接 AI Provider。请检查网络、Base URL 或本地模型服务是否启动。";
+      }
+      if (code === "AI_MEMORY_PROPOSAL_POLICY_INVALID") {
+        const validationErrors = Array.isArray(error?.details?.validation?.errors)
+          ? error.details.validation.errors
+          : [];
+        const fieldLabels = {
+          type_invalid: "记忆类型",
+          subject_key_invalid: "主题标识",
+          match_mode_invalid: "匹配方式",
+          strength_invalid: "约束强度",
+          model_readable_invalid: "AI 可读开关",
+          engine_readable_invalid: "本地执行开关",
+          valid_from_invalid: "生效日期",
+          valid_until_invalid: "失效日期",
+          review_after_invalid: "复核日期",
+          confidence_invalid: "置信度",
+        };
+        const fields = Array.from(new Set(validationErrors
+          .map((item) => fieldLabels[item] || (/^rule_invalid:/.test(item) ? "结构化规则" : ""))
+          .filter(Boolean)));
+        return fields.length
+          ? `这次没有创建记忆提案：模型生成的${fields.join("、")}格式不兼容，系统已安全拦截。你可以原句重试；如果仍出现，请把这条提示反馈给开发者。`
+          : "这次没有创建记忆提案：模型生成的字段格式不兼容，系统已安全拦截。这不是因为你的输入不够具体，可以原句重试。";
+      }
+      if (code === "AI_MEMORY_TYPE_DEPRECATED") {
+        return "这句话描述的是产品能力需求，不属于用户记忆，因此没有创建记忆提案。可以改为创建一条待办。";
+      }
+      if (code === "AI_MEMORY_CANDIDATE_INCOMPLETE") {
+        return "这句话还不足以形成一条稳定记忆。请补充这是长期偏好、习惯、原则还是边界，以及它适用于什么场景。";
       }
       if (stage === "workflow") {
         return "模型已经选择了工具，但工具执行失败。请补充更具体的信息后再试，或者改用快捷动作。";
@@ -2397,6 +2847,78 @@
       return /((当前|选中)(的)?(任务|待办|事项))|((这个|这项|这条|这件|这一个|刚才那个|上面那个|该)(任务|待办|事项))|(this\s+(todo|task))/i.test(String(text || ""));
     }
 
+    function normalizeIdList(value, maxItems = 20) {
+      const source = Array.isArray(value) ? value : value ? [value] : [];
+      return Array.from(new Set(source
+        .map((item) => normalizeLimitedText(item, 120))
+        .filter(Boolean)))
+        .slice(0, Math.max(1, maxItems));
+    }
+
+    function normalizePlainObject(value, allowedKeys = []) {
+      const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const result = {};
+      const keys = allowedKeys.length ? allowedKeys : Object.keys(source);
+      keys.forEach((key) => {
+        const raw = source[key];
+        if (raw === true || raw === false || raw === null) {
+          result[key] = raw;
+          return;
+        }
+        if (Number.isFinite(Number(raw)) && raw !== "") {
+          result[key] = Number(raw);
+          return;
+        }
+        const text = normalizeLimitedText(raw, 160);
+        if (text) result[key] = text;
+      });
+      return result;
+    }
+
+    function normalizeViewContext(value) {
+      const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const rawRange = source.visibleRange || source.range || {};
+      const start = normalizeText(rawRange.start || rawRange.dateFrom || rawRange.date);
+      const end = normalizeText(rawRange.end || rawRange.dateTo || start);
+      const selection = source.selection && typeof source.selection === "object" && !Array.isArray(source.selection)
+        ? source.selection
+        : {};
+      return {
+        schema: normalizeLimitedText(source.schema || AI_VIEW_CONTEXT_SCHEMA, 80),
+        source: normalizeLimitedText(source.source || "client", 40),
+        activeView: normalizeLimitedText(source.activeView || source.view || "", 80),
+        surface: normalizeLimitedText(source.surface || source.activeView || source.view || "unknown", 80),
+        visibleRange: {
+          start: isValidDate(start) ? start : "",
+          end: isValidDate(end) ? end : isValidDate(start) ? start : "",
+        },
+        filters: normalizePlainObject(source.filters, [
+          "project",
+          "category",
+          "tag",
+          "status",
+          "todoDimension",
+          "todoSelection",
+          "currentRange",
+          "showHistory",
+          "showRecurringOnly",
+        ]),
+        selection: {
+          todoIds: normalizeIdList(selection.todoIds || selection.todoId),
+          entryIds: normalizeIdList(selection.entryIds || selection.entryId),
+          journalIds: normalizeIdList(selection.journalIds || selection.journalId),
+        },
+      };
+    }
+
+    function readViewContext() {
+      try {
+        return normalizeViewContext(getViewContext());
+      } catch {
+        return normalizeViewContext({});
+      }
+    }
+
     function hasWeekReference(text) {
       return /(本周|这周|一周|未来\s*7\s*天|7\s*天|周计划|week)/i.test(String(text || ""));
     }
@@ -2420,9 +2942,31 @@
       return !/(待办|任务|安排|日程|排程|今天做|接下来|下一步|空档|会议|todo|task|schedule|calendar)/i.test(source);
     }
 
-    function inferAutomaticContextScopeMode(action, text) {
+    function inferViewContextScopeMode(viewContext) {
+      const surface = normalizeText(viewContext?.surface);
+      const activeView = normalizeText(viewContext?.activeView);
+      const selectedTodoIds = normalizeIdList(viewContext?.selection?.todoIds);
+      if ((surface === "todo" || surface === "todo.detail" || activeView === "todo") && selectedTodoIds.length) return "view_todo_selected";
+      if (surface === "todo" || surface === "todo.list" || activeView === "todo") return "view_todo_summary";
+      if (surface === "calendar.day") return "view_calendar_day";
+      if (surface === "calendar.week" || activeView === "calendar") return "view_calendar_week";
+      if (surface === "review.range" || activeView === "review") return "view_review_range";
+      return "";
+    }
+
+    function inferAutomaticContextScopeMode(action, text, viewContext = readViewContext()) {
       if (action === "assistant") {
-        return isCurrentTimeOnlyText(text) ? "none" : "default_2_3";
+        if (isCurrentTimeOnlyText(text)) return "none";
+        const selectedRef = hasSelectedTodoReference(text);
+        const scheduleRef = hasScheduleReference(text);
+        const todoRef = hasTodoReference(text);
+        if (selectedRef && scheduleRef) return "selected_with_today";
+        if (selectedRef) return "selected_todo";
+        if (hasWeekReference(text) && (todoRef || scheduleRef)) return "week";
+        if (/(明天|后天|tomorrow)/i.test(String(text || "")) && (todoRef || scheduleRef)) return "week";
+        if (hasNearDayReference(text) && (todoRef || scheduleRef)) return "today";
+        if (todoRef && !scheduleRef) return "unfinished";
+        return inferViewContextScopeMode(viewContext) || "none";
       }
       if (action === "plan_today" || action === "review_day") return "today";
       if (action === "plan_week") return "week";
@@ -2459,6 +3003,18 @@
       if (mode === "reflow_unfinished") {
         return { selectedTodo: false, todos: true, busyBlocks: true, entries: false };
       }
+      if (mode === "view_todo_selected" || mode === "view_todo_detail") {
+        return { selectedTodo: true, todos: false, busyBlocks: false, entries: false };
+      }
+      if (mode === "view_todo_summary" || mode === "view_todo_list") {
+        return { selectedTodo: false, todos: true, busyBlocks: false, entries: false };
+      }
+      if (mode === "view_calendar_day" || mode === "view_calendar_week") {
+        return { selectedTodo: false, todos: true, busyBlocks: true, entries: false };
+      }
+      if (mode === "view_review_range") {
+        return { selectedTodo: false, todos: true, busyBlocks: true, entries: true };
+      }
       if (mode === "default_2_3") {
         return { selectedTodo: false, todos: true, busyBlocks: true, entries: true };
       }
@@ -2470,11 +3026,60 @@
 
     function normalizeContextIncludeList(value) {
       const source = Array.isArray(value) ? value : [];
-      const allowed = new Set(["todos", "entries", "busyBlocks", "memory", "progress", "selectedTodo"]);
+      const allowed = new Set([
+        "todos",
+        "entries",
+        "busyBlocks",
+        "memory",
+        "progress",
+        "selectedTodo",
+        "selectedObjects",
+        "pageWorkContext",
+        "globalBackgroundContext",
+        "todoDetails",
+        "projectTodos",
+        "tagTodos",
+        "statusTodos",
+        "calendarBusyBlocks",
+      ]);
       return Array.from(new Set(source
         .map((item) => normalizeText(item))
-        .map((item) => (item === "busy_blocks" ? "busyBlocks" : item))
+        .map((item) => {
+          if (item === "busy_blocks") return "busyBlocks";
+          if (item === "selected_objects") return "selectedObjects";
+          if (item === "page_work_context") return "pageWorkContext";
+          if (item === "global_background_context") return "globalBackgroundContext";
+          if (item === "todo_details") return "todoDetails";
+          if (item === "project_todos") return "projectTodos";
+          if (item === "tag_todos") return "tagTodos";
+          if (item === "status_todos") return "statusTodos";
+          if (item === "calendar_busy_blocks") return "calendarBusyBlocks";
+          return item;
+        })
         .filter((item) => allowed.has(item))));
+    }
+
+    function normalizeContextRequestType(value) {
+      const raw = normalizeText(value);
+      const aliases = {
+        time_window: "time_window_expand",
+        detail_expand: "todo_detail_expand",
+        todo_detail: "todo_detail_expand",
+        project: "project_expand",
+        tag: "tag_expand",
+        status: "status_expand",
+        calendar: "calendar_expand",
+      };
+      const normalized = aliases[raw] || raw;
+      const allowed = new Set([
+        "time_window_expand",
+        "todo_detail_expand",
+        "project_expand",
+        "tag_expand",
+        "status_expand",
+        "calendar_expand",
+      ]);
+      return allowed.has(normalized) ? normalized : "time_window_expand";
     }
 
     function normalizeContextGrant(value) {
@@ -2485,7 +3090,17 @@
       const start = normalizeText(range.start || range.dateFrom || range.date);
       const end = normalizeText(range.end || range.dateTo || start);
       const include = normalizeContextIncludeList(request.include || request.includes || request.dataTypes);
-      if (!start && !end && !include.length) return null;
+      const rawType = request.requestType || request.expansionType || request.kind || (
+        request.type === "need_more_context" || request.type === "context_request" ? "" : request.type
+      );
+      const todoIds = normalizeIdList(request.todoIds || request.todoId, 12);
+      const project = normalizeText(request.project || "");
+      const category = normalizeText(request.category || "");
+      const tag = normalizeText(request.tag || "");
+      const status = normalizeText(request.status || "");
+      const detailLevel = normalizeText(request.detailLevel || request.level || "");
+      const target = normalizeText(request.target || request.scope || "");
+      if (!start && !end && !include.length && !todoIds.length && !project && !category && !tag && !status && !detailLevel && !target) return null;
       return {
         schema: "guanshi-ai-context-grant-v1",
         approved: source.approved !== false,
@@ -2494,11 +3109,50 @@
         grantSource: normalizeText(source.grantSource || source.source || "user_confirmed"),
         request: {
           schema: "guanshi-ai-context-request-v1",
+          requestType: normalizeContextRequestType(rawType),
+          target,
+          detailLevel,
+          todoIds,
+          project,
+          category,
+          tag,
+          status,
           reason: trimDisplayText(request.reason || source.reason || "用户同意本轮参考更多上下文。", 600),
           range: { start, end: end || start },
           include: include.length ? include : ["todos"],
           maxItems: Math.max(1, Math.min(200, Number.parseInt(String(request.maxItems || request.limit || 80), 10) || 80)),
         },
+      };
+    }
+
+    function normalizeContextContinuation(value) {
+      const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+      if (!source) return null;
+      const requiredCapabilities = normalizeContextIncludeList(
+        source.requiredCapabilities || source.required || source.include,
+      ).map((item) => {
+        if (["selectedObjects", "todoDetails"].includes(item)) return "selectedTodo";
+        if (["pageWorkContext", "projectTodos", "tagTodos", "statusTodos"].includes(item)) return "todos";
+        if (item === "calendarBusyBlocks") return "busyBlocks";
+        return item;
+      }).filter((item) => ["selectedTodo", "todos", "entries", "busyBlocks"].includes(item));
+      if (!requiredCapabilities.length) return null;
+      const range = source.range && typeof source.range === "object" ? source.range : {};
+      return {
+        schema: "guanshi-ai-context-continuation-v1",
+        resolutionId: normalizeText(source.resolutionId || source.id),
+        sourceRequestId: normalizeText(source.sourceRequestId || source.requestId),
+        rerunCount: Math.max(0, Math.min(1, Number.parseInt(String(source.rerunCount || 0), 10) || 0)),
+        requiredCapabilities: Array.from(new Set(requiredCapabilities)),
+        scopeMode: normalizeText(source.scopeMode || source.scope_mode || "today"),
+        range: {
+          start: normalizeText(range.start || range.dateFrom || range.date),
+          end: normalizeText(range.end || range.dateTo || range.start || range.dateFrom || range.date),
+        },
+        surfaceRef: normalizeText(source.surfaceRef || source.surface_ref),
+        targetView: normalizeText(source.targetView || source.view),
+        previousAction: normalizeText(source.previousAction || source.action),
+        reason: trimDisplayText(source.reason || "切换到已登记页面后继续处理。", 600),
       };
     }
 
@@ -2511,12 +3165,35 @@
         label: option.label,
         conversationId: contextConversationId,
         sessionTtlMinutes: Math.round(AI_CONTEXT_CONVERSATION_TTL_MS / 60000),
-        allowedIncludes: ["todos", "entries", "busyBlocks"],
+        allowedIncludes: [
+          "todos",
+          "entries",
+          "busyBlocks",
+          "selectedObjects",
+          "pageWorkContext",
+          "globalBackgroundContext",
+          "todoDetails",
+          "projectTodos",
+          "tagTodos",
+          "statusTodos",
+          "calendarBusyBlocks",
+        ],
         maxAutoReruns: AI_CONTEXT_RERUN_MAX,
       };
     }
 
+    function getViewContextRangeForScope(resolvedMode, viewContext) {
+      const mode = normalizeText(resolvedMode);
+      if (!/^view_/.test(mode)) return null;
+      const range = viewContext?.visibleRange || {};
+      const start = normalizeText(range.start);
+      const end = normalizeText(range.end || start);
+      if (!isValidDate(start) || !isValidDate(end)) return null;
+      return { start, end };
+    }
+
     function resolveReferenceScope(action, text, options = {}) {
+      const viewContext = readViewContext();
       const contextGrant = normalizeContextGrant(options.contextGrant);
       if (contextGrant?.approved) {
         const include = new Set(contextGrant.request.include);
@@ -2528,6 +3205,28 @@
           label: "本轮授权范围",
           range: contextGrant.request.range,
           maxItems: contextGrant.request.maxItems,
+          viewContext,
+          includes: {
+            selectedTodo: (include.has("selectedTodo") || include.has("selectedObjects") || include.has("todoDetails")) && Boolean(getSelectedTodo()),
+            todos: include.has("todos") || include.has("pageWorkContext") || include.has("projectTodos") || include.has("tagTodos") || include.has("statusTodos"),
+            busyBlocks: include.has("busyBlocks") || include.has("calendarBusyBlocks"),
+            entries: include.has("entries"),
+          },
+        };
+      }
+      const contextContinuation = normalizeContextContinuation(options.contextContinuation);
+      if (contextContinuation) {
+        const include = new Set(contextContinuation.requiredCapabilities);
+        const range = contextContinuation.range?.start ? contextContinuation.range : null;
+        return {
+          schema: AI_REFERENCE_SCOPE_SCHEMA,
+          requestedMode: "surface_recompose",
+          resolvedMode: contextContinuation.scopeMode || "today",
+          source: "surface_recompose",
+          label: "已切换页面范围",
+          ...(range ? { range } : {}),
+          maxItems: 80,
+          viewContext,
           includes: {
             selectedTodo: include.has("selectedTodo") && Boolean(getSelectedTodo()),
             todos: include.has("todos"),
@@ -2538,10 +3237,11 @@
       }
       const requestedMode = getReferenceScopeRequestMode();
       const isManual = requestedMode !== "auto";
-      const resolvedMode = isManual ? requestedMode : inferAutomaticContextScopeMode(action, text);
+      const resolvedMode = isManual ? requestedMode : inferAutomaticContextScopeMode(action, text, viewContext);
       const includes = getReferenceScopeIncludes(resolvedMode);
       const selectedTodo = getSelectedTodo();
       const policyOption = getContextScopeOption(contextScopeMode);
+      const range = getViewContextRangeForScope(resolvedMode, viewContext);
       return {
         schema: AI_REFERENCE_SCOPE_SCHEMA,
         requestedMode,
@@ -2550,6 +3250,8 @@
         label: isManual
           ? policyOption.label
           : AI_CONTEXT_SCOPE_RESOLVED_LABELS[resolvedMode] || policyOption.label,
+        ...(range ? { range } : {}),
+        viewContext,
         includes: {
           selectedTodo: includes.selectedTodo && Boolean(selectedTodo),
           todos: includes.todos,
@@ -2580,6 +3282,10 @@
       const mode = typeof scopeOrAction === "string"
         ? scopeOrAction
         : normalizeText(scopeOrAction?.resolvedMode || scopeOrAction?.mode);
+      if (typeof scopeOrAction === "object" && scopeOrAction?.range) {
+        const dates = getDateListFromRange(scopeOrAction.range.start, scopeOrAction.range.end, 31);
+        if (dates.length) return dates;
+      }
       if (mode === "granted_range") {
         const range = typeof scopeOrAction === "object" ? scopeOrAction.range || {} : {};
         return getDateListFromRange(range.start, range.end, 31);
@@ -2591,13 +3297,18 @@
 
     function getRecentEntryDates(scope) {
       const today = normalizeText(getTodayDateInputValue(), new Date().toISOString().slice(0, 10));
+      if (scope?.range) {
+        const dates = getDateListFromRange(scope.range.start, scope.range.end, 31);
+        if (dates.length) return dates;
+      }
       if (scope?.resolvedMode === "granted_range") return getTargetDates(scope);
       if (scope?.resolvedMode === "default_2_3") return getDateListFromRange(addDays(today, -2), addDays(today, 3), 6);
       return Array.from({ length: 1 }, (_, index) => addDays(today, index)).filter(Boolean);
     }
 
-    function pickTodo(todo) {
-      return {
+    function pickTodo(todo, options = {}) {
+      const includeNote = options.includeNote === true;
+      const result = {
         id: normalizeText(todo?.id),
         title: normalizeText(todo?.title, "未命名待办"),
         category: normalizeText(todo?.category),
@@ -2621,6 +3332,8 @@
         orderInDay: Number.isFinite(Number(todo?.orderInDay)) ? Number(todo.orderInDay) : null,
         completed: Boolean(todo?.completed),
       };
+      if (includeNote) result.note = trimDisplayText(todo?.note, 1500);
+      return result;
     }
 
     function getTodoSortKey(todo) {
@@ -2640,7 +3353,7 @@
       return (Array.isArray(getTodos()) ? getTodos() : [])
         .filter((todo) => todo)
         .filter((todo) => {
-          if (mode === "unfinished" || mode === "reflow_unfinished") return true;
+          if (mode === "unfinished" || mode === "reflow_unfinished" || mode === "view_todo_list" || mode === "view_todo_summary") return true;
           if (mode !== "granted_range" && !todo.completed && !todo.dueDate) return true;
           return dates.has(String(todo.dueDate || ""));
         })
@@ -2703,23 +3416,370 @@
       return `当前未完成待办 ${unfinished} 个；今日待办 ${todayTodos} 个；今日已有记录/忙碌块 ${todayEntries} 个；动作：${action}。`;
     }
 
+    function isBusinessContextDisabled(referenceScope, viewContext) {
+      const mode = normalizeText(referenceScope?.resolvedMode || referenceScope?.requestedMode);
+      const accessMode = normalizeText(contextAccessPolicyModeFromScope(referenceScope));
+      const surface = normalizeText(viewContext?.surface);
+      const isExpandedGrant = referenceScope?.source === "grant" || mode === "granted_range";
+      return mode === "none" || accessMode === "no_reference" || (!isExpandedGrant && (surface === "settings" || surface === "overview"));
+    }
+
+    function contextAccessPolicyModeFromScope(referenceScope) {
+      if (referenceScope?.source === "grant") return "granted";
+      return normalizeContextScopeMode(contextScopeMode) === "none" ? "no_reference" : normalizeContextScopeMode(contextScopeMode);
+    }
+
+    function pickTodoProviderDefault(todo, options = {}) {
+      const dependencies = Array.isArray(todo?.dependencies)
+        ? todo.dependencies.map((item) => normalizeText(item)).filter(Boolean).slice(0, 12)
+        : [];
+      const result = {
+        id: normalizeText(todo?.id),
+        title: normalizeText(todo?.title, "未命名待办"),
+        project: normalizeText(todo?.project),
+        category: normalizeText(todo?.category),
+        tags: Array.isArray(todo?.tags) ? todo.tags.map((item) => normalizeText(item)).filter(Boolean).slice(0, 8) : [],
+        dueDate: normalizeText(todo?.dueDate),
+        startTime: normalizeText(todo?.startTime),
+        endTime: normalizeText(todo?.endTime),
+        estimatedMinutes: Number(todo?.estimatedMinutes) || undefined,
+        remainingMinutes: Number(todo?.remainingMinutes) || Number(todo?.estimatedMinutes) || undefined,
+        planLocked: Boolean(todo?.planLocked),
+      };
+      if (options.includeCompletion === true) result.completed = Boolean(todo?.completed);
+      if (options.includeNote === true) {
+        const note = trimDisplayText(todo?.note || todo?.notes || todo?.noteDigest, 1500);
+        if (note) result.note = note;
+      }
+      if (options.includeDependencies === true && dependencies.length) result.dependencies = dependencies;
+      Object.keys(result).forEach((key) => {
+        if (result[key] === "" || result[key] === undefined || (Array.isArray(result[key]) && !result[key].length)) {
+          delete result[key];
+        }
+      });
+      return result;
+    }
+
+    function pickTodoPageSummary(todo) {
+      const summary = pickTodoProviderDefault(todo, { includeCompletion: true });
+      const hasNote = Boolean(normalizeText(todo?.note || todo?.notes || todo?.noteDigest));
+      const hasDependencies = Array.isArray(todo?.dependencies) && todo.dependencies.some((item) => normalizeText(item));
+      if (hasNote) summary.hasNote = true;
+      if (hasDependencies) summary.hasDependencies = true;
+      return summary;
+    }
+
+    function resolveSelectedTodoIds(viewContext) {
+      const ids = normalizeIdList(viewContext?.selection?.todoIds, 10);
+      const selectedTodo = getSelectedTodo();
+      if (selectedTodo?.id && !ids.includes(String(selectedTodo.id))) ids.unshift(String(selectedTodo.id));
+      return Array.from(new Set(ids)).slice(0, 10);
+    }
+
+    function getSelectedTodosForContext(viewContext) {
+      const allTodos = Array.isArray(getTodos()) ? getTodos() : [];
+      const byId = new Map(allTodos.map((todo) => [String(todo?.id || ""), todo]));
+      const selectedIds = resolveSelectedTodoIds(viewContext);
+      const selectedTodos = selectedIds
+        .map((id) => byId.get(String(id)))
+        .filter(Boolean);
+      const fallback = getSelectedTodo();
+      if (fallback?.id && !selectedTodos.some((todo) => String(todo.id) === String(fallback.id))) {
+        selectedTodos.unshift(fallback);
+      }
+      return selectedTodos.slice(0, 5);
+    }
+
+    function buildSelectedObjectsContext(referenceScope, viewContext) {
+      const selectedTodos = isBusinessContextDisabled(referenceScope, viewContext)
+        ? []
+        : getSelectedTodosForContext(viewContext);
+      return {
+        schema: AI_SELECTED_OBJECTS_CONTEXT_SCHEMA,
+        surface: normalizeText(viewContext?.surface, "unknown"),
+        selectedTodoIds: selectedTodos.map((todo) => normalizeText(todo?.id)).filter(Boolean),
+        todos: selectedTodos.map((todo) => pickTodoProviderDefault(todo, {
+          includeNote: true,
+          includeDependencies: true,
+        })),
+        caps: {
+          maxSelectedTodos: 5,
+          noteMaxChars: 1500,
+        },
+        emptyReason: selectedTodos.length ? "" : "none_selected",
+      };
+    }
+
+    function buildTodoPageScope(referenceScope, viewContext) {
+      const surface = normalizeText(viewContext?.surface);
+      const activeView = normalizeText(viewContext?.activeView);
+      const range = getViewContextRangeForScope("view_todo_summary", viewContext);
+      const resolvedMode = normalizeText(referenceScope?.resolvedMode);
+      if (referenceScope?.source === "grant" || resolvedMode === "granted_range") {
+        return referenceScope;
+      }
+      if (["today", "week", "unfinished", "reflow_unfinished", "selected_with_today"].includes(resolvedMode)) {
+        return referenceScope;
+      }
+      if (surface === "todo" || activeView === "todo") {
+        return {
+          ...referenceScope,
+          resolvedMode: "view_todo_summary",
+          range: range || referenceScope?.range,
+          maxItems: Math.max(1, Math.min(80, Number.parseInt(String(referenceScope?.maxItems || 40), 10) || 40)),
+          includes: { selectedTodo: false, todos: true, busyBlocks: false, entries: false },
+        };
+      }
+      if (surface === "calendar.day" || surface === "calendar.week" || activeView === "calendar") {
+        return {
+          ...referenceScope,
+          resolvedMode: surface === "calendar.day" ? "view_calendar_day" : "view_calendar_week",
+          range: getViewContextRangeForScope("view_calendar_week", viewContext) || referenceScope?.range,
+          maxItems: Math.max(1, Math.min(80, Number.parseInt(String(referenceScope?.maxItems || 80), 10) || 80)),
+          includes: { selectedTodo: false, todos: true, busyBlocks: true, entries: false },
+        };
+      }
+      if (surface === "review.range" || activeView === "review") {
+        return {
+          ...referenceScope,
+          resolvedMode: "view_review_range",
+          range: getViewContextRangeForScope("view_review_range", viewContext) || referenceScope?.range,
+          maxItems: Math.max(1, Math.min(80, Number.parseInt(String(referenceScope?.maxItems || 80), 10) || 80)),
+          includes: { selectedTodo: false, todos: true, busyBlocks: true, entries: true },
+        };
+      }
+      return {
+        ...referenceScope,
+        includes: { selectedTodo: false, todos: false, busyBlocks: false, entries: false },
+      };
+    }
+
+    function countTodoStats(todoList, today) {
+      const weekEnd = addDays(today, 6);
+      return todoList.reduce((stats, todo) => {
+        if (!todo) return stats;
+        stats.total += 1;
+        if (todo.completed) stats.completed += 1;
+        if (!todo.completed) stats.unfinished += 1;
+        if (!todo.completed && todo.dueDate && todo.dueDate < today) stats.overdue += 1;
+        if (!todo.completed && todo.dueDate === today) stats.today += 1;
+        if (!todo.completed && todo.dueDate && todo.dueDate >= today && todo.dueDate <= weekEnd) stats.next7Days += 1;
+        if (!todo.completed && !todo.dueDate) stats.unscheduled += 1;
+        if (!todo.completed && todo.planLocked) stats.locked += 1;
+        if (!todo.completed && !normalizeText(todo.project)) stats.withoutProject += 1;
+        if (!todo.completed && !(Array.isArray(todo.tags) && todo.tags.length)) stats.withoutTags += 1;
+        return stats;
+      }, {
+        total: 0,
+        unfinished: 0,
+        completed: 0,
+        overdue: 0,
+        today: 0,
+        next7Days: 0,
+        unscheduled: 0,
+        locked: 0,
+        withoutProject: 0,
+        withoutTags: 0,
+      });
+    }
+
+    function buildDistribution(items, getter, fallbackLabel, maxItems = 8) {
+      const counts = new Map();
+      items.forEach((item) => {
+        const values = getter(item);
+        const list = Array.isArray(values) ? values : [values];
+        list.map((value) => normalizeText(value || fallbackLabel)).filter(Boolean).forEach((value) => {
+          counts.set(value, (counts.get(value) || 0) + 1);
+        });
+      });
+      return Array.from(counts.entries())
+        .map(([label, count]) => ({ label, count }))
+        .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, "zh-Hans-CN"))
+        .slice(0, maxItems);
+    }
+
+    function buildPageWorkContext(referenceScope, viewContext) {
+      const disabled = isBusinessContextDisabled(referenceScope, viewContext);
+      const pageScope = disabled ? null : buildTodoPageScope(referenceScope, viewContext);
+      const todosForPage = pageScope ? buildTodosContext(pageScope) : [];
+      const entriesForPage = pageScope ? buildEntriesContext(pageScope) : [];
+      const busyBlocksForPage = pageScope ? buildBusyBlocks(pageScope) : [];
+      const today = normalizeText(getTodayDateInputValue(), new Date().toISOString().slice(0, 10));
+      const visibleRange = viewContext?.visibleRange || {};
+      const timeWindow = normalizePlainObject(pageScope?.range || visibleRange, ["start", "end"]);
+      return {
+        schema: AI_PAGE_WORK_CONTEXT_SCHEMA,
+        surface: normalizeText(viewContext?.surface, "unknown"),
+        businessDataIncluded: !disabled,
+        timeWindow: {
+          start: isValidDate(timeWindow.start) ? timeWindow.start : "",
+          end: isValidDate(timeWindow.end || timeWindow.start) ? (timeWindow.end || timeWindow.start) : "",
+        },
+        listState: normalizePlainObject(viewContext?.filters, [
+          "project",
+          "category",
+          "tag",
+          "status",
+          "todoDimension",
+          "todoSelection",
+          "currentRange",
+          "showHistory",
+          "showRecurringOnly",
+        ]),
+        stats: countTodoStats(todosForPage, today),
+        projectDistribution: buildDistribution(todosForPage, (todo) => todo.project, "未归项目"),
+        tagDistribution: buildDistribution(todosForPage, (todo) => todo.tags, "无标签"),
+        todos: todosForPage.slice(0, 40).map(pickTodoPageSummary),
+        entries: entriesForPage.slice(0, 30).map(pickEntry),
+        busyBlocks: busyBlocksForPage.slice(0, 40),
+        caps: {
+          maxTodos: 40,
+          maxEntries: 30,
+          maxBusyBlocks: 40,
+          notePolicy: "summary_only_no_full_notes",
+          calendarTitlePolicy: "busy_only_masked",
+        },
+      };
+    }
+
+    function buildDefaultBackgroundWindow() {
+      const today = normalizeText(getTodayDateInputValue(), new Date().toISOString().slice(0, 10));
+      return {
+        start: addDays(today, -2),
+        end: addDays(today, 3),
+        rule: "default_past_2_future_3_days",
+      };
+    }
+
+    function getMinutesBetween(start, end) {
+      const startMinutes = parseClockToMinutes(start);
+      const endMinutes = parseClockToMinutes(end);
+      if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes) || endMinutes <= startMinutes) return 0;
+      return endMinutes - startMinutes;
+    }
+
+    function buildTimeWindowSummary(start, end, disabled) {
+      if (disabled || !isValidDate(start) || !isValidDate(end)) return [];
+      const dates = getDateListFromRange(start, end, 8);
+      const todos = Array.isArray(getTodos()) ? getTodos() : [];
+      const entries = Array.isArray(getEntries()) ? getEntries() : [];
+      return dates.map((date) => {
+        const dayTodos = todos.filter((todo) => todo && !todo.completed && String(todo.dueDate || "") === date);
+        const dayBusy = entries.filter((entry) => entry && String(entry.date || "") === date && isValidClock(entry.start || entry.startTime) && isValidClock(entry.end || entry.endTime));
+        const estimatedMinutes = dayTodos.reduce((sum, todo) => sum + (Number(todo.remainingMinutes || todo.estimatedMinutes || 0) || 0), 0);
+        const busyMinutes = dayBusy.reduce((sum, entry) => sum + getMinutesBetween(entry.start || entry.startTime, entry.end || entry.endTime), 0);
+        return {
+          date,
+          todoCount: dayTodos.length,
+          lockedTodoCount: dayTodos.filter((todo) => todo.planLocked).length,
+          busyBlockCount: dayBusy.length,
+          estimatedTodoMinutes: estimatedMinutes,
+          busyMinutes,
+          pressure: estimatedMinutes + busyMinutes >= 8 * 60 ? "high" : estimatedMinutes + busyMinutes >= 5 * 60 ? "medium" : "low",
+        };
+      });
+    }
+
+    function buildLatestScheduleDraftSummary() {
+      const candidates = pendingItems
+        .filter((item) => item?.type === "schedule_draft")
+        .map((item) => ({
+          item,
+          updatedAt: normalizeText(item?.payload?.updatedAt || item?.payload?.createdAt),
+        }))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const latest = candidates[0]?.item;
+      if (!latest) return null;
+      const changes = Array.isArray(latest.payload?.changes) ? latest.payload.changes : [];
+      return {
+        draftId: normalizeText(latest.payload?.draftId),
+        status: normalizeText(latest.status || latest.payload?.status, "pending"),
+        summary: trimDisplayText(latest.payload?.summary || latest.detail, 240),
+        changeCount: changes.length,
+        updatedAt: normalizeText(latest.payload?.updatedAt || latest.payload?.createdAt),
+      };
+    }
+
+    function buildGlobalBackgroundContext(referenceScope, viewContext) {
+      const disabled = isBusinessContextDisabled(referenceScope, viewContext);
+      const now = new Date();
+      const windowRange = buildDefaultBackgroundWindow();
+      const pendingDraftCount = pendingItems.filter((item) => item.status === "pending").length;
+      return {
+        schema: AI_GLOBAL_BACKGROUND_CONTEXT_SCHEMA,
+        businessDataIncluded: !disabled,
+        currentDate: normalizeText(getTodayDateInputValue(), now.toISOString().slice(0, 10)),
+        localTime: now.toTimeString().slice(0, 5),
+        defaultTimeWindow: windowRange,
+        timeWindowSummary: buildTimeWindowSummary(windowRange.start, windowRange.end, disabled),
+        pendingState: {
+          pendingDraftCount,
+          latestScheduleDraft: buildLatestScheduleDraftSummary(),
+        },
+        caps: {
+          noMemory: true,
+          noTodoDetails: true,
+          noCalendarTitles: true,
+        },
+      };
+    }
+
+    function buildExecutionContextCandidates() {
+      const today = normalizeText(getTodayDateInputValue(), new Date().toISOString().slice(0, 10));
+      const executionScope = {
+        resolvedMode: "unfinished",
+        range: { start: addDays(today, -2), end: addDays(today, 7) },
+        maxItems: 200,
+        includes: { selectedTodo: false, todos: true, busyBlocks: true, entries: false },
+      };
+      return {
+        source: "client_local_state",
+        todos: (Array.isArray(getTodos()) ? getTodos() : [])
+          .filter((todo) => todo && !todo.completed)
+          .sort((left, right) => getTodoSortKey(left).localeCompare(getTodoSortKey(right), "zh-Hans-CN"))
+          .slice(0, 200)
+          .map(pickTodo),
+        busyBlocks: buildBusyBlocks(executionScope).slice(0, 200),
+      };
+    }
+
     function buildWorkflowInput(action, text, options = {}) {
       const today = normalizeText(getTodayDateInputValue(), new Date().toISOString().slice(0, 10));
       const selectedTodo = getSelectedTodo();
       const contextGrant = normalizeContextGrant(options.contextGrant);
-      const referenceScope = resolveReferenceScope(action, text, { contextGrant });
+      const contextContinuation = normalizeContextContinuation(options.contextContinuation);
+      const referenceScope = resolveReferenceScope(action, text, { contextGrant, contextContinuation });
       const contextAccessPolicy = getContextAccessPolicy();
+      const viewContext = normalizeViewContext(referenceScope.viewContext);
+      const selectedObjects = buildSelectedObjectsContext(referenceScope, viewContext);
+      const pageWorkContext = buildPageWorkContext(referenceScope, viewContext);
+      const globalBackgroundContext = buildGlobalBackgroundContext(referenceScope, viewContext);
+      const contextCandidates = {
+        schema: AI_CONTEXT_CANDIDATES_SCHEMA,
+        selectedObjects,
+        pageWorkContext,
+        globalBackgroundContext,
+        execution: buildExecutionContextCandidates(),
+        materials: [],
+      };
       const payload = {
         text,
         currentDate: today,
         referenceScope,
+        viewContext,
         contextAccessPolicy,
         ...(contextGrant ? { contextGrant } : {}),
+        ...(contextContinuation ? { contextContinuation } : {}),
+        ...(options.uiTransition ? { uiTransition: options.uiTransition } : {}),
+        selectedObjects,
+        pageWorkContext,
+        globalBackgroundContext,
+        contextCandidates,
         todos: buildTodosContext(referenceScope),
         entries: buildEntriesContext(referenceScope),
         busyBlocks: buildBusyBlocks(referenceScope),
         progressSummary: buildProgressSummary(action),
-        todo: referenceScope.includes.selectedTodo && selectedTodo ? pickTodo(selectedTodo) : null,
+        todo: referenceScope.includes.selectedTodo && selectedTodo ? pickTodo(selectedTodo, { includeNote: true }) : null,
         workingWindows: [{ start: "09:30", end: "21:30" }],
         defaultGapMinutes: 5,
         strategy: action === "reflow_unfinished" ? "minimal_change" : "balanced",
@@ -2746,6 +3806,7 @@
         ? options.semanticFeedback
         : null;
       const contextGrant = normalizeContextGrant(options.contextGrant);
+      const contextContinuation = normalizeContextContinuation(options.contextContinuation);
       return {
         schema: AI_ASSISTANT_SCHEMA,
         requestId: createId("assistant"),
@@ -2757,12 +3818,14 @@
           excludeLatestUserText: options.excludeCurrentTextFromHistory ? text : "",
         }),
         input: {
-          ...buildWorkflowInput(contextAction, text, { contextGrant }),
+          ...buildWorkflowInput(contextAction, text, { contextGrant, contextContinuation, uiTransition: options.uiTransition }),
           ...(semanticFeedback ? { semanticFeedback } : {}),
           ...(contextGrant ? { contextGrant } : {}),
+          ...(contextContinuation ? { contextContinuation } : {}),
         },
         ...(semanticFeedback ? { semanticFeedback } : {}),
         ...(contextGrant ? { contextGrant } : {}),
+        ...(contextContinuation ? { contextContinuation } : {}),
         contextAccessPolicy: getContextAccessPolicy(),
         contextPolicy: {
           includeTodos: "active_relevant",
@@ -2824,6 +3887,13 @@
       }
       if (action === "plan_today" || action === "plan_week" || action === "reflow_unfinished") {
         const draft = artifacts.find((item) => item.kind === "schedule_draft")?.draft;
+        if (!draft || !Array.isArray(draft.changes) || !draft.changes.length) {
+          const warning = Array.isArray(result.warnings) ? result.warnings[0]?.message : "";
+          return [
+            "这次没有生成可确认的排程草稿。",
+            warning || "当前参考范围里没有可执行的排程变更；可以调整时间范围、任务选择或冲突约束后重试。",
+          ];
+        }
         return [
           `我已经生成一个可确认的排程草稿：${draft?.summary || "等待确认"}`,
           "它现在只在左侧待确认区，不会直接写入待办、日历或提醒。确认后会标记为已确认，实际应用排程会在后续应用事务里处理。",
@@ -2853,8 +3923,19 @@
       if (!request) return null;
       const range = request.range || {};
       const include = normalizeContextIncludeList(request.include || request.includes || request.dataTypes);
+      const rawType = request.requestType || request.expansionType || request.kind || (
+        request.type === "need_more_context" || request.type === "context_request" ? "" : request.type
+      );
       return {
         schema: "guanshi-ai-context-request-v1",
+        requestType: normalizeContextRequestType(rawType),
+        target: normalizeText(request.target || request.scope || ""),
+        detailLevel: normalizeText(request.detailLevel || request.level || ""),
+        todoIds: normalizeIdList(request.todoIds || request.todoId, 12),
+        project: normalizeText(request.project || ""),
+        category: normalizeText(request.category || ""),
+        tag: normalizeText(request.tag || ""),
+        status: normalizeText(request.status || ""),
         reason: trimDisplayText(request.reason || "默认上下文不足，需要本轮参考更多数据。", 600),
         range: {
           start: normalizeText(range.start || range.dateFrom || range.date),
@@ -2878,9 +3959,33 @@
         memory: "记忆",
         progress: "进度摘要",
         selectedTodo: "当前待办",
+        selectedObjects: "选中对象",
+        pageWorkContext: "当前页面摘要",
+        globalBackgroundContext: "全局背景",
+        todoDetails: "待办详情",
+        projectTodos: "项目待办",
+        tagTodos: "标签待办",
+        statusTodos: "状态待办",
+        calendarBusyBlocks: "日历忙碌时间",
+      };
+      const typeLabels = {
+        time_window_expand: "扩展时间范围",
+        todo_detail_expand: "展开待办详情",
+        project_expand: "展开项目",
+        tag_expand: "展开标签",
+        status_expand: "展开状态",
+        calendar_expand: "展开日历忙碌块",
       };
       const dataText = normalized.include.map((item) => includeLabels[item] || item).join("、") || "相关数据";
-      return `${rangeText} · ${dataText}`;
+      const targetText = [
+        typeLabels[normalized.requestType] || "",
+        normalized.project ? `项目：${normalized.project}` : "",
+        normalized.category ? `分类：${normalized.category}` : "",
+        normalized.tag ? `标签：${normalized.tag}` : "",
+        normalized.status ? `状态：${normalized.status}` : "",
+        normalized.detailLevel ? `详情：${normalized.detailLevel}` : "",
+      ].filter(Boolean).join(" · ");
+      return `${rangeText} · ${dataText}${targetText ? ` · ${targetText}` : ""}`;
     }
 
     function getContextRequestRerunCount(assistantResult) {
@@ -2957,6 +4062,52 @@
       return Array.isArray(actionRegistryPayload?.ui_registry) ? actionRegistryPayload.ui_registry : [];
     }
 
+    function resolveTurnUiExpectation(action, text, options = {}) {
+      if (!uiReactionsModule || typeof uiReactionsModule.resolveSurfaceExpectation !== "function") return null;
+      const contextGrant = normalizeContextGrant(options.contextGrant);
+      const contextContinuation = normalizeContextContinuation(options.contextContinuation);
+      const registryAction = findActionRegistryEntry(action);
+      const scopeAction = normalizeText(registryAction?.legacy_action) || normalizeText(action);
+      const referenceScope = resolveReferenceScope(scopeAction, text, { contextGrant, contextContinuation });
+      const contextRequest = contextGrant?.request || (contextContinuation ? {
+        include: contextContinuation.requiredCapabilities,
+      } : options.contextRequest || null);
+      return uiReactionsModule.resolveSurfaceExpectation({
+        registryPayload: actionRegistryPayload,
+        action,
+        text,
+        referenceScope,
+        contextRequest,
+        preferredSurfaceRef: contextContinuation?.surfaceRef || "",
+        contextAccessMode: getContextAccessPolicy().mode,
+        viewContext: referenceScope.viewContext,
+      });
+    }
+
+    function reconcileTurnUiExpectation(expectation, phase) {
+      if (!expectation || !uiReactionsModule || typeof uiReactionsModule.reconcile !== "function") return null;
+      return uiReactionsModule.reconcile(expectation, { phase });
+    }
+
+    function resolveFinalTurnUiExpectation(initialExpectation, finalResult, text, options = {}) {
+      const candidates = [
+        finalResult?.semanticAction?.action,
+        finalResult?.semanticAction?.tool,
+        finalResult?.decision?.legacyAction,
+        finalResult?.decision?.tool,
+        finalResult?.workflow?.request?.action,
+      ].map((item) => normalizeText(item)).filter(Boolean);
+      for (const action of Array.from(new Set(candidates))) {
+        const expectation = resolveTurnUiExpectation(action, text, {
+          contextGrant: options.contextGrant || null,
+          contextContinuation: options.contextContinuation || null,
+          contextRequest: finalResult?.contextRequest || finalResult?.decision?.contextRequest || null,
+        });
+        if (expectation) return expectation;
+      }
+      return initialExpectation;
+    }
+
     function findActionRegistryEntry(action) {
       const legacyAction = normalizeText(action);
       const actionId = normalizeWorkflowActionId(legacyAction);
@@ -3013,7 +4164,7 @@
       const pendingIds = [];
       const generatedIds = [];
       for (const artifact of artifacts) {
-        if (artifact.kind === "schedule_draft" && artifact.draft) {
+        if (artifact.kind === "schedule_draft" && artifact.draft && Array.isArray(artifact.draft.changes) && artifact.draft.changes.length) {
           const summary = summarizeScheduleDraft(artifact.draft);
           pendingIds.push(upsertPendingItem({
             id: `schedule:${artifact.draft.draftId}`,
@@ -3134,11 +4285,18 @@
 
     function getAssistantResultMeta(assistantResult, config, startedAt) {
       const elapsed = formatAssistantElapsedTime(startedAt);
-      return assistantResult?.mode === "need_more_context"
+      const budget = getPlannerBudgetReport(assistantResult?.contextSnapshot || {});
+      const includedCount = Array.isArray(budget.included) ? budget.included.filter((item) => item?.key !== "history").length : 0;
+      const compressedCount = Array.isArray(budget.compressed) ? budget.compressed.length : 0;
+      const budgetMeta = includedCount || compressedCount
+        ? `读取 ${includedCount} 类资料${compressedCount ? ` · 压缩 ${compressedCount} 类` : ""}`
+        : "";
+      const primaryMeta = assistantResult?.mode === "need_more_context"
         ? `请求授权 · ${elapsed}`
         : assistantResult?.mode === "tool"
         ? `${getAssistantDecisionMeta(assistantResult.decision, config)} · ${elapsed}`
         : elapsed;
+      return [primaryMeta, budgetMeta].filter(Boolean).join(" · ");
     }
 
     function getRequiredInputMeta(actionKey) {
@@ -3231,10 +4389,26 @@
         : null;
       pendingSemanticFeedback = null;
       const suppressUserEcho = options.suppressUserEcho === true;
+      if (!actionRegistryPayload) await refreshActionRegistry();
+      const contextAction = config.workflow || "assistant";
+      const resolvedUiExpectation = resolveTurnUiExpectation(contextAction, text, {
+        contextGrant: options.contextGrant || null,
+        contextContinuation: options.contextContinuation || null,
+      });
+      const shouldPreflightUi = Boolean(
+        config.workflow
+          || options.contextGrant
+          || options.contextContinuation
+          || resolvedUiExpectation?.source === "explicit_user_surface_intent",
+      );
+      const turnUiExpectation = shouldPreflightUi ? resolvedUiExpectation : null;
+      const uiTransition = reconcileTurnUiExpectation(turnUiExpectation, "before_context_request");
       const assistantRequest = buildAssistantRequest(actionKey, text, {
         semanticFeedback: semanticFeedback ? { ...semanticFeedback, userFeedback: text } : null,
         contextGrant: options.contextGrant || null,
+        contextContinuation: options.contextContinuation || null,
         excludeCurrentTextFromHistory: suppressUserEcho,
+        uiTransition,
       });
       const assistantMessageId = createId("msg");
       const userMessageId = suppressUserEcho ? assistantMessageId : createId("msg");
@@ -3243,15 +4417,18 @@
         appendMessage({ id: userMessageId, role: "user", state: nowLabel(), paragraphs: [text] }, { render: false });
       }
       if (input && rawText && !suppressUserEcho) input.value = "";
+      const assistantStartedAt = getAnimationTime();
       const assistantMessage = appendMessage({
         id: assistantMessageId,
         role: "assistant",
         state: "连接中",
-        paragraphs: ["Thinking......"],
+        paragraphs: [AI_ASSISTANT_THINKING_TEXT],
         meta: "",
         streamText: "",
+        startedAt: assistantStartedAt,
+        elapsedMs: 0,
+        timerActive: true,
       });
-      const assistantStartedAt = getAnimationTime();
       setBusy(true);
       setStatus(`${config.label}：思考中。`);
       let deferredContextRerun = null;
@@ -3302,13 +4479,36 @@
           artifactRefs = addWorkflowArtifacts(finalResult.workflow, text, { render: false });
           mergeArtifactRefsToMessage(assistantMessage.id, artifactRefs);
         }
+        if (finalResult.mode === "need_context_recompose") {
+          const resolution = finalResult.contextResolution
+            || finalResult.decision?.contextResolution
+            || finalResult.contextSnapshot?.contextResolution
+            || null;
+          const contextContinuation = normalizeContextContinuation({
+            ...(resolution || {}),
+            sourceRequestId: finalResult.requestId || resolution?.sourceRequestId || "",
+            rerunCount: 1,
+          });
+          if (!contextContinuation) {
+            throw new Error("AI_CONTEXT_RECOMPOSE_INVALID");
+          }
+          messages = messages.filter((message) => message.id !== assistantMessage.id);
+          renderMessages();
+          setStatus("正在切换到相关页面并重新读取资料。");
+          deferredContextRerun = {
+            text,
+            contextContinuation,
+            suppressUserEcho: true,
+          };
+          return;
+        }
         if (finalResult.mode === "need_more_context" || finalResult.contextRequest || finalResult.decision?.contextRequest) {
           const autoContextGrant = buildAutoContextGrant(finalResult);
           if (autoContextGrant) {
             const contextRequest = autoContextGrant.request;
             const sourceLabel = autoContextGrant.grantSource === "time_data_reference_default_allow" ? "允许" : "本对话";
             updateMessage(assistantMessage.id, (message) => ({
-              ...message,
+              ...finalizeAssistantElapsedTimer(message),
               state: "已授权",
               paragraphs: [`已按「${sourceLabel}」自动参考：${formatContextRequestDetail(contextRequest)}。我会重新理解这句话。`],
               meta: getAssistantResultMeta(finalResult, config, assistantStartedAt),
@@ -3348,7 +4548,7 @@
           || finalResult.contextSnapshot?.actionReview
           || null;
         updateMessage(assistantMessage.id, (message) => ({
-          ...message,
+          ...finalizeAssistantElapsedTimer(message),
           state: "完成",
           paragraphs: buildAssistantTurnParagraphs(finalResult, text),
           meta: getAssistantResultMeta(finalResult, config, assistantStartedAt),
@@ -3365,13 +4565,26 @@
           generatedIds: Array.from(new Set([...(message.generatedIds || []), ...(artifactRefs.generatedIds || [])])),
           showActions: false,
         }));
+        const finalUiExpectation = resolveFinalTurnUiExpectation(turnUiExpectation, finalResult, text, {
+          contextGrant: options.contextGrant || null,
+          contextContinuation: options.contextContinuation || null,
+        });
+        reconcileTurnUiExpectation(finalUiExpectation, "after_response_complete");
         queueNextActionsForMessage(assistantMessage.id);
-        setStatus(finalResult.mode === "need_more_context" || finalResult.contextRequest ? "需要你允许本轮参考更多数据。" : finalResult.workflow ? "已生成，等待你确认。" : "AI 已回复。");
+        setStatus(
+          finalResult.mode === "need_more_context" || finalResult.contextRequest
+            ? "需要你允许本轮参考更多数据。"
+            : artifactRefs.pendingIds.length
+              ? "已生成，等待你确认。"
+              : finalResult.workflow
+                ? "AI 已完成处理，没有待确认产物。"
+                : "AI 已回复。",
+        );
       } catch (error) {
         flushAssistantDeltaBuffer(assistantMessage.id, { force: true });
         const message = getAssistantErrorMessage(error);
         updateMessage(assistantMessage.id, (current) => ({
-          ...current,
+          ...finalizeAssistantElapsedTimer(current),
           state: "失败",
           paragraphs: [message],
           meta: "",
@@ -3721,9 +4934,24 @@
       if (item.type === "memory_proposal") {
         const proposalId = item.payload?.proposalId;
         if (!proposalId) throw new Error("记忆提案缺少 proposalId。");
+        const relation = item.payload?.relation && typeof item.payload.relation === "object" ? item.payload.relation : {};
+        const replaceTargets = relation.kind === "conflict" && Array.isArray(relation.relatedMemoryIds)
+          ? relation.relatedMemoryIds.map((memoryId) => normalizeText(memoryId)).filter(Boolean)
+          : [];
+        if (relation.kind === "unresolved_update") {
+          setStatus("未找到要更新的原记忆，请先编辑提案后再确认。");
+          return;
+        }
+        if (replaceTargets.length && !confirmFn(`这条提案与 ${replaceTargets.length} 条现有记忆冲突。确认后会合并为一个版本，其余版本停用并保留归档，是否继续？`)) {
+          setStatus("已取消确认。");
+          return;
+        }
         await requestJson(`/api/ai/memory/proposals/${encodeURIComponent(proposalId)}/confirm`, {
           method: "POST",
-          body: JSON.stringify({ confirmedBy: "sidebar" }),
+          body: JSON.stringify({
+            confirmedBy: "sidebar",
+            resolution: replaceTargets.length ? { mode: "replace_existing", targetMemoryIds: replaceTargets } : undefined,
+          }),
         });
         setPendingStatus(item.id, "confirmed");
         appendMessage({ role: "assistant", state: "已确认", paragraphs: [getMemoryProposalConfirmedMessage(item.payload)] });
@@ -3733,6 +4961,16 @@
       if (item.type === "schedule_draft") {
         const draftId = item.payload?.draftId;
         if (!draftId) throw new Error("排程草稿缺少 draftId。");
+        if (!Array.isArray(item.payload?.changes) || !item.payload.changes.length) {
+          setPendingStatus(item.id, "rejected");
+          appendMessage({
+            role: "assistant",
+            state: "未执行",
+            paragraphs: ["这份排程草稿没有可执行变更，不能确认。请重新生成包含待办引用的排程草稿。"],
+          });
+          setStatus("空排程草稿不能确认。");
+          return;
+        }
         const confirmPayload = await requestJson(`/api/ai/schedule-drafts/${encodeURIComponent(draftId)}/confirm`, {
           method: "POST",
           body: JSON.stringify({ confirmedBy: "sidebar" }),
@@ -3885,6 +5123,17 @@
       setStatus("已放入重新理解提示，补一句修正后发送即可重新生成。");
     }
 
+    function handleSemanticToggleClick(event) {
+      handleAiPageActivity();
+      const button = event.target?.closest?.("[data-ai-semantic-toggle]");
+      if (!button) return;
+      event.preventDefault?.();
+      updateMessage(button.dataset.aiSemanticToggle, (message) => ({
+        ...message,
+        semanticExpanded: message.semanticExpanded !== true,
+      }));
+    }
+
     function handleActionClick(event) {
       handleAiPageActivity();
       const target = event.target?.closest?.("[data-ai-action]") || event.currentTarget;
@@ -3908,6 +5157,10 @@
       }
       if (event.target?.closest?.("[data-ai-generated-id]")) {
         handleGeneratedClick(event);
+        return;
+      }
+      if (event.target?.closest?.("[data-ai-semantic-toggle]")) {
+        handleSemanticToggleClick(event);
         return;
       }
       if (event.target?.closest?.("[data-ai-semantic-retry]")) {
@@ -3938,10 +5191,12 @@
       event.preventDefault();
       handleAiPageActivity();
       setActiveView("settings");
+      setSettingsTab("ai-connect", { scroll: false });
       render();
-      setStatus("已打开设置页 AI 接入，可切换 Provider / CLI。");
+      setStatus("已打开设置页 AI 连接，可切换 Provider / CLI。");
       scheduleTimeout(() => {
         const target =
+          documentRef?.getElementById?.("settings-page-ai-connect") ||
           documentRef?.querySelector?.(".settings-card-ai") ||
           documentRef?.getElementById?.("settings-ai-title");
         target?.scrollIntoView?.({ block: "start", behavior: "smooth" });
@@ -4005,6 +5260,7 @@
         const proposals = Array.isArray(proposalPayload?.result?.proposals) ? proposalPayload.result.proposals : [];
         const pendingIds = [];
         for (const draft of drafts.slice(0, 8)) {
+          if (!Array.isArray(draft?.changes) || !draft.changes.length) continue;
           const summary = summarizeScheduleDraft(draft);
           pendingIds.push(upsertPendingItem({
             id: `schedule:${draft.draftId}`,

@@ -110,6 +110,16 @@ if (typeof createExternalCalendarImportModule !== "function") {
   );
 }
 
+const syncGovernanceModuleSource =
+  (typeof window !== "undefined" && window.TimeQualitySyncGovernanceModule) || {};
+const { createSyncGovernanceModule } = syncGovernanceModuleSource;
+
+if (typeof createSyncGovernanceModule !== "function") {
+  throw new Error(
+    "TimeQualitySyncGovernanceModule is missing createSyncGovernanceModule. Ensure app-sync-governance.js is loaded before app.js.",
+  );
+}
+
 const syncRuntimeModuleSource = (typeof window !== "undefined" && window.TimeQualitySyncRuntimeModule) || {};
 const { createSyncRuntimeModule } = syncRuntimeModuleSource;
 
@@ -375,6 +385,16 @@ if (typeof createLayoutShellModule !== "function") {
   );
 }
 
+const aiUiReactionsModuleSource =
+  (typeof window !== "undefined" && window.TimeQualityAiUiReactionsModule) || {};
+const { createAiUiReactionsModule } = aiUiReactionsModuleSource;
+
+if (typeof createAiUiReactionsModule !== "function") {
+  throw new Error(
+    "TimeQualityAiUiReactionsModule is missing createAiUiReactionsModule. Ensure app-ai-ui-reactions.js is loaded before app.js.",
+  );
+}
+
 const aiSidebarModuleSource = (typeof window !== "undefined" && window.TimeQualityAiSidebarModule) || {};
 const { createAiSidebarModule } = aiSidebarModuleSource;
 
@@ -419,7 +439,7 @@ const {
   todoProjectInput, todoProjectSuggestionMenu, todoCategorySuggestWrap, todoCategoryTrigger,
   todoCategoryTriggerLabel, todoCategorySuggestionMenu, todoCategoryInput, todoRepeatSuggestWrap,
   todoRepeatTrigger, todoRepeatTriggerLabel, todoRepeatSuggestionMenu, todoTagSuggestWrap, todoTagsInput,
-  todoTagSuggestionMenu, todoNoteInput, todoQualityInput, todoHappinessInput, todoStartTimeInput,
+  todoTagSuggestionMenu, todoPriorityInput, todoNoteInput, todoQualityInput, todoHappinessInput, todoStartTimeInput,
   todoEndTimeInput, todoEstimateInput, todoReminderInput, todoRepeatInput, todoPlanLockBtn, todoFocusBtn,
   todoDeleteBtn,
   todoSyncMessage, reviewSummary, reviewList, reviewDebugSummary, reviewDebugTbody, reviewLegacyToggleBtn,
@@ -438,6 +458,8 @@ const {
   settingsUpdateBackupExportBtn, settingsUpdateBackupRestoreBtn, settingsUpdateBackupDeleteBtn,
   settingsUpdateBackupStatus, settingsUpdateStatus,
   installGuideBanner, installGuideBannerInstallBtn, installGuideBannerSettingsBtn, installGuideBannerDismissBtn,
+  syncGovernanceModal, syncGovernanceNav, syncGovernanceContent,
+  syncGovernanceNormalCount, syncGovernanceRemainingCount,
   syncErrorModal, syncErrorSummary, syncErrorDetail,
   syncErrorCopyStatus, syncErrorCopyBtn,
 } = domRefs;
@@ -637,6 +659,14 @@ const layoutShellModule = createLayoutShellModule({
   TODO_DETAIL_MAX_WIDTH,
   TODO_LIST_MIN_WIDTH,
 });
+const aiUiReactionsModule = createAiUiReactionsModule({
+  getViewContext: getAiViewContext,
+  setActiveView: (view) => setActiveView(view),
+  setSettingsTab: (tab, options) => settingsModule.setActiveSettingsTab(tab, options),
+  setSelectedTodoId,
+  requestTodoScrollToTodayGroup,
+  render,
+});
 const aiSidebarModule = createAiSidebarModule({
   documentRef: document,
   windowRef: window,
@@ -654,9 +684,9 @@ const aiSidebarModule = createAiSidebarModule({
   },
   getEntries: () => entries,
   getSelectedTodo,
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = todoId ? String(todoId) : null;
-  },
+  getViewContext: getAiViewContext,
+  setSettingsTab: (tab, options) => settingsModule.setActiveSettingsTab(tab, options),
+  setSelectedTodoId,
   setAiHighlightedTodoIds: (todoIds) => {
     aiHighlightedTodoIds = new Set(Array.isArray(todoIds) ? todoIds.map((id) => String(id)).filter(Boolean) : []);
   },
@@ -670,6 +700,7 @@ const aiSidebarModule = createAiSidebarModule({
   saveTodos,
   setActiveView,
   render,
+  uiReactionsModule: aiUiReactionsModule,
 });
 const todoReminderModule = createTodoReminderModule({
   TODO_PLAN_DAY_FIRST_START_MINUTES,
@@ -741,6 +772,8 @@ const todoModelModule = createTodoModelModule({
   normalizeTodoNoteValue,
   normalizeTodoReminderRepeatValue,
   isRecurringTodoRepeatMode,
+  isValidDateInput,
+  isValidClockInput,
 });
 
 const syncModule = createSyncModule({
@@ -774,6 +807,7 @@ const syncModule = createSyncModule({
   setCalendarSyncStatus,
   scheduleAutoBidirectionalSync,
   normalizeTodoOrderByClockForDate,
+  isTodoOverdue,
   normalizeTodoReminderDisableItem,
   saveTodoReminderDisableQueue,
   getTodos: () => todos,
@@ -803,6 +837,7 @@ const todoPlanModule = createTodoPlanModule({
   render,
   getTodayDateInputValue,
   getCurrentClockMinutes,
+  isTodoOverdue,
   getTodos: () => todos,
   getEntries: () => entries,
   getCategories: () => categories,
@@ -835,6 +870,7 @@ const todoDetailModule = createTodoDetailModule({
   todoTagSuggestWrap,
   todoTagsInput,
   todoTagSuggestionMenu,
+  todoPriorityInput,
   todoNoteInput,
   todoQualityInput,
   todoHappinessInput,
@@ -861,9 +897,7 @@ const todoDetailModule = createTodoDetailModule({
   render,
   getSelectedTodo,
   getTodos: () => todos,
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = String(todoId || "");
-  },
+  setSelectedTodoId,
   getActiveView: () => activeView,
   submitTodoDetailFromForm,
   handleTodoFocusStart,
@@ -905,9 +939,7 @@ const searchModule = createSearchModule({
   renderCalendar,
   getStartOfWeek,
   parseClockToMinutes,
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = String(todoId || "");
-  },
+  setSelectedTodoId,
   setCalendarWeekStart: (value) => {
     calendarWeekStart = value;
   },
@@ -1000,7 +1032,8 @@ let activeView = "overview";
 let currentTodoDimension = "time";
 let showTodoHistoryInMainList = false;
 let showRecurringReminderOnlyInMainList = false;
-let selectedTodoId = todos[0]?.id ?? null;
+let selectedTodoId = null;
+let selectedTodoIds = new Set();
 let aiHighlightedTodoIds = new Set();
 let reviewLegacyVisible = false;
 
@@ -1111,10 +1144,11 @@ const todoListModule = createTodoListModule({
   getGlobalSearchTerm,
   renderTodoDetail,
   getSelectedTodoId: () => selectedTodoId,
+  getSelectedTodoIds,
   isTodoAiHighlighted: (todoId) => aiHighlightedTodoIds.has(String(todoId || "")),
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = String(todoId || "");
-  },
+  setSelectedTodoId,
+  setSelectedTodoIds,
+  toggleSelectedTodoId,
   getCurrentTodoDimension: () => currentTodoDimension,
   setCurrentTodoDimension: (dimension) => {
     currentTodoDimension = String(dimension || "time");
@@ -1128,6 +1162,7 @@ const todoListModule = createTodoListModule({
     showRecurringReminderOnlyInMainList = Boolean(value);
   },
   getTodoProjectTreeCollapsedPaths: () => todoProjectTreeCollapsedPaths,
+  isTodoOverdue,
   clearAllRecentlyCompletedForDisplay,
   toggleCollapsedTodoProjectPath: (path) => {
     toggleCollapsedProjectPath(todoProjectTreeCollapsedPaths, TODO_PROJECT_TREE_COLLAPSE_STORAGE_KEY, path);
@@ -1135,6 +1170,7 @@ const todoListModule = createTodoListModule({
   moveTodoOrder,
   moveTodoToOrder,
   moveTodoToDateOrder,
+  moveTodosToDateOrder,
   restoreHistoryItemToTodo,
   openTodoHistoryRecord,
   toggleTodoCompleted,
@@ -1372,6 +1408,9 @@ const calendarActionsModule = createCalendarActionsModule({
   formatDateForInput,
   formatTimeForInput,
   getStartOfWeek,
+  enqueueTodoCalendarDelete,
+  createTodoFromCalendarDraft,
+  scheduleAutoBidirectionalSync,
 });
 
 const todoActionsModule = createTodoActionsModule({
@@ -1386,9 +1425,7 @@ const todoActionsModule = createTodoActionsModule({
   getEntries: () => entries,
   getCategories: () => categories,
   getSelectedTodoId: () => selectedTodoId,
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = todoId ? String(todoId) : null;
-  },
+  setSelectedTodoId,
   getShowTodoHistoryInMainList: () => showTodoHistoryInMainList,
   createTodoDraft,
   assignScheduleForNewTodo,
@@ -1446,6 +1483,16 @@ const todoActionsModule = createTodoActionsModule({
   setCalendarSyncStatus,
 });
 
+const syncGovernanceModule = createSyncGovernanceModule({
+  modal: syncGovernanceModal,
+  issueNav: syncGovernanceNav,
+  content: syncGovernanceContent,
+  normalCount: syncGovernanceNormalCount,
+  remainingCount: syncGovernanceRemainingCount,
+  updateBodyModalState,
+  onAction: (payload) => syncRuntimeModule.resolveSyncGovernanceIssue(payload),
+});
+
 const syncRuntimeModule = createSyncRuntimeModule({
   AUTO_BIDIRECTIONAL_SYNC_ENABLED,
   AUTO_BIDIRECTIONAL_SYNC_DEBOUNCE_MS,
@@ -1463,6 +1510,11 @@ const syncRuntimeModule = createSyncRuntimeModule({
   syncErrorDetail,
   syncErrorCopyStatus,
   topSyncRefreshBtn,
+  openSyncGovernance: (payload) => syncGovernanceModule.open(payload),
+  deleteTodoByTaskId,
+  enqueueTodoCalendarDelete,
+  pushCalendarEventPayload,
+  isTodoOverdue,
   createExternalCalendarImportModule,
   initSyncSettings: () => syncSettingsModule.init(),
   getSyncCalendarTarget: () => syncSettingsModule.getCalendarTarget(),
@@ -1471,9 +1523,7 @@ const syncRuntimeModule = createSyncRuntimeModule({
   getTodos: () => todos,
   getIgnoredExternalCalendarIds: () => ignoredExternalCalendarIds,
   getSelectedTodoId: () => selectedTodoId,
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = String(todoId || "");
-  },
+  setSelectedTodoId,
   getSyncCalendarTargetPayload,
   buildTodoSyncRequest,
   buildTodoReminderSyncRequest,
@@ -1528,9 +1578,7 @@ undoRuntimeModule = createUndoRuntimeModule({
     todos = Array.isArray(value) ? value : [];
   },
   getSelectedTodoId: () => selectedTodoId,
-  setSelectedTodoId: (todoId) => {
-    selectedTodoId = todoId ? String(todoId) : null;
-  },
+  setSelectedTodoId,
   normalizeTodo,
   saveEntries,
   saveTodos,
@@ -1561,6 +1609,7 @@ const renderCoordinatorModule = createRenderCoordinatorModule({
   renderCalendar,
   renderTodos,
   renderReview,
+  renderSettingsTabs: () => settingsModule.renderSettingsTabs(),
   renderCategoryManager: () => settingsModule.renderCategoryManager(),
   renderSyncSettingsControls: () => syncSettingsModule.renderControls(),
   renderQuoteManager: () => settingsModule.renderQuoteManager(),
@@ -1584,7 +1633,7 @@ const renderCoordinatorModule = createRenderCoordinatorModule({
 void localDataBackupModule.restoreLatestIfNeeded();
 
 createStartupModule([
-  () => settingsModule.initCategoryConfiguration(), () => settingsModule.initRuntimePortConfiguration(),
+  () => settingsModule.initSettingsTabs(), () => settingsModule.initCategoryConfiguration(), () => settingsModule.initRuntimePortConfiguration(),
   () => localDataBackupModule.initRecoveryControls(),
   () => aiSettingsModule.init(),
   () => pomodoroModule.init(), initCalendar, initMacCalendarSync,
@@ -1657,10 +1706,6 @@ function initTodo() {
   if (completionState.entriesChanged) {
     saveEntries(entries);
   }
-  if (!selectedTodoId && todos.length) {
-    selectedTodoId = todos[0].id;
-  }
-
   syncTodoHistoryToggleButton();
   syncTodoFilterBarButtons();
 }
@@ -1708,12 +1753,18 @@ function bindEvents() {
       topSyncRefreshBtn.classList.remove("is-spinning");
     });
   }
+  if (todoSyncMessage) {
+    todoSyncMessage.addEventListener("click", () => {
+      syncRuntimeModule.openPendingSyncGovernanceIssues();
+    });
+  }
 
   settingsModule.bindEvents();
   aiSettingsModule.bindEvents();
   installGuideModule.bindEvents();
   internalUpdateModule.bindEvents();
   syncSettingsModule.bindEvents();
+  syncGovernanceModule.bindEvents();
   if (calendarDayColumns) {
     calendarDayColumns.addEventListener("pointerdown", handleCalendarDirectEditPointerDown);
 
@@ -1737,7 +1788,7 @@ function bindEvents() {
         const resolved = findCalendarRenderableById(idToken, calendarUiModule.getRenderEntries());
         if (!resolved) return;
         if (resolved.kind === "todo-plan" && resolved.todo) {
-          selectedTodoId = String(resolved.todo.id);
+          setSelectedTodoId(resolved.todo.id);
           setActiveView("todo");
           renderTodos();
           return;
@@ -1764,7 +1815,7 @@ function bindEvents() {
       const resolved = findCalendarRenderableById(idToken, calendarUiModule.getRenderEntries());
       if (!resolved) return;
       if (resolved.kind === "todo-plan" && resolved.todo) {
-        selectedTodoId = String(resolved.todo.id);
+        setSelectedTodoId(resolved.todo.id);
         setActiveView("todo");
         renderTodos();
         return;
@@ -2275,7 +2326,7 @@ function openTodoHistoryRecord(source, id) {
 
   const todo = todos.find((current) => String(current.id) === id);
   if (!todo) return;
-  selectedTodoId = String(todo.id);
+  setSelectedTodoId(todo.id);
   setActiveView("todo");
   renderTodos();
 }
@@ -2317,6 +2368,10 @@ function renderTopTodoSyncHub(selected) {
   if (todoSyncMessage) {
     todoSyncMessage.textContent = text;
     todoSyncMessage.dataset.tone = tone;
+    const actionable = syncRuntimeModule.hasPendingSyncGovernanceIssues();
+    todoSyncMessage.classList.toggle("is-actionable", actionable);
+    todoSyncMessage.setAttribute("aria-disabled", actionable ? "false" : "true");
+    todoSyncMessage.setAttribute("aria-label", actionable ? `${text}。打开同步问题` : text);
   }
   if (topSyncHub) {
     topSyncHub.hidden = false;
@@ -2560,9 +2615,127 @@ function buildTodoSyncBadge(todo) {
   return todoListModule.buildSyncBadge(todo);
 }
 
+function normalizeSelectedTodoId(todoId) {
+  const id = String(todoId || "").trim();
+  return id && todos.some((item) => String(item.id) === id) ? id : "";
+}
+
+function pruneSelectedTodoIds() {
+  const validIds = new Set(todos.map((item) => String(item.id)));
+  selectedTodoIds = new Set(Array.from(selectedTodoIds).filter((id) => validIds.has(String(id))));
+  if (selectedTodoId && !validIds.has(String(selectedTodoId))) {
+    selectedTodoId = Array.from(selectedTodoIds).at(-1) || null;
+  }
+}
+
+function getSelectedTodoIds() {
+  pruneSelectedTodoIds();
+  return Array.from(selectedTodoIds);
+}
+
+function setSelectedTodoId(todoId) {
+  const id = normalizeSelectedTodoId(todoId);
+  selectedTodoId = id || null;
+  selectedTodoIds = id ? new Set([id]) : new Set();
+}
+
+function setSelectedTodoIds(todoIds, primaryTodoId = null) {
+  const source = Array.isArray(todoIds) ? todoIds : [];
+  const nextIds = [];
+  const seen = new Set();
+  for (const value of source) {
+    const id = normalizeSelectedTodoId(value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    nextIds.push(id);
+  }
+
+  selectedTodoIds = new Set(nextIds);
+  const primaryId = normalizeSelectedTodoId(primaryTodoId);
+  selectedTodoId = primaryId && selectedTodoIds.has(primaryId)
+    ? primaryId
+    : nextIds.at(-1) || null;
+}
+
+function toggleSelectedTodoId(todoId) {
+  const id = normalizeSelectedTodoId(todoId);
+  if (!id) return;
+  pruneSelectedTodoIds();
+  if (selectedTodoIds.has(id)) {
+    selectedTodoIds.delete(id);
+    if (String(selectedTodoId || "") === id) {
+      selectedTodoId = Array.from(selectedTodoIds).at(-1) || null;
+    }
+    return;
+  }
+  selectedTodoIds.add(id);
+  selectedTodoId = id;
+}
+
 function getSelectedTodo() {
+  pruneSelectedTodoIds();
   if (!selectedTodoId) return null;
   return todos.find((item) => String(item.id) === String(selectedTodoId)) || null;
+}
+
+function buildRecentDateRangeFromCurrentRange() {
+  const today = getTodayDateInputValue();
+  const days = Number.parseInt(String(currentRange || "7"), 10);
+  if (!Number.isFinite(days) || days <= 0) return { start: today, end: today };
+  return {
+    start: formatDateForInput(addDays(new Date(), -(Math.min(days, 31) - 1))),
+    end: today,
+  };
+}
+
+function getAiViewContext() {
+  const today = getTodayDateInputValue();
+  const selectedTodo = getSelectedTodo();
+  const selectedEntryId = activeView === "calendar"
+    ? String(editingCalendarEntryId || getFocusedCalendarRenderableId() || "").trim()
+    : "";
+  let surface = activeView || "overview";
+  let visibleRange = { start: today, end: today };
+
+  if (activeView === "todo") {
+    surface = "todo";
+    if (selectedTodo?.dueDate && isValidDateInput(selectedTodo.dueDate)) {
+      visibleRange = { start: selectedTodo.dueDate, end: selectedTodo.dueDate };
+    }
+  } else if (activeView === "calendar") {
+    surface = "calendar.week";
+    visibleRange = {
+      start: formatDateForInput(calendarWeekStart),
+      end: formatDateForInput(addDays(calendarWeekStart, 6)),
+    };
+  } else if (activeView === "review") {
+    surface = "review.range";
+    visibleRange = buildRecentDateRangeFromCurrentRange();
+  } else if (activeView === "settings") {
+    surface = "settings";
+  } else if (activeView === "overview") {
+    surface = "overview";
+  }
+
+  return {
+    schema: "guanshi-ai-view-context-v1",
+    source: "client_app",
+    activeView,
+    surface,
+    visibleRange,
+    filters: {
+      todoDimension: currentTodoDimension,
+      currentRange,
+      showHistory: showTodoHistoryInMainList,
+      showRecurringOnly: showRecurringReminderOnlyInMainList,
+      todoSelection: getSelectedTodoIds().length > 1 ? "selected_multiple" : selectedTodo ? "selected" : "none",
+    },
+    selection: {
+      todoIds: getSelectedTodoIds(),
+      entryIds: selectedEntryId ? [selectedEntryId] : [],
+      journalIds: [],
+    },
+  };
 }
 
 function collectTodoFormInput({ fallbackTodo = null, lenientRequired = false } = {}) {
@@ -2577,6 +2750,34 @@ function createTodoDraft(...args) {
   return todoModelModule.createTodoDraft(...args);
 }
 
+function createTodoFromCalendarDraft({ title, date, start, end, category, note = "", duration = 0 } = {}) {
+  const nowIso = new Date().toISOString();
+  const base = createTodoDraft();
+  const todo = normalizeTodo({
+    ...base,
+    title: normalizeEntryTitle(title, category || "待办事项"),
+    dueDate: String(date || "").trim(),
+    startTime: String(start || "").trim(),
+    endTime: String(end || "").trim(),
+    category: normalizeTodoCategoryValue(category, categories[0] || "工作"),
+    project: "",
+    note: normalizeTodoNoteValue(note),
+    estimatedMinutes: Math.max(5, Math.round(Number(duration || 0) * 60) || TODO_PLAN_NEW_TODO_DURATION_MINUTES),
+    calendarSynced: false,
+    syncState: "dirty",
+    completed: false,
+    aiMeta: { source: "calendar-future-plan" },
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  });
+  todo.orderInDay = getNextTodoOrderForDate(todo.dueDate, todo.id);
+  todos.unshift(todo);
+  setSelectedTodoId(todo.id);
+  saveTodos(todos);
+  render();
+  return todo;
+}
+
 function normalizeTodoSyncState(...args) {
   return todoModelModule.normalizeTodoSyncState(...args);
 }
@@ -2587,6 +2788,18 @@ function normalizeTodoReminderSyncState(...args) {
 
 function normalizeTodo(...args) {
   return todoModelModule.normalizeTodo(...args);
+}
+
+function getTodoPlannedEndDate(...args) {
+  return todoModelModule.getTodoPlannedEndDate(...args);
+}
+
+function isTodoOverdue(...args) {
+  return todoModelModule.isTodoOverdue(...args);
+}
+
+function getTodoLifecycleState(...args) {
+  return todoModelModule.getTodoLifecycleState(...args);
 }
 
 function normalizeTodoTags(...args) {
@@ -3069,6 +3282,10 @@ function moveTodoToDateOrder(todoId, nextDueDate, nextOrderInDay) {
   return todoPlanModule.moveTodoToDateOrder(todoId, nextDueDate, nextOrderInDay);
 }
 
+function moveTodosToDateOrder(todoIds, nextDueDate, nextOrderInDay) {
+  return todoPlanModule.moveTodosToDateOrder(todoIds, nextDueDate, nextOrderInDay);
+}
+
 function isImportedExternalEntry(entry) {
   return entry && entry.source === EXTERNAL_CALENDAR_SOURCE && entry.externalId;
 }
@@ -3480,7 +3697,11 @@ function updateBodyModalState() {
   const isPomodoroOpen = Boolean(pomodoroScoreModal && !pomodoroScoreModal.hidden);
   const isCalendarOpen = Boolean(calendarEventModal && !calendarEventModal.hidden);
   const isSyncErrorOpen = Boolean(syncErrorModal && !syncErrorModal.hidden);
-  document.body.classList.toggle("modal-open", isPomodoroOpen || isCalendarOpen || isSyncErrorOpen);
+  const isSyncGovernanceOpen = Boolean(syncGovernanceModal && !syncGovernanceModal.hidden);
+  document.body.classList.toggle(
+    "modal-open",
+    isPomodoroOpen || isCalendarOpen || isSyncErrorOpen || isSyncGovernanceOpen,
+  );
 }
 
 function createCalendarEventNode(segment, hourHeight) {

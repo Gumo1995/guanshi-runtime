@@ -10,7 +10,7 @@ const {
 const { redactSensitiveValue } = require("./ai-redaction");
 
 const CHAT_BODY_MAX_MESSAGES = 24;
-const CHAT_BODY_MAX_TEXT_LENGTH = 12000;
+const CHAT_BODY_MAX_TEXT_LENGTH = 50000;
 
 function normalizeMessageRole(role) {
   const value = String(role || "").trim();
@@ -24,14 +24,23 @@ function normalizeChatText(value, label) {
     throw createProviderError("AI_CHAT_MESSAGE_EMPTY", "AI chat message content is required.", 400, { label });
   }
   if (text.length > CHAT_BODY_MAX_TEXT_LENGTH) {
-    throw createProviderError("AI_CHAT_MESSAGE_TOO_LONG", "AI chat message content is too long.", 400, { label });
+    throw createProviderError("AI_CHAT_MESSAGE_TOO_LONG", "AI chat message content is too long.", 400, {
+      label,
+      length: text.length,
+      maxLength: CHAT_BODY_MAX_TEXT_LENGTH,
+    });
   }
   return text;
 }
 
 function normalizeChatMessages(input = {}) {
   if (Array.isArray(input.messages)) {
-    const messages = input.messages.slice(0, CHAT_BODY_MAX_MESSAGES).map((message, index) => ({
+    const sourceMessages = input.messages.length <= CHAT_BODY_MAX_MESSAGES
+      ? input.messages
+      : input.messages[0]?.role === "system"
+        ? [input.messages[0], ...input.messages.slice(-(CHAT_BODY_MAX_MESSAGES - 1))]
+        : input.messages.slice(-CHAT_BODY_MAX_MESSAGES);
+    const messages = sourceMessages.map((message, index) => ({
       role: normalizeMessageRole(message?.role),
       content: normalizeChatText(message?.content, `messages[${index}].content`),
     }));

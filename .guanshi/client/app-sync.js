@@ -23,6 +23,7 @@
     const render = requireFunction(deps, "render");
     const setCalendarSyncStatus = requireFunction(deps, "setCalendarSyncStatus");
     const getTodos = requireFunction(deps, "getTodos");
+    const isTodoOverdue = typeof deps.isTodoOverdue === "function" ? deps.isTodoOverdue : () => false;
     const normalizeTodoOrderByClockForDate =
       typeof deps.normalizeTodoOrderByClockForDate === "function"
         ? deps.normalizeTodoOrderByClockForDate
@@ -30,6 +31,8 @@
 
     const EXTERNAL_TASK_PULL_URL = String(deps.EXTERNAL_TASK_PULL_URL || "").trim();
     const EXTERNAL_CALENDAR_PUSH_URL = String(deps.EXTERNAL_CALENDAR_PUSH_URL || "").trim();
+    const REMOTE_DELETE_COUNT_GUARD = 5;
+    const REMOTE_DELETE_RATIO_GUARD = 0.2;
 
     function resolveFetch() {
       if (typeof deps.fetchFn === "function") return deps.fetchFn;
@@ -46,8 +49,52 @@
       return remoteModifiedMs < syncedMs;
     }
 
+    function countRemoteDeleteEligibleTodos(todos) {
+      return todos.filter((todo) => {
+        if (!todo || typeof todo !== "object") return false;
+        if (todo.completed) return false;
+        if (isTodoOverdue(todo)) return false;
+        if (String(todo.syncState || "").trim() !== "synced") return false;
+        if (!String(todo.externalCalendarId || "").trim()) return false;
+        return !hasDirtyLocalChanges(todo);
+      }).length;
+    }
+
+    function resolveRemoteDeleteGuard({ manual, candidates, filteredEvents, todos }) {
+      const candidateCount = Array.isArray(candidates) ? candidates.length : 0;
+      const syncedTodoCount = countRemoteDeleteEligibleTodos(Array.isArray(todos) ? todos : []);
+      const missingRatio = syncedTodoCount > 0 ? candidateCount / syncedTodoCount : 0;
+
+      if (candidateCount === 0) {
+        return { blocked: false, reason: "", candidateCount, syncedTodoCount, missingRatio };
+      }
+      if (!manual) {
+        return { blocked: true, reason: "automatic-sync", candidateCount, syncedTodoCount, missingRatio };
+      }
+      if (!Number.isFinite(Number(filteredEvents)) || Number(filteredEvents) <= 0) {
+        return { blocked: true, reason: "empty-export", candidateCount, syncedTodoCount, missingRatio };
+      }
+      if (candidateCount >= REMOTE_DELETE_COUNT_GUARD || missingRatio >= REMOTE_DELETE_RATIO_GUARD) {
+        return { blocked: true, reason: "suspicious-volume", candidateCount, syncedTodoCount, missingRatio };
+      }
+      return { blocked: false, reason: "", candidateCount, syncedTodoCount, missingRatio };
+    }
+
+    function formatRemoteDeleteGuardMessage(guard) {
+      if (!guard?.blocked) return "";
+      if (guard.reason === "automatic-sync") {
+        return `自动同步发现 ${guard.candidateCount} 个 Calendar 远端缺失待办，已保留本地数据。`;
+      }
+      if (guard.reason === "empty-export") {
+        return `Calendar 本次未读取到目标日历事件，已阻止删除 ${guard.candidateCount} 个本地待办。`;
+      }
+      const ratio = Math.round(Number(guard.missingRatio || 0) * 100);
+      return `检测到异常同步：${guard.candidateCount}/${guard.syncedTodoCount} 个已同步待办在 Calendar 中缺失（${ratio}%），已停止删除。`;
+    }
+
     async function pullTodosFromMacCalendar({ manual = false, triggerExport = true } = {}) {
       const todos = getTodos();
+      const activeTodos = todos.filter((todo) => !todo?.completed && !isTodoOverdue(todo));
       const fetchFn = resolveFetch();
       let response = null;
       try {
@@ -58,7 +105,7 @@
           },
           body: JSON.stringify({
             triggerExport,
-            todos,
+            todos: activeTodos,
             targetCalendar: getSyncCalendarTargetPayload(),
           }),
         });
@@ -86,6 +133,12 @@
       const updates = Array.isArray(result.updates) ? result.updates : [];
       const conflicts = Array.isArray(result.conflicts) ? result.conflicts : [];
       const deleted = Array.isArray(result.deleted) ? result.deleted : [];
+      const remoteDeleteGuard = resolveRemoteDeleteGuard({
+        manual,
+        candidates: deleted,
+        filteredEvents: result.filteredEvents,
+        todos: activeTodos,
+      });
       const pulledAt = String(result.generatedAt || new Date().toISOString());
       let updated = 0;
       let conflictCount = 0;
@@ -95,6 +148,8 @@
       for (const item of updates) {
         const todo = todos.find((entry) => String(entry.id) === String(item.taskId || ""));
         if (!todo) continue;
+        if (todo.completed) continue;
+        if (isTodoOverdue(todo)) continue;
 
         const remote = item.remote || {};
         const remoteTitle = String(remote.title || "").trim();
@@ -147,23 +202,28 @@
       for (const item of conflicts) {
         const todo = todos.find((entry) => String(entry.id) === String(item.taskId || ""));
         if (!todo) continue;
+        if (todo.completed) continue;
+        if (isTodoOverdue(todo)) continue;
         todo.calendarSynced = false;
         todo.syncState = "conflict";
         todo.lastSyncError = "检测到本地与日历冲突，请手动确认后再同步。";
         conflictCount += 1;
       }
 
-      for (const item of deleted) {
-        const taskId = String(item?.taskId || "").trim();
-        if (!taskId) continue;
-        const todo = todos.find((entry) => String(entry.id) === taskId);
-        if (!todo) continue;
-        if (todo.completed) continue;
-        if (todo.syncState !== "synced") continue;
-        if (hasDirtyLocalChanges(todo)) continue;
-        const removed = deleteTodoByTaskId(taskId, { queueRemoteDelete: false, timestampIso: pulledAt });
-        if (removed) {
-          deletedCount += 1;
+      if (!remoteDeleteGuard.blocked) {
+        for (const item of deleted) {
+          const taskId = String(item?.taskId || "").trim();
+          if (!taskId) continue;
+          const todo = todos.find((entry) => String(entry.id) === taskId);
+          if (!todo) continue;
+          if (isTodoOverdue(todo)) continue;
+          if (todo.completed) continue;
+          if (todo.syncState !== "synced") continue;
+          if (hasDirtyLocalChanges(todo)) continue;
+          const removed = deleteTodoByTaskId(taskId, { queueRemoteDelete: false, timestampIso: pulledAt });
+          if (removed) {
+            deletedCount += 1;
+          }
         }
       }
 
@@ -181,7 +241,9 @@
         render();
       }
 
-      if (manual && conflictCount > 0) {
+      if (remoteDeleteGuard.blocked) {
+        setCalendarSyncStatus(formatRemoteDeleteGuardMessage(remoteDeleteGuard), "warning");
+      } else if (manual && conflictCount > 0) {
         setCalendarSyncStatus(`检测到 ${conflictCount} 项待办冲突，请在待办中确认。`, "warning");
       }
 
@@ -189,8 +251,20 @@
         updated,
         deleted: deletedCount,
         conflicts: conflictCount,
+        conflictItems: conflicts.map((item) => ({
+          taskId: String(item?.taskId || ""),
+          changedFields: Array.isArray(item?.changedFields) ? [...item.changedFields] : [],
+          remote: item?.remote && typeof item.remote === "object" ? { ...item.remote } : {},
+        })),
         unmatched: Number(result.unmatched || 0),
         fallback: false,
+        deleteCandidates: remoteDeleteGuard.candidateCount,
+        deleteItems: deleted.map((item) => ({
+          taskId: String(item?.taskId || ""),
+          externalCalendarId: String(item?.externalCalendarId || item?.eventId || ""),
+        })),
+        deleteBlocked: remoteDeleteGuard.blocked,
+        deleteBlockReason: remoteDeleteGuard.reason,
       };
     }
 

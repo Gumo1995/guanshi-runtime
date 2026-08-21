@@ -21,6 +21,8 @@
       normalizeTodoNoteValue,
       normalizeTodoReminderRepeatValue,
       isRecurringTodoRepeatMode,
+      isValidDateInput,
+      isValidClockInput,
     } = deps;
 
     [
@@ -31,6 +33,8 @@
       ["normalizeTodoNoteValue", normalizeTodoNoteValue],
       ["normalizeTodoReminderRepeatValue", normalizeTodoReminderRepeatValue],
       ["isRecurringTodoRepeatMode", isRecurringTodoRepeatMode],
+	      ["isValidDateInput", isValidDateInput],
+	      ["isValidClockInput", isValidClockInput],
 	    ].forEach(([name, value]) => assertFunction(name, value));
 
 	    const TODO_PRIORITY_VALUES = new Set(["P0", "P1", "P2", "P3", "P4"]);
@@ -307,6 +311,42 @@
       };
     }
 
+    function getTodoPlannedEndDate(todo) {
+      if (!todo || todo.completed) return null;
+      const dueDate = String(todo.dueDate || "").trim();
+      if (!isValidDateInput(dueDate)) return null;
+
+      const startTime = String(todo.startTime || "").trim();
+      const endTime = isValidClockInput(todo.endTime) ? String(todo.endTime) : "23:59";
+      const endDate = new Date(`${dueDate}T${endTime}:00`);
+      if (Number.isNaN(endDate.getTime())) return null;
+
+      if (isValidClockInput(startTime)) {
+        const [startHour, startMinute] = startTime.split(":").map(Number);
+        const [endHour, endMinute] = endTime.split(":").map(Number);
+        const startMinutes = startHour * 60 + startMinute;
+        const endMinutes = endHour * 60 + endMinute;
+        if (endMinutes <= startMinutes) {
+          endDate.setDate(endDate.getDate() + 1);
+        }
+      }
+      return endDate;
+    }
+
+    function isTodoOverdue(todo, nowDate = new Date()) {
+      if (!todo || todo.completed) return false;
+      const current = nowDate instanceof Date && !Number.isNaN(nowDate.getTime()) ? nowDate : new Date();
+      const plannedEnd = getTodoPlannedEndDate(todo);
+      return Boolean(plannedEnd && plannedEnd < current);
+    }
+
+    function getTodoLifecycleState(todo, nowDate = new Date()) {
+      if (todo?.completed) return "completed";
+      if (isTodoOverdue(todo, nowDate)) return "overdue";
+      if (getTodoPlannedEndDate(todo)) return "planned";
+      return "unscheduled";
+    }
+
     function normalizeTodoTags(value) {
       if (Array.isArray(value)) {
         return value
@@ -394,6 +434,9 @@
       normalizeTodoSyncState,
       normalizeTodoReminderSyncState,
       normalizeTodo,
+      getTodoPlannedEndDate,
+      isTodoOverdue,
+      getTodoLifecycleState,
       normalizeTodoTags,
       normalizeProjectSegmentName,
       shouldSplitProjectByHyphenShortcut,

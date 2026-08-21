@@ -45,6 +45,7 @@ function sanitizeDraft(draft) {
     draftId: draft.draftId,
     source: draft.source || {},
     status: draft.status || "pending",
+    actionable: draft.actionable !== false && Array.isArray(draft.changes) && draft.changes.length > 0,
     dateRange: draft.dateRange || {},
     summary: String(draft.summary || ""),
     changes: Array.isArray(draft.changes) ? draft.changes : [],
@@ -74,6 +75,14 @@ function createAiDraftStore(options = {}) {
     if (!draft || draft.schema !== SCHEDULE_DRAFT_SCHEMA) {
       throw createDraftError("AI_DRAFT_SCHEMA_INVALID", "AI schedule draft schema is invalid.", 400);
     }
+    if (!Array.isArray(draft.changes) || draft.changes.length === 0) {
+      throw createDraftError(
+        "AI_DRAFT_EMPTY_NOT_CONFIRMABLE",
+        "Schedule drafts without changes cannot be saved or confirmed.",
+        409,
+        { draftId: draft.draftId || "", status: draft.status || "pending" },
+      );
+    }
     const payload = sanitizeDraft({
       ...draft,
       status: draft.status || "pending",
@@ -84,7 +93,11 @@ function createAiDraftStore(options = {}) {
   }
 
   function createDraft(input) {
-    return saveDraft(createScheduleDraft(input, { now }));
+    const draft = createScheduleDraft(input, { now });
+    if (!Array.isArray(draft.changes) || draft.changes.length === 0) {
+      return sanitizeDraft(draft);
+    }
+    return saveDraft(draft);
   }
 
   function getDraft(draftId) {
@@ -118,6 +131,9 @@ function createAiDraftStore(options = {}) {
       throw createDraftError("AI_DRAFT_STATUS_INVALID", "AI draft status is invalid.", 400, { status });
     }
     const current = getDraft(draftId);
+    if (status === "confirmed" && (!Array.isArray(current.changes) || current.changes.length === 0)) {
+      throw createDraftError("AI_DRAFT_EMPTY_NOT_CONFIRMABLE", "Schedule drafts without changes cannot be confirmed.", 409, { draftId });
+    }
     if (current.status !== "pending" && status !== current.status) {
       throw createDraftError("AI_DRAFT_STATUS_LOCKED", "Only pending drafts can change status in this release.", 409, { draftId });
     }

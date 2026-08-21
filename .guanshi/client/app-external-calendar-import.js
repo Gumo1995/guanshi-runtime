@@ -464,14 +464,16 @@
       refreshDataRefs();
       const externalMap = new Map();
       for (const entry of entries) {
-        if (!isImportedExternalEntry(entry)) continue;
-        externalMap.set(String(entry.externalId), entry);
+        const externalId = String(entry?.externalId || "").trim();
+        if (!externalId) continue;
+        externalMap.set(externalId, entry);
       }
 
       let changed = false;
       let added = 0;
       let updated = 0;
       let ignored = 0;
+      const conflicts = [];
 
       for (const imported of importedEvents) {
         if (ignoredExternalCalendarIds.has(imported.externalId)) {
@@ -509,6 +511,7 @@
         const current = entries[existingIndex];
         const preserveLocalReviewFields = !current.needsReview;
 
+        const nowIso = new Date().toISOString();
         const next = {
           ...current,
           title: imported.externalTitle,
@@ -520,9 +523,13 @@
           duration: imported.duration,
           externalTitle: imported.externalTitle,
           calendarGroup: imported.calendarGroup,
-          source: EXTERNAL_CALENDAR_SOURCE,
+          source: String(current.source || "").trim() || EXTERNAL_CALENDAR_SOURCE,
           externalId: imported.externalId,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
+          calendarSynced: true,
+          calendarSyncState: "synced",
+          calendarLastSyncError: "",
+          calendarSyncedAt: String(imported.modifiedAt || nowIso),
         };
 
         if (preserveLocalReviewFields) {
@@ -532,16 +539,72 @@
           next.needsReview = false;
         }
 
+        const changedFields = getImportedEntryChangedFields(current, next);
+        const currentSyncState = String(current.calendarSyncState || "").trim();
+        const hasPendingLocalCalendarChange = ["dirty", "error", "conflict"].includes(currentSyncState);
+        if (hasPendingLocalCalendarChange) {
+          if (changedFields.length) {
+            current.calendarSynced = false;
+            current.calendarSyncState = "conflict";
+            current.calendarLastSyncError = "观时记录与 Calendar 都发生过修改，请选择保留内容。";
+            conflicts.push({
+              entryId: String(current.id || ""),
+              changedFields,
+              local: snapshotEntryForGovernance(current),
+              remote: snapshotEntryForGovernance(next),
+            });
+            changed = true;
+          } else {
+            ignored += 1;
+          }
+          continue;
+        }
+
         if (!isSameImportedSnapshot(current, next)) {
           entries[existingIndex] = next;
           updated += 1;
+          changed = true;
+        } else if (
+          current.calendarSyncState !== "synced" ||
+          !current.calendarSynced ||
+          current.calendarLastSyncError
+        ) {
+          entries[existingIndex] = next;
           changed = true;
         } else {
           ignored += 1;
         }
       }
 
-      return { changed, added, updated, ignored };
+      return { changed, added, updated, ignored, conflicts };
+    }
+
+    function snapshotEntryForGovernance(entry) {
+      return {
+        title: String(entry?.title || "").trim(),
+        dueDate: String(entry?.date || "").trim(),
+        startTime: String(entry?.start || "").trim(),
+        endTime: String(entry?.end || "").trim(),
+        note: String(entry?.note || "").trim(),
+        qualityScore: entry?.quality ?? "",
+        happinessScore: entry?.happiness ?? "",
+        externalCalendarId: String(entry?.externalId || "").trim(),
+      };
+    }
+
+    function getImportedEntryChangedFields(prev, next) {
+      const fields = [];
+      const pairs = [
+        ["title", "title"],
+        ["dueDate", "date"],
+        ["startTime", "start"],
+        ["endTime", "end"],
+        ["note", "note"],
+      ];
+      for (const [field, key] of pairs) {
+        if (String(prev?.[key] ?? "") !== String(next?.[key] ?? "")) fields.push(field);
+      }
+      return fields;
     }
 
     function isSameImportedSnapshot(prev, next) {
@@ -576,6 +639,10 @@
         externalId: imported.externalId,
         externalTitle: imported.externalTitle,
         calendarGroup: imported.calendarGroup,
+        calendarSynced: true,
+        calendarSyncState: "synced",
+        calendarLastSyncError: "",
+        calendarSyncedAt: String(imported.modifiedAt || new Date().toISOString()),
       };
     }
 
@@ -595,6 +662,8 @@
       parseExternalDateAndTime,
       applyImportedCalendarEvents,
       isSameImportedSnapshot,
+      snapshotEntryForGovernance,
+      getImportedEntryChangedFields,
       createImportedCalendarEntry,
     };
   }

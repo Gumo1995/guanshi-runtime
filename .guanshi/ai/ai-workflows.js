@@ -1,6 +1,9 @@
 "use strict";
 
 const { createDomainModuleRegistry } = require("./ai-domain-module-registry");
+const { normalizeRuleMatcherValues } = require("./ai-memory-rule-registry");
+const { normalizeMatch } = require("./ai-memory-selector");
+const { deriveSubjectKey, validateMemoryCandidate } = require("./ai-memory-policy");
 
 const AI_ACTION_REQUEST_SCHEMA = "guanshi-ai-action-request-v1";
 const AI_COMPOSED_CONTEXT_SCHEMA = "guanshi-ai-composed-context-v1";
@@ -23,7 +26,8 @@ const ACTIONS = new Set([
   "review_day",
 ]);
 
-const ACTION_MEMORY_TYPES = new Set(["profile", "principle", "habit", "boundary", "preference", "rule", "playbook", "capability_request", "review"]);
+const ACTION_MEMORY_TYPES = new Set(["profile", "principle", "habit", "boundary", "preference", "rule", "playbook", "review"]);
+const MEMORY_SUBJECT_KEY_PATTERN = /^[a-z0-9][a-z0-9_.-]{2,159}$/;
 const REGISTRY_PIPELINE_ACTIONS = new Set(ACTIONS);
 const DOMAIN_MODULES = createDomainModuleRegistry();
 
@@ -213,7 +217,7 @@ function composeContext(request, stores, nowIso) {
   const todos = Array.isArray(request.input.todos) ? request.input.todos.slice(0, request.contextPolicy.maxItems) : [];
   const busyBlocks = Array.isArray(request.input.busyBlocks) ? request.input.busyBlocks.slice(0, request.contextPolicy.maxItems) : [];
   const memory = stores.memoryStore
-    ? stores.memoryStore.getEngineProjections(request.action).slice(0, request.contextPolicy.maxItems)
+    ? stores.memoryStore.getEngineProjections({ target: "scheduler", action: request.action }).slice(0, request.contextPolicy.maxItems)
     : [];
   return {
     schema: AI_COMPOSED_CONTEXT_SCHEMA,
@@ -338,8 +342,6 @@ function normalizeMemoryType(value, fallback = "principle") {
     boundaries: "boundary",
     rules: "rule",
     playbooks: "playbook",
-    capability: "capability_request",
-    capability_request: "capability_request",
   };
   const type = aliases[raw] || raw || fallback;
   return ACTION_MEMORY_TYPES.has(type) ? type : fallback;
@@ -350,8 +352,157 @@ function normalizeMemoryStrength(value, fallback = "soft") {
   return ["hard", "soft", "observed"].includes(strength) ? strength : fallback;
 }
 
+function inferPlannerMemoryType(proposal = {}, rule = null, body = "") {
+  const kind = normalizeText(rule?.kind, 80);
+  if (kind === "no_work_after") return "boundary";
+  if (kind === "fixed_break") return "habit";
+  if (kind === "prefer_task_type_window") return "preference";
+  if (kind === "workflow_playbook") return "playbook";
+  if (kind) return "rule";
+  const text = `${normalizeText(proposal.title, 160)} ${normalizeText(body, 1000)}`;
+  if (/边界|不安排|不要安排|不工作|禁止/.test(text)) return "boundary";
+  if (/习惯|每周|每天|通常会|固定/.test(text)) return "habit";
+  if (/偏好|更喜欢|倾向|优先/.test(text)) return "preference";
+  if (/流程|方法|步骤|先.+再/.test(text)) return "playbook";
+  if (/规则|估时|约束|默认/.test(text)) return "rule";
+  return "principle";
+}
+
+function normalizePlannerMemoryRule(value, normalizedFields = []) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!source) return null;
+  const rule = { ...source };
+  const kind = normalizeText(rule.kind, 80);
+  if (kind === "task_duration_estimate") {
+    if (rule.estimatedMinutes === undefined) {
+      const estimatedMinutes = rule.defaultMinutes ?? rule.durationMinutes ?? rule.minutes;
+      if (estimatedMinutes !== undefined) {
+        rule.estimatedMinutes = estimatedMinutes;
+        normalizedFields.push("rule.estimatedMinutes");
+      }
+    }
+    if (!normalizeRuleMatcherValues(rule.matcher).length) {
+      const matcher = normalizeText(rule.condition || rule.taskType, 120);
+      if (matcher) {
+        rule.matcher = matcher;
+        normalizedFields.push("rule.matcher");
+      }
+    }
+  } else if (kind === "no_work_after" && !normalizeText(rule.time, 20)) {
+    const time = normalizeText(rule.cutoffTime || rule.after, 20);
+    if (time) {
+      rule.time = time;
+      normalizedFields.push("rule.time");
+    }
+  } else if (kind === "fixed_break") {
+    if (!normalizeText(rule.start, 20) && normalizeText(rule.startTime, 20)) {
+      rule.start = rule.startTime;
+      normalizedFields.push("rule.start");
+    }
+    if (!normalizeText(rule.end, 20) && normalizeText(rule.endTime, 20)) {
+      rule.end = rule.endTime;
+      normalizedFields.push("rule.end");
+    }
+  } else if (kind === "buffer_after_calendar_event" && rule.minutes === undefined && rule.bufferMinutes !== undefined) {
+    rule.minutes = rule.bufferMinutes;
+    normalizedFields.push("rule.minutes");
+  } else if (kind === "max_big_tasks_per_day" && rule.count === undefined && rule.maxCount !== undefined) {
+    rule.count = rule.maxCount;
+    normalizedFields.push("rule.count");
+  }
+  return rule;
+}
+
+function normalizePlannerMemoryStrength(value, fallback, normalizedFields = []) {
+  const raw = normalizeText(value, 40).toLowerCase();
+  if (!raw) {
+    normalizedFields.push("strength");
+    return fallback;
+  }
+  if (["hard", "soft", "observed"].includes(raw)) return raw;
+  const aliases = {
+    hard_rule: "hard",
+    strict_rule: "hard",
+    constraint: "hard",
+    soft_rule: "soft",
+    preference_rule: "soft",
+    suggestion: "soft",
+    observation: "observed",
+    observed_pattern: "observed",
+  };
+  if (aliases[raw]) {
+    normalizedFields.push("strength");
+    return aliases[raw];
+  }
+  return raw;
+}
+
+function normalizePlannerMatchMode(value, match, normalizedFields = []) {
+  const raw = normalizeText(value, 40).toLowerCase();
+  const fallback = Object.keys(match || {}).length ? "any" : "global";
+  if (!raw) {
+    normalizedFields.push("matchMode");
+    return fallback;
+  }
+  if (["global", "any", "all"].includes(raw)) return raw;
+  const aliases = {
+    semantic: "any",
+    keyword: "any",
+    keywords: "any",
+    relevant: "any",
+    conditional: "any",
+    any_match: "any",
+    or: "any",
+    all_match: "all",
+    and: "all",
+    always: "global",
+    unconditional: "global",
+  };
+  if (aliases[raw]) {
+    normalizedFields.push("matchMode");
+    return aliases[raw];
+  }
+  return raw;
+}
+
+function normalizePlannerBoolean(value, fallback, field, normalizedFields = []) {
+  if (typeof value === "boolean") return value;
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (["true", "yes", "1"].includes(text)) {
+    normalizedFields.push(field);
+    return true;
+  }
+  if (["false", "no", "0"].includes(text)) {
+    normalizedFields.push(field);
+    return false;
+  }
+  if (value && typeof value === "object" && !Array.isArray(value) && typeof value.enabled === "boolean") {
+    normalizedFields.push(field);
+    return value.enabled;
+  }
+  normalizedFields.push(field);
+  return fallback;
+}
+
+function requestsModelOnlyMemory(text) {
+  const source = normalizeText(text, 2000);
+  return /(?:只|仅)(?:给|供)?\s*(?:AI|模型).{0,12}(?:参考|读取)|不要.{0,20}(?:本地|排程器|规则引擎).{0,12}(?:执行|应用|生效)|不(?:让|交给).{0,20}(?:本地|排程器|规则引擎).{0,12}(?:执行|应用)/i.test(source);
+}
+
+function normalizePlannerSubjectKey(value, candidate = {}, normalizedFields = []) {
+  const supplied = normalizeText(value, 160).toLowerCase();
+  if (MEMORY_SUBJECT_KEY_PATTERN.test(supplied)) return supplied;
+  const derived = deriveSubjectKey({
+    type: candidate.type,
+    rule: candidate.rule,
+    title: candidate.title,
+    body: candidate.body,
+  });
+  if (derived && !normalizedFields.includes("subjectKey")) normalizedFields.push("subjectKey");
+  return derived;
+}
+
 function getDefaultMemoryAppliesTo(type) {
-  if (type === "capability_request") return ["assistant"];
   if (type === "playbook") return ["assistant", "breakdown_task", "review_day"];
   return ["plan_today", "plan_week", "reflow_unfinished", "schedule_draft"];
 }
@@ -363,8 +514,40 @@ function isTaskEstimationRule(rule, body = "") {
 }
 
 function getMemoryAppliesTo(type, rule, body = "") {
+  if (normalizeText(rule?.kind, 80) === "no_work_after") return ["assistant", "parse_task", "plan_today", "plan_week", "reflow_unfinished", "schedule_draft"];
   if (isTaskEstimationRule(rule, body)) return ["assistant", "parse_task", "breakdown_task"];
   return getDefaultMemoryAppliesTo(type);
+}
+
+function buildMemoryProposalMatch(type, rule, body = "", suppliedMatch = {}) {
+  const explicitMatch = normalizeMatch(suppliedMatch);
+  if (Object.keys(explicitMatch).length) return explicitMatch;
+
+  const kind = normalizeText(rule?.kind, 80);
+  const matcherValues = normalizeRuleMatcherValues(rule?.matcher || rule?.trigger, 8);
+  const matcher = matcherValues[0] || "";
+  const inferred = {
+    keywords: [],
+    taskType: [],
+    category: [],
+    timeHint: [],
+  };
+  if (matcherValues.length) inferred.keywords.push(...matcherValues);
+  if (rule?.taskType) inferred.taskType.push(rule.taskType);
+  if (Array.isArray(rule?.taskCategories)) inferred.category.push(...rule.taskCategories);
+  if (kind === "task_duration_estimate") {
+    inferred.keywords.push(...normalizeText(body, 400).split(/[\s,，、/]+/).filter(Boolean).slice(0, 4));
+  } else if (kind === "prefer_task_type_window") {
+    inferred.timeHint.push("上午", "深度工作");
+  } else if (kind === "no_work_after") {
+    inferred.timeHint.push("晚上", "晚间", normalizeText(rule.time, 20));
+  } else if (kind === "buffer_after_calendar_event") {
+    inferred.keywords.push("会议", "日程", "缓冲");
+  } else if (kind === "workflow_playbook" || type === "playbook") {
+    inferred.keywords.push("方法", "流程", "拆解");
+    if (matcher === "large_project_or_unclear_scope") inferred.keywords.push("复杂项目", "项目推进");
+  }
+  return normalizeMatch(inferred);
 }
 
 function getPlannerMemoryProposalCandidate(input = {}) {
@@ -388,37 +571,161 @@ function getPlannerMemoryProposalCandidate(input = {}) {
   );
 }
 
+function getPlannerMemoryOperationIntent(input = {}, proposal = {}) {
+  const semanticAction = normalizeObject(input.semanticAction);
+  const semanticArguments = normalizeObject(semanticAction.arguments);
+  const decision = normalizeObject(input.memoryDecision || semanticArguments.memoryDecision);
+  const raw = normalizeText(proposal.operationIntent || proposal.operation || decision.operation, 40).toLowerCase();
+  if (raw === "new") return "create";
+  return ["create", "update", "replace"].includes(raw) ? raw : "";
+}
+
+function buildMemoryProposalEvidence(rawEvidence, defaults = {}) {
+  const supplied = normalizeObject(rawEvidence);
+  const evidenceText = typeof rawEvidence === "string" ? normalizeText(rawEvidence, 500) : "";
+  return {
+    ...supplied,
+    source: normalizeText(supplied.source || defaults.source, 120),
+    quote: normalizeText(supplied.quote || defaults.quote, 500),
+    date: normalizeText(supplied.date || defaults.date, 40),
+    ...(evidenceText ? { note: evidenceText } : {}),
+    ...(Array.isArray(supplied.tags)
+      ? { tags: normalizeStringList(supplied.tags, 12, 80) }
+      : Array.isArray(defaults.tags)
+        ? { tags: normalizeStringList(defaults.tags, 12, 80) }
+        : {}),
+  };
+}
+
+function finalizeMemoryProposalCandidate(candidateInput, request, currentDate, options = {}) {
+  const policy = validateMemoryCandidate(candidateInput);
+  if (policy.validation.errors.length) {
+    throw createWorkflowError(
+      "AI_MEMORY_PROPOSAL_POLICY_INVALID",
+      "记忆候选没有通过统一 Memory Policy 校验。",
+      400,
+      {
+        candidateSource: normalizeText(options.candidateSource, 80),
+        validation: policy.validation,
+      },
+    );
+  }
+  const candidate = policy.candidate;
+  return {
+    schema: PRINCIPLE_MEMORY_PROPOSAL_SCHEMA,
+    proposalId: `proposal_${request.requestId}`,
+    policyVersion: candidate.policyVersion,
+    classification: candidate.classification,
+    type: candidate.type,
+    subjectKey: candidate.subjectKey,
+    title: candidate.title,
+    body: candidate.body,
+    strength: candidate.strength,
+    appliesTo: candidate.appliesTo,
+    modelReadable: candidate.modelReadable,
+    engineReadable: candidate.engineReadable,
+    matchMode: candidate.matchMode,
+    match: candidate.match,
+    rule: candidate.rule,
+    validFrom: candidate.validFrom,
+    validUntil: candidate.validUntil,
+    reviewAfter: candidate.reviewAfter,
+    confidence: candidate.confidence,
+    operationIntent: candidate.operationIntent,
+    targetMemoryIds: candidate.targetMemoryIds,
+    supersedes: candidate.supersedes,
+    evidence: candidate.evidence,
+    candidateSource: normalizeText(options.candidateSource, 80),
+    normalizedFields: normalizeStringList(options.normalizedFields, 24, 80),
+    requiresConfirmation: true,
+  };
+}
+
 function normalizePlannerMemoryProposal(request, currentDate) {
   const proposal = getPlannerMemoryProposalCandidate(request.input);
   if (!Object.keys(proposal).length) return null;
   const text = normalizeText(request.input.text, 4000);
-  const type = normalizeMemoryType(proposal.type, "principle");
-  const title = normalizeText(proposal.title || proposal.name, 160);
+  const normalizedFields = [];
+  const rawType = normalizeText(proposal.type, 80).toLowerCase();
+  if (["capability", "capability_request"].includes(rawType)) {
+    throw createWorkflowError("AI_MEMORY_TYPE_DEPRECATED", "产品能力需求不属于用户记忆。", 400);
+  }
+  const knownTypeAliases = new Set(["principles", "principle_memory", "time_principle", "preferences", "habits", "boundaries", "rules", "playbooks"]);
+  const containerTypeAliases = new Set(["memory", "memory_proposal", "time_memory_proposal", "long_term_memory"]);
+  if (rawType && !ACTION_MEMORY_TYPES.has(rawType) && !knownTypeAliases.has(rawType) && !containerTypeAliases.has(rawType)) {
+    throw createWorkflowError("AI_MEMORY_PROPOSAL_POLICY_INVALID", "Planner 提供了未知的记忆类型。", 400, {
+      candidateSource: "planner_candidate",
+      validation: { status: "invalid", errors: ["type_invalid"], warnings: [] },
+    });
+  }
   const body = normalizeText(proposal.body || proposal.content || proposal.summary || proposal.description, 4000);
-  if (!title && !body) return null;
-  const defaultStrength = type === "boundary" || type === "rule" ? "hard" : type === "capability_request" ? "observed" : "soft";
-  const rule = proposal.rule && typeof proposal.rule === "object" && !Array.isArray(proposal.rule) ? proposal.rule : null;
+  const rule = normalizePlannerMemoryRule(proposal.rule, normalizedFields);
+  const inferredType = inferPlannerMemoryType(proposal, rule, body);
+  const type = containerTypeAliases.has(rawType)
+    ? inferredType
+    : normalizeMemoryType(rawType, inferredType);
+  if (!rawType || rawType !== type) normalizedFields.push("type");
+  const title = normalizeText(proposal.title || proposal.name, 160);
+  const defaultStrength = type === "boundary" || type === "rule" ? "hard" : type === "review" ? "observed" : "soft";
   const suppliedAppliesTo = normalizeStringList(proposal.appliesTo || proposal.applies_to, 16, 80);
-  return {
-    schema: PRINCIPLE_MEMORY_PROPOSAL_SCHEMA,
-    proposalId: `proposal_${request.requestId}`,
+  const appliesTo = suppliedAppliesTo.length ? suppliedAppliesTo : getMemoryAppliesTo(type, rule, body);
+  if (!suppliedAppliesTo.length) normalizedFields.push("appliesTo");
+  const suppliedMatch = normalizeMatch(proposal.match || proposal.matching);
+  const rawMatchMode = normalizeText(proposal.matchMode || proposal.match_mode, 40);
+  const rawModeIsGlobal = ["global", "always", "unconditional"].includes(rawMatchMode.toLowerCase());
+  const match = rawModeIsGlobal
+    ? suppliedMatch
+    : Object.keys(suppliedMatch).length
+      ? suppliedMatch
+      : buildMemoryProposalMatch(type, rule, body);
+  const matchMode = normalizePlannerMatchMode(rawMatchMode, match, normalizedFields);
+  if (!Object.keys(suppliedMatch).length && Object.keys(match).length) normalizedFields.push("match");
+  const subjectKey = normalizePlannerSubjectKey(proposal.subjectKey || proposal.subject_key, {
     type,
-    title: title || "时间管理原则",
-    body: body || text,
-    strength: normalizeMemoryStrength(proposal.strength, defaultStrength),
-    appliesTo: suppliedAppliesTo.length ? suppliedAppliesTo : getMemoryAppliesTo(type, rule, body),
-    engineReadable: typeof proposal.engineReadable === "boolean"
-      ? proposal.engineReadable
-      : type !== "capability_request" && type !== "review",
     rule,
-    evidence: {
-      source: "planner_memory_proposal",
-      quote: normalizeText(request.input.sourceText || text, 240),
-      date: currentDate,
-      tags: normalizeStringList(proposal.tags, 12, 80),
-    },
-    requiresConfirmation: true,
-  };
+    title,
+    body,
+  }, normalizedFields);
+  const modelReadable = normalizePlannerBoolean(proposal.modelReadable, type !== "review", "modelReadable", normalizedFields);
+  const engineReadableDefault = Boolean(rule && ["no_work_after", "fixed_break"].includes(normalizeText(rule.kind, 80)));
+  let engineReadable = normalizePlannerBoolean(proposal.engineReadable, engineReadableDefault, "engineReadable", normalizedFields);
+  if (requestsModelOnlyMemory(text) && engineReadable) {
+    engineReadable = false;
+    if (!normalizedFields.includes("engineReadable")) normalizedFields.push("engineReadable");
+  }
+  const evidence = buildMemoryProposalEvidence(proposal.evidence, {
+    source: "planner_memory_proposal",
+    quote: normalizeText(request.input.sourceText || text, 500),
+    date: currentDate,
+    tags: normalizeStringList(proposal.tags, 12, 80),
+  });
+  const operationIntent = getPlannerMemoryOperationIntent(request.input, proposal);
+  return finalizeMemoryProposalCandidate({
+    policyVersion: proposal.policyVersion || proposal.policy_version,
+    classification: proposal.classification,
+    type,
+    subjectKey,
+    title,
+    body,
+    strength: normalizePlannerMemoryStrength(proposal.strength, defaultStrength, normalizedFields),
+    appliesTo,
+    modelReadable,
+    engineReadable,
+    matchMode,
+    match,
+    rule,
+    validFrom: proposal.validFrom || proposal.valid_from,
+    validUntil: proposal.validUntil || proposal.valid_until,
+    reviewAfter: proposal.reviewAfter || proposal.review_after,
+    confidence: proposal.confidence,
+    operationIntent,
+    targetMemoryIds: proposal.targetMemoryIds || proposal.target_memory_ids,
+    supersedes: proposal.supersedes,
+    evidence,
+  }, request, currentDate, {
+    candidateSource: "planner_candidate",
+    normalizedFields,
+  });
 }
 
 function getPlannerTaskCandidate(input = {}) {
@@ -825,7 +1132,8 @@ function inferMemoryProposal(request, currentDate) {
   let title = "时间管理原则";
   let body = text;
   let strength = "soft";
-  let engineReadable = true;
+  let modelReadable = true;
+  let engineReadable = false;
   let rule = null;
   const durationEstimateMatch = /(估时|预计|一般|通常|默认|按).{0,30}?(\d+)\s*分钟|(\d+)\s*分钟.{0,30}?(估时|预计|一般|通常|默认|按)/.exec(text);
   if (durationEstimateMatch) {
@@ -841,24 +1149,12 @@ function inferMemoryProposal(request, currentDate) {
       estimatedMinutes: minutes,
       source: "user_memory",
     };
-  } else if (/(能不能|可不可以|希望|以后).*(支持|帮我|自动|功能|能力|记账|邮件|会议纪要)/.test(text)) {
-    type = "capability_request";
-    title = inferCapabilityName(text);
-    body = `用户提出产品能力需求：${text}`;
-    strength = "observed";
-    engineReadable = false;
-    rule = {
-      kind: "capability_request",
-      status: "requested",
-      capability: title,
-      examples: [text.slice(0, 240)],
-    };
   } else if (/(经验|方法|流程|原则).*?(先|第一步).*(再|然后|最后)|复杂项目.*(先|再|然后)/.test(text)) {
     type = "playbook";
     title = /复杂项目/.test(text) ? "复杂项目推进方法" : "用户工作方法";
     body = text;
     strength = "soft";
-    engineReadable = true;
+    engineReadable = false;
     rule = {
       kind: "workflow_playbook",
       trigger: /复杂项目/.test(text) ? "large_project_or_unclear_scope" : "user_method",
@@ -869,6 +1165,7 @@ function inferMemoryProposal(request, currentDate) {
     title = "晚间工作边界";
     body = "21:30 后不安排工作任务。";
     strength = "hard";
+    engineReadable = true;
     rule = { kind: "no_work_after", time: "21:30", taskCategories: ["工作"] };
   } else if (/会议后.*(\d+)\s*分钟.*缓冲/.test(text)) {
     const minutes = Number.parseInt(RegExp.$1, 10);
@@ -889,26 +1186,48 @@ function inferMemoryProposal(request, currentDate) {
     body = "用户更适合在上午安排深度工作。";
     strength = "soft";
     rule = { kind: "prefer_task_type_window", taskType: "deep_work", start: "09:00", end: "12:00" };
+  } else if (/请记住|帮我记住|记下来|以后都|我的原则是|我的习惯是|我的偏好是/.test(text)) {
+    title = normalizeText(text.replace(/^(请记住|帮我记住|记下来|我的原则是|我的习惯是|我的偏好是)[：:\s]*/, ""), 24) || "用户长期偏好";
+    body = text;
+  } else {
+    throw createWorkflowError(
+      "AI_MEMORY_CANDIDATE_INCOMPLETE",
+      "这段内容还不足以形成明确的长期记忆，请说明希望长期保留的偏好、原则、习惯或边界。",
+      400,
+    );
   }
-  if (type === "review") engineReadable = false;
+  if (type === "review") {
+    modelReadable = false;
+    engineReadable = false;
+  }
   const appliesTo = getMemoryAppliesTo(type, rule, body);
-  return {
-    schema: PRINCIPLE_MEMORY_PROPOSAL_SCHEMA,
-    proposalId: `proposal_${request.requestId}`,
+  const match = buildMemoryProposalMatch(type, rule, body, request.input.match);
+  return finalizeMemoryProposalCandidate({
     type,
     title,
     body,
     strength,
     appliesTo,
+    modelReadable,
     engineReadable,
+    matchMode: Object.keys(match).length ? "any" : "global",
+    match,
     rule,
+    validFrom: "",
+    validUntil: "",
+    reviewAfter: "",
+    confidence: null,
+    supersedes: [],
     evidence: {
       source: "user_message",
       quote: text.slice(0, 240),
       date: currentDate,
+      extraction: "legacy_heuristic_fallback",
     },
-    requiresConfirmation: true,
-  };
+  }, request, currentDate, {
+    candidateSource: "legacy_heuristic",
+    normalizedFields: ["subjectKey", "matchMode", "appliesTo", "modelReadable", "engineReadable"],
+  });
 }
 
 function buildPlanIntent(request, context, dateRange, action) {
@@ -1370,16 +1689,33 @@ const REGISTRY_STEP_HANDLERS = {
       { nowIso: state.nowIso },
     );
     const draft = state.stores.draftStore ? state.stores.draftStore.createDraft(schedulerInput) : null;
-    if (draft) state.artifacts.push({ kind: "schedule_draft", draft });
+    const actionable = Boolean(draft && Array.isArray(draft.changes) && draft.changes.length);
+    if (actionable) {
+      state.artifacts.push({ kind: "schedule_draft", draft });
+    } else if (state.result && typeof state.result === "object") {
+      state.result = {
+        ...state.result,
+        ...(Object.prototype.hasOwnProperty.call(state.result, "requiresScheduleDraft") ? { requiresScheduleDraft: false } : {}),
+        warnings: [
+          ...(Array.isArray(state.result.warnings) ? state.result.warnings : []),
+          {
+            code: "no_actionable_schedule_changes",
+            message: draft?.conflicts?.length
+              ? "当前约束下没有可执行的排程变更，请先处理冲突或调整范围。"
+              : "当前范围没有可重排的任务，因此未创建待确认草稿。",
+          },
+        ],
+      };
+    }
     return {
       output: {
         schema: "guanshi-pending-schedule-draft-step-v1",
         draftId: draft?.draftId || schedulerInput.draftId || "",
-        status: draft?.status || "pending",
+        status: draft?.status || "not_created",
         changeCount: Array.isArray(draft?.changes) ? draft.changes.length : 0,
-        requiresConfirmation: true,
+        requiresConfirmation: actionable,
       },
-      summary: draft ? `${draft.changes.length} 条排程变更待确认` : "生成排程草稿",
+      summary: actionable ? `${draft.changes.length} 条排程变更待确认` : "没有可确认的排程变更",
     };
   },
 
@@ -1422,10 +1758,10 @@ const REGISTRY_STEP_HANDLERS = {
         action: state.request.action,
         itemCount: pendingCount,
         artifactCount,
-        requiresConfirmation: true,
+        requiresConfirmation: pendingCount > 0,
         writeLocalDataBeforeConfirmation: false,
       },
-      summary: pendingCount ? `${pendingCount} 项等待用户确认` : "等待用户确认",
+      summary: pendingCount ? `${pendingCount} 项等待用户确认` : "没有可确认产物",
     };
   },
 
@@ -1527,11 +1863,18 @@ function executeAiWorkflow(rawRequest, stores = {}, options = {}) {
       nowIso,
     });
     const draft = stores.draftStore ? stores.draftStore.createDraft(schedulerInput) : null;
+    const actionable = Boolean(draft && Array.isArray(draft.changes) && draft.changes.length);
+    if (!actionable) {
+      planIntent.warnings = [
+        ...(Array.isArray(planIntent.warnings) ? planIntent.warnings : []),
+        { code: "no_actionable_schedule_changes", message: "当前范围没有生成可执行的排程变更。" },
+      ];
+    }
     return {
       request,
       context,
       result: planIntent,
-      artifacts: draft ? [{ kind: "schedule_draft", draft }] : [],
+      artifacts: actionable ? [{ kind: "schedule_draft", draft }] : [],
     };
   }
 
@@ -1543,11 +1886,16 @@ function executeAiWorkflow(rawRequest, stores = {}, options = {}) {
     });
     const suggestion = buildReflowSuggestion(request, dateRange, schedulerInput);
     const draft = stores.draftStore ? stores.draftStore.createDraft(schedulerInput) : null;
+    const actionable = Boolean(draft && Array.isArray(draft.changes) && draft.changes.length);
+    if (!actionable) {
+      suggestion.requiresScheduleDraft = false;
+      suggestion.warnings = [{ code: "no_actionable_schedule_changes", message: "当前范围没有可重排的任务或没有可用时间。" }];
+    }
     return {
       request,
       context,
       result: suggestion,
-      artifacts: draft ? [{ kind: "schedule_draft", draft }] : [],
+      artifacts: actionable ? [{ kind: "schedule_draft", draft }] : [],
     };
   }
 

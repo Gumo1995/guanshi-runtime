@@ -746,6 +746,34 @@
         reminderCompletedAt: null,
       });
 
+      if (selected.completed && changedForSync) {
+        const completionSnapshot = buildTodoCompletionSnapshot(selected);
+        if (completionSnapshot) {
+          let completionEntryIndex = findEntryIndexByLinkedTodoId(selected.id);
+          if (completionEntryIndex >= 0) {
+            entries[completionEntryIndex] = {
+              ...entries[completionEntryIndex],
+              ...completionSnapshot,
+              updatedAt: nowIso,
+            };
+          } else {
+            entries.unshift({
+              id: createUniqueEntryId(),
+              ...completionSnapshot,
+              createdAt: String(selected.completedAt || nowIso),
+              updatedAt: nowIso,
+            });
+            completionEntryIndex = 0;
+          }
+          selected.completionEntryId = String(entries[completionEntryIndex].id || "");
+          // Completed todos are historical mirrors. Their Calendar ownership has moved to the entry.
+          selected.calendarSynced = true;
+          selected.syncState = "synced";
+          selected.lastSyncError = "";
+          saveEntries(entries, { skipUndoSnapshot: true });
+        }
+      }
+
       if (!selected.completed && oldDueDate && oldDueDate !== selected.dueDate) {
         reflowTodoDayFromIndex(oldDueDate, oldDayIndex, { markDirty: true, timestampIso: nowIso });
       }
@@ -879,6 +907,10 @@
         source: "todo-recurring-completed",
         linkedTodoId,
         needsReview: !hasBothScores,
+        calendarSynced: false,
+        calendarSyncState: "dirty",
+        calendarLastSyncError: "",
+        calendarSyncedAt: null,
       };
 
       entries.unshift(entry);
@@ -910,7 +942,15 @@
         source: "todo-completed",
         linkedTodoId,
         needsReview: !hasBothScores,
+        calendarSynced: false,
+        calendarSyncState: "dirty",
+        calendarLastSyncError: "",
+        calendarSyncedAt: null,
       };
+      const externalCalendarId = String(todo.externalCalendarId || "").trim();
+      if (externalCalendarId) {
+        completionPayload.externalId = externalCalendarId;
+      }
 
       const existingIndex = findEntryIndexByLinkedTodoId(linkedTodoId);
       if (existingIndex >= 0) {
@@ -961,6 +1001,13 @@
         source: "todo-completed",
         linkedTodoId: String(todo.id),
         needsReview: !hasBothScores,
+        ...(String(todo.externalCalendarId || "").trim()
+          ? { externalId: String(todo.externalCalendarId).trim() }
+          : {}),
+        calendarSynced: false,
+        calendarSyncState: "dirty",
+        calendarLastSyncError: "",
+        calendarSyncedAt: null,
       };
     }
 
@@ -1115,7 +1162,6 @@
         return;
       }
 
-      const existingExternalCalendarId = String(todo.externalCalendarId || "").trim();
       todo.completed = nextCompleted;
       todo.completedAt = nextCompleted ? nowIso : null;
       todo.updatedAt = nowIso;
@@ -1126,15 +1172,6 @@
       todo.reminderPendingCompleteAt = null;
 
       if (nextCompleted) {
-        // Completed todos are represented as in-app records, so remove their pending mirror event remotely.
-        if (existingExternalCalendarId) {
-          enqueueTodoCalendarDelete(todo, nowIso);
-          todo.externalCalendarId = "";
-          todo.calendarSynced = true;
-          todo.syncState = "synced";
-          todo.syncedAt = nowIso;
-        }
-
         // Keep reminder id so completion can be propagated to Reminders on next sync tick.
         todo.reminderSynced = true;
         todo.reminderSyncState = "synced";
@@ -1152,6 +1189,11 @@
             end: completionWindow.end,
             duration: completionWindow.duration,
           });
+          // The actual record takes ownership of the same Calendar event. The Todo stops syncing as a plan.
+          todo.externalCalendarId = "";
+          todo.calendarSynced = true;
+          todo.syncState = "synced";
+          todo.syncedAt = nowIso;
         }
         const completedEndMinutes = parseClockToMinutes(String(completionWindow?.end || ""));
         if (isValidDateInput(oldDueDate) && completionWindow && oldDueDate !== completionWindow.date) {
@@ -1171,8 +1213,17 @@
         }
       } else {
         clearTodoRecentlyCompletedForDisplay(todoIdText);
+        const completionEntryIndex = findEntryIndexByLinkedTodoId(todo.id);
+        const completionExternalId = completionEntryIndex >= 0
+          ? String(entries[completionEntryIndex]?.externalId || "").trim()
+          : "";
         removeTodoCompletionEntry(todo.id);
         todo.completionEntryId = "";
+        if (completionExternalId) {
+          todo.externalCalendarId = completionExternalId;
+          todo.calendarSynced = false;
+          todo.syncState = "dirty";
+        }
         const reminderEligibleAfterRestore = Boolean(
           String(todo.reminder || "").trim() || String(todo.externalReminderId || "").trim(),
         );

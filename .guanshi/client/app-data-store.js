@@ -325,8 +325,12 @@
 
     function saveEntries(value, options = {}) {
       const skipUndoSnapshot = Boolean(options && options.skipUndoSnapshot);
+      const skipSyncSchedule = Boolean(options && options.skipSyncSchedule);
       localStorageRef.setItem(STORAGE_KEY, JSON.stringify(value));
       scheduleLocalDataBackup("entries-save");
+      if (!skipSyncSchedule && !getIsApplyingUndo()) {
+        scheduleAutoBidirectionalSync("entries-save");
+      }
       if (!skipUndoSnapshot) {
         commitUndoSnapshot();
       }

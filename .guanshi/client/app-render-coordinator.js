@@ -35,6 +35,7 @@
     const renderCalendar = requireFunction(deps, "renderCalendar");
     const renderTodos = requireFunction(deps, "renderTodos");
     const renderReview = requireFunction(deps, "renderReview");
+    const renderSettingsTabs = typeof deps.renderSettingsTabs === "function" ? deps.renderSettingsTabs : () => {};
     const renderCategoryManager = requireFunction(deps, "renderCategoryManager");
     const renderSyncSettingsControls = requireFunction(deps, "renderSyncSettingsControls");
     const renderQuoteManager = requireFunction(deps, "renderQuoteManager");
@@ -66,6 +67,7 @@
       renderCalendar(entries);
       renderTodos();
       renderReview();
+      renderSettingsTabs();
       renderCategoryManager();
       renderSyncSettingsControls();
       renderQuoteManager();
@@ -110,6 +112,7 @@
       }
 
       if (target === "settings") {
+        renderSettingsTabs();
         renderCategoryManager();
         renderSyncSettingsControls();
         renderQuoteManager();

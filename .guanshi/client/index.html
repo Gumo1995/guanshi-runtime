@@ -37,7 +37,7 @@
             </button>
           </div>
           <div id="top-sync-hub" class="top-sync-hub sidebar-sync-hub" aria-live="polite">
-            <p id="todo-sync-message" class="todo-sync-message">最近同步：尚未同步</p>
+            <button id="todo-sync-message" class="todo-sync-message" type="button">最近同步：尚未同步</button>
           </div>
         </div>
 
@@ -534,13 +534,25 @@
                   </label>
                 </div>
 
-                <label>
-                  <span>标签（逗号分隔）</span>
-                  <div id="todo-tag-suggest-wrap" class="todo-suggest-wrap">
-                    <input id="todo-tags-input" type="text" autocomplete="off" placeholder="例如 重要且紧急" />
-                    <div id="todo-tag-suggestion-menu" class="todo-suggestion-menu" hidden></div>
-                  </div>
-                </label>
+                <div class="todo-inline-grid">
+                  <label>
+                    <span>标签（逗号分隔）</span>
+                    <div id="todo-tag-suggest-wrap" class="todo-suggest-wrap">
+                      <input id="todo-tags-input" type="text" autocomplete="off" placeholder="例如 重要且紧急" />
+                      <div id="todo-tag-suggestion-menu" class="todo-suggestion-menu" hidden></div>
+                    </div>
+                  </label>
+                  <label>
+                    <span>优先级</span>
+                    <select id="todo-priority-input">
+                      <option value="P0">P0 最高</option>
+                      <option value="P1">P1 高</option>
+                      <option value="P2">P2 中</option>
+                      <option value="P3">P3 普通</option>
+                      <option value="P4">P4 低</option>
+                    </select>
+                  </label>
+                </div>
 
                 <input id="todo-quality-input" type="hidden" />
                 <input id="todo-happiness-input" type="hidden" />
@@ -739,428 +751,546 @@
         <section id="view-settings" class="app-view" data-view="settings" hidden>
           <section class="panel settings-panel">
             <div class="panel-head settings-panel-head">
-              <h2>设置</h2>
-              <p>仅保存在当前设备。</p>
+              <div class="settings-panel-head-main">
+                <h2>设置</h2>
+                <p>仅保存在当前设备。</p>
+              </div>
+              <div class="settings-tabs" role="tablist" aria-label="设置分类">
+                <button id="settings-tab-ai-connect" class="settings-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="settings-page-ai-connect" data-settings-tab-target="ai-connect">AI 连接</button>
+                <button id="settings-tab-memory" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page-memory" tabindex="-1" data-settings-tab-target="memory">记忆</button>
+                <button id="settings-tab-capabilities" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page-capabilities" tabindex="-1" data-settings-tab-target="capabilities">能力</button>
+                <button id="settings-tab-sync" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page-sync" tabindex="-1" data-settings-tab-target="sync">同步</button>
+                <button id="settings-tab-app" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page-app" tabindex="-1" data-settings-tab-target="app">应用</button>
+                <button id="settings-tab-preferences" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page-preferences" tabindex="-1" data-settings-tab-target="preferences">偏好</button>
+              </div>
             </div>
-            <div class="settings-grid" role="list">
-              <article class="settings-card settings-card-ai" role="listitem" aria-labelledby="settings-ai-title">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3 id="settings-ai-title">AI 接入</h3>
-                    <p>Provider / BYOK 与 Codex、Claude、Hermes 等外部 Agent 接入。</p>
-                  </div>
-                  <div class="settings-card-head-side">
-                    <span id="settings-ai-provider-badge" class="settings-card-badge">未配置</span>
-                    <span id="settings-ai-mcp-badge" class="settings-card-badge">MCP 检测中</span>
-                    <span id="settings-ai-actions-badge" class="settings-card-badge">Action 检测中</span>
-                    <span id="settings-ai-memory-badge" class="settings-card-badge">记忆检测中</span>
-                  </div>
-                </header>
 
-                <div class="settings-ai-layout">
-                  <form id="settings-ai-provider-form" class="settings-ai-provider-form">
-                    <div class="settings-ai-section-head">
-                      <span>Provider</span>
-                      <span id="settings-ai-provider-updated">--</span>
+            <div class="settings-pages">
+              <section id="settings-page-ai-connect" class="settings-page is-active" role="tabpanel" aria-labelledby="settings-tab-ai-connect" data-settings-page="ai-connect">
+                <div class="settings-grid" role="list">
+                  <article class="settings-card settings-card-ai settings-card-wide" role="listitem" aria-labelledby="settings-ai-title">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3 id="settings-ai-title">AI 连接</h3>
+                        <p>Provider / BYOK 与 MCP 外部 Agent 连接。</p>
+                      </div>
+                      <div class="settings-card-head-side">
+                        <span id="settings-ai-provider-badge" class="settings-card-badge">未配置</span>
+                        <span id="settings-ai-mcp-badge" class="settings-card-badge">MCP 检测中</span>
+                      </div>
+                    </header>
+
+                    <div class="settings-ai-layout">
+                      <form id="settings-ai-provider-form" class="settings-ai-provider-form">
+                        <div class="settings-ai-section-head">
+                          <span>Provider</span>
+                          <span id="settings-ai-provider-updated">--</span>
+                        </div>
+
+                        <div class="settings-ai-provider-grid">
+                          <label class="settings-ai-field" for="settings-ai-provider-type">
+                            <span>类型</span>
+                            <select id="settings-ai-provider-type">
+                              <option value="openai-compatible">OpenAI-compatible</option>
+                              <option value="anthropic">Anthropic</option>
+                              <option value="hermes-webui">Hermes WebUI</option>
+                              <option value="ollama">Ollama</option>
+                              <option value="lm-studio">LM Studio</option>
+                              <option value="custom">Custom Gateway</option>
+                            </select>
+                          </label>
+                          <label class="settings-ai-field" for="settings-ai-provider-id">
+                            <span>ID</span>
+                            <input id="settings-ai-provider-id" type="text" maxlength="64" placeholder="openai-compatible" />
+                          </label>
+                          <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-provider-base-url">
+                            <span>Base URL</span>
+                            <input id="settings-ai-provider-base-url" type="url" placeholder="https://api.openai.com/v1" />
+                          </label>
+                          <label class="settings-ai-field" for="settings-ai-provider-model">
+                            <span>模型</span>
+                            <input id="settings-ai-provider-model" type="text" maxlength="160" placeholder="gpt-4.1-mini" />
+                          </label>
+                          <label class="settings-ai-field" for="settings-ai-provider-context-window">
+                            <span>模型上下文上限</span>
+                            <input id="settings-ai-provider-context-window" type="number" min="8192" max="2000000" step="1000" inputmode="numeric" placeholder="128000" />
+                          </label>
+                          <label class="settings-ai-field" for="settings-ai-provider-input-budget">
+                            <span>本轮输入预算</span>
+                            <input id="settings-ai-provider-input-budget" type="number" min="4096" max="1995904" step="1000" inputmode="numeric" placeholder="96000" />
+                          </label>
+                          <label class="settings-ai-field" for="settings-ai-provider-env">
+                            <span>环境变量 Key</span>
+                            <input id="settings-ai-provider-env" type="text" maxlength="100" placeholder="OPENAI_API_KEY" />
+                          </label>
+                          <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-provider-api-key">
+                            <span>API Key</span>
+                            <input id="settings-ai-provider-api-key" type="password" autocomplete="off" placeholder="留空则保留已保存 Key" />
+                          </label>
+                        </div>
+
+                        <div class="settings-ai-provider-actions">
+                          <label class="settings-ai-enable">
+                            <input id="settings-ai-provider-enabled" type="checkbox" checked />
+                            <span>启用为当前 Provider</span>
+                          </label>
+                          <button id="settings-ai-provider-save-btn" class="btn-primary" type="submit">保存 Provider</button>
+                          <button id="settings-ai-provider-test-btn" class="btn-secondary" type="button">本地校验</button>
+                          <button id="settings-ai-provider-network-test-btn" class="btn-secondary" type="button">网络测试</button>
+                        </div>
+
+                        <dl id="settings-ai-provider-summary" class="settings-kv-list settings-ai-kv" aria-label="AI Provider 状态"></dl>
+                        <p id="settings-ai-provider-status" class="settings-ai-status" aria-live="polite"></p>
+                      </form>
+
+                      <section class="settings-ai-mcp" aria-label="MCP 接入">
+                        <div class="settings-ai-section-head">
+                          <span>MCP</span>
+                          <button id="settings-ai-mcp-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                        </div>
+                        <dl id="settings-ai-mcp-summary" class="settings-kv-list settings-ai-kv" aria-label="MCP 状态"></dl>
+                        <div id="settings-ai-mcp-tools" class="settings-ai-mcp-tools" aria-label="MCP 工具列表"></div>
+                        <div class="settings-ai-mcp-actions">
+                          <button id="settings-ai-mcp-copy-http-btn" class="btn-secondary" type="button">复制 HTTP 配置</button>
+                          <button id="settings-ai-mcp-copy-stdio-btn" class="btn-secondary" type="button">复制 stdio 配置</button>
+                        </div>
+                        <p id="settings-ai-mcp-status" class="settings-ai-status" aria-live="polite"></p>
+                      </section>
                     </div>
+                  </article>
+                </div>
+              </section>
 
-                    <div class="settings-ai-provider-grid">
-                      <label class="settings-ai-field" for="settings-ai-provider-type">
-                        <span>类型</span>
-                        <select id="settings-ai-provider-type">
-                          <option value="openai-compatible">OpenAI-compatible</option>
-                          <option value="anthropic">Anthropic</option>
-                          <option value="hermes-webui">Hermes WebUI</option>
-                          <option value="ollama">Ollama</option>
-                          <option value="lm-studio">LM Studio</option>
-                          <option value="custom">Custom Gateway</option>
+              <section id="settings-page-memory" class="settings-page" role="tabpanel" aria-labelledby="settings-tab-memory" data-settings-page="memory" hidden>
+                <div class="settings-grid" role="list">
+                  <article class="settings-card settings-card-memory settings-card-wide" role="listitem" aria-labelledby="settings-memory-page-title">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3 id="settings-memory-page-title">记忆</h3>
+                        <p>管理已确认记忆、待确认提案和模型注入预览。</p>
+                      </div>
+                      <div class="settings-card-head-side">
+                        <span id="settings-ai-memory-badge" class="settings-card-badge">记忆检测中</span>
+                      </div>
+                    </header>
+
+                    <section class="settings-ai-memory" aria-labelledby="settings-ai-memory-title">
+                      <div class="settings-ai-section-head">
+                        <span id="settings-ai-memory-title">记忆管理</span>
+                        <div class="settings-ai-memory-head-actions">
+                          <button id="settings-ai-memory-new-btn" class="btn-secondary" type="button">新增记忆</button>
+                          <button id="settings-ai-memory-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                        </div>
+                      </div>
+                      <p id="settings-ai-memory-summary" class="settings-ai-memory-summary">正在读取本地 AI 记忆。</p>
+
+                      <div class="settings-ai-memory-status-tabs" role="tablist" aria-label="记忆状态">
+                        <button id="settings-ai-memory-status-active" class="settings-ai-memory-status-tab is-active" type="button" role="tab" aria-selected="true" data-ai-memory-status-tab="active">已启用</button>
+                        <button id="settings-ai-memory-status-pending" class="settings-ai-memory-status-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-ai-memory-status-tab="pending">待确认</button>
+                        <button id="settings-ai-memory-status-disabled" class="settings-ai-memory-status-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-ai-memory-status-tab="disabled">已停用</button>
+                      </div>
+
+                      <div class="settings-ai-memory-workspace">
+                        <section class="settings-ai-memory-pane settings-ai-memory-list-pane" aria-label="记忆列表">
+                          <div class="settings-ai-memory-pane-head">
+                            <span id="settings-ai-memory-list-title">已启用</span>
+                            <small id="settings-ai-memory-list-hint">可能进入 AI 或排程</small>
+                          </div>
+                          <div id="settings-ai-memory-list" class="settings-ai-memory-list" role="listbox" aria-label="记忆列表"></div>
+                        </section>
+
+                        <section class="settings-ai-memory-detail-pane" aria-label="记忆详情">
+                          <div id="settings-ai-memory-detail" class="settings-ai-memory-detail" aria-live="polite"></div>
+
+                          <section class="settings-ai-memory-effect-check" aria-labelledby="settings-ai-memory-effect-title">
+                            <div class="settings-ai-memory-pane-head">
+                              <span id="settings-ai-memory-effect-title">生效检查</span>
+                              <small>当前记忆在所选场景是否进入 AI</small>
+                            </div>
+                            <div class="settings-ai-memory-effect-controls">
+                              <label class="settings-ai-field" for="settings-ai-memory-preview-action">
+                                <span>场景</span>
+                                <select id="settings-ai-memory-preview-action">
+                                  <option value="assistant">通用对话</option>
+                                  <option value="plan_today">今日排程</option>
+                                  <option value="plan_week">周排程</option>
+                                  <option value="breakdown_task">任务拆解</option>
+                                  <option value="reflow_unfinished">重排未完成</option>
+                                  <option value="review_day">复盘</option>
+                                </select>
+                              </label>
+                              <button id="settings-ai-memory-preview-btn" class="btn-secondary" type="button">检查</button>
+                            </div>
+                            <div id="settings-ai-memory-preview-summary" class="settings-ai-memory-effect-summary" hidden></div>
+                            <details class="settings-ai-memory-preview-raw">
+                              <summary>查看原始注入文本</summary>
+                              <pre id="settings-ai-memory-preview-body" class="settings-ai-memory-preview-body" hidden></pre>
+                            </details>
+                          </section>
+
+                          <form id="settings-ai-memory-editor" class="settings-ai-memory-editor" hidden>
+                            <div class="settings-ai-memory-pane-head">
+                              <span id="settings-ai-memory-editor-title">编辑记忆</span>
+                              <small id="settings-ai-memory-editor-hint">保存后会更新本地记忆。</small>
+                            </div>
+                            <div class="settings-ai-memory-editor-grid">
+                              <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-title-input">
+                                <span>标题</span>
+                                <input id="settings-ai-memory-title-input" type="text" maxlength="160" placeholder="例如：上午深度工作偏好" />
+                              </label>
+                              <label class="settings-ai-field" for="settings-ai-memory-type-select">
+                                <span>类型</span>
+                                <select id="settings-ai-memory-type-select">
+                                  <option value="principle">原则</option>
+                                  <option value="boundary">边界</option>
+                                  <option value="preference">偏好</option>
+                                  <option value="habit">习惯</option>
+                                  <option value="rule">规则</option>
+                                  <option value="profile">画像</option>
+                                  <option value="playbook">经验方法</option>
+                                  <option value="review">复盘观察</option>
+                                </select>
+                              </label>
+                              <label class="settings-ai-field" for="settings-ai-memory-strength-select">
+                                <span>强度</span>
+                                <select id="settings-ai-memory-strength-select">
+                                  <option value="soft">soft</option>
+                                  <option value="hard">hard</option>
+                                  <option value="observed">observed</option>
+                                </select>
+                              </label>
+                              <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-applies-input">
+                                <span>适用场景</span>
+                                <input id="settings-ai-memory-applies-input" type="text" placeholder="plan_today, plan_week, reflow_unfinished, schedule_draft" />
+                              </label>
+                              <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-body-input">
+                                <span>内容</span>
+                                <textarea id="settings-ai-memory-body-input" rows="4" maxlength="4000" placeholder="写下这条记忆的正文。"></textarea>
+                              </label>
+                            </div>
+                            <details class="settings-ai-memory-advanced">
+                              <summary>高级字段</summary>
+                              <div class="settings-ai-memory-editor-grid">
+                                <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-subject-input">
+                                  <span>主题标识（留空自动生成）</span>
+                                  <input id="settings-ai-memory-subject-input" type="text" maxlength="160" placeholder="例如 time.boundary.workday_end" />
+                                </label>
+                                <label class="settings-ai-field" for="settings-ai-memory-match-mode-select">
+                                  <span>匹配方式</span>
+                                  <select id="settings-ai-memory-match-mode-select">
+                                    <option value="global">无条件</option>
+                                    <option value="any">任一条件命中</option>
+                                    <option value="all">全部条件命中</option>
+                                  </select>
+                                </label>
+                                <label class="settings-ai-field" for="settings-ai-memory-confidence-input">
+                                  <span>可信度</span>
+                                  <input id="settings-ai-memory-confidence-input" type="number" min="0" max="1" step="0.01" placeholder="0-1，可留空" />
+                                </label>
+                                <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-match-input">
+                                  <span>匹配条件 JSON</span>
+                                  <textarea id="settings-ai-memory-match-input" rows="3" placeholder='{"keywords":["客户回复"],"taskType":["communication"],"timeHint":["上午"]}'></textarea>
+                                </label>
+                                <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-rule-input">
+                                  <span>结构化规则 JSON</span>
+                                  <textarea id="settings-ai-memory-rule-input" rows="3" placeholder='{"kind":"no_work_after","time":"21:30"}'></textarea>
+                                </label>
+                                <label class="settings-ai-field" for="settings-ai-memory-valid-from-input">
+                                  <span>开始生效</span>
+                                  <input id="settings-ai-memory-valid-from-input" type="date" />
+                                </label>
+                                <label class="settings-ai-field" for="settings-ai-memory-valid-until-input">
+                                  <span>有效至</span>
+                                  <input id="settings-ai-memory-valid-until-input" type="date" />
+                                </label>
+                                <label class="settings-ai-field" for="settings-ai-memory-review-after-input">
+                                  <span>复核日期</span>
+                                  <input id="settings-ai-memory-review-after-input" type="date" />
+                                </label>
+                              </div>
+                            </details>
+                            <div class="settings-ai-memory-editor-actions">
+                              <label class="settings-ai-enable">
+                                <input id="settings-ai-memory-model-readable" type="checkbox" checked />
+                                <span>可用于 AI 建议</span>
+                              </label>
+                              <label class="settings-ai-enable">
+                                <input id="settings-ai-memory-engine-readable" type="checkbox" />
+                                <span>允许本地规则执行</span>
+                              </label>
+                              <button id="settings-ai-memory-save-btn" class="btn-primary" type="submit">保存</button>
+                              <button id="settings-ai-memory-cancel-btn" class="btn-secondary" type="button">取消</button>
+                            </div>
+                          </form>
+                        </section>
+                      </div>
+
+                      <p id="settings-ai-memory-status" class="settings-ai-status" aria-live="polite"></p>
+                    </section>
+                  </article>
+                </div>
+              </section>
+
+              <section id="settings-page-capabilities" class="settings-page" role="tabpanel" aria-labelledby="settings-tab-capabilities" data-settings-page="capabilities" hidden>
+                <div class="settings-grid" role="list">
+                  <article class="settings-card settings-card-capabilities settings-card-wide" role="listitem" aria-labelledby="settings-capabilities-page-title">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3 id="settings-capabilities-page-title">能力</h3>
+                        <p>查看 AI 可用能力、执行步骤和注册状态。</p>
+                      </div>
+                      <div class="settings-card-head-side">
+                        <span id="settings-ai-actions-badge" class="settings-card-badge">Action 检测中</span>
+                      </div>
+                    </header>
+
+                    <section class="settings-ai-actions" aria-labelledby="settings-ai-actions-title">
+                      <div class="settings-ai-section-head">
+                        <span id="settings-ai-actions-title">能力管理</span>
+                        <button id="settings-ai-actions-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                      </div>
+                      <p id="settings-ai-actions-summary" class="settings-ai-actions-summary">正在读取 Action Registry。</p>
+
+                      <div class="settings-ai-actions-workspace">
+                        <section class="settings-ai-actions-pane" aria-label="能力列表">
+                          <div class="settings-ai-memory-pane-head">
+                            <span>能力</span>
+                            <small>业务能力 / 流程 / 卡片</small>
+                          </div>
+                          <div id="settings-ai-action-list" class="settings-ai-action-list"></div>
+                        </section>
+
+                        <section class="settings-ai-actions-pane" aria-label="执行步骤列表">
+                          <div class="settings-ai-memory-pane-head">
+                            <span>执行步骤</span>
+                            <small>内部子动作 / 执行类型</small>
+                          </div>
+                          <div id="settings-ai-step-list" class="settings-ai-step-list"></div>
+                        </section>
+                      </div>
+                      <p id="settings-ai-actions-status" class="settings-ai-status" aria-live="polite"></p>
+                    </section>
+                  </article>
+                </div>
+              </section>
+
+              <section id="settings-page-sync" class="settings-page" role="tabpanel" aria-labelledby="settings-tab-sync" data-settings-page="sync" hidden>
+                <div class="settings-grid" role="list">
+                  <article class="settings-card settings-card-sync" role="listitem">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3>同步目标</h3>
+                        <p>设置日历/提醒目标，一键刷新列表。</p>
+                      </div>
+                      <div class="settings-card-head-side">
+                        <button id="settings-sync-all-refresh-btn" class="btn-secondary settings-sync-refresh-btn" type="button">刷新列表</button>
+                        <span class="settings-card-badge">核心配置</span>
+                      </div>
+                    </header>
+                    <div class="settings-sync-compact-grid">
+                      <div class="settings-sync-target">
+                        <label class="settings-field-label" for="settings-sync-calendar-select">同步目标日历</label>
+                        <div class="settings-sync-target-row">
+                          <select id="settings-sync-calendar-select" aria-label="同步目标日历"></select>
+                        </div>
+                      </div>
+                      <div class="settings-sync-target">
+                        <label class="settings-field-label" for="settings-sync-reminder-select">同步提醒列表</label>
+                        <div class="settings-sync-target-row">
+                          <select id="settings-sync-reminder-select" aria-label="同步提醒列表"></select>
+                        </div>
+                      </div>
+                      <div class="settings-sync-target">
+                        <label class="settings-field-label" for="settings-reminder-lead-select">默认提前提醒</label>
+                        <div class="settings-sync-target-row">
+                          <select id="settings-reminder-lead-select" aria-label="默认提醒时间"></select>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article class="settings-card settings-card-data" role="listitem">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3>本地数据</h3>
+                        <p>导出/导入本地数据，管理快照和下次启动端口。</p>
+                      </div>
+                    </header>
+                    <div class="settings-data-controls">
+                      <div class="settings-runtime-port">
+                        <label class="settings-field-label" for="settings-runtime-port-input">本地端口</label>
+                        <div class="settings-runtime-port-row">
+                          <input id="settings-runtime-port-input" type="number" inputmode="numeric" min="1" max="65535" step="1" />
+                          <button id="settings-runtime-port-save-btn" class="btn-secondary" type="button">保存端口</button>
+                        </div>
+                        <p id="settings-runtime-port-status" class="settings-data-status" aria-live="polite"></p>
+                      </div>
+                      <div class="settings-data-actions">
+                        <button id="settings-data-export-btn" class="btn-secondary" type="button">导出数据</button>
+                        <button id="settings-data-import-btn" class="btn-secondary" type="button">导入数据</button>
+                        <input id="settings-data-import-input" type="file" accept="application/json,.json" hidden />
+                      </div>
+                      <p id="settings-data-status" class="settings-data-status" aria-live="polite"></p>
+                      <div class="settings-data-recovery">
+                        <label class="settings-field-label" for="settings-data-snapshot-select">本地快照</label>
+                        <select id="settings-data-snapshot-select" aria-label="选择本地数据快照" disabled>
+                          <option value="">正在读取快照</option>
                         </select>
-                      </label>
-                      <label class="settings-ai-field" for="settings-ai-provider-id">
-                        <span>ID</span>
-                        <input id="settings-ai-provider-id" type="text" maxlength="64" placeholder="openai-compatible" />
-                      </label>
-                      <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-provider-base-url">
-                        <span>Base URL</span>
-                        <input id="settings-ai-provider-base-url" type="url" placeholder="https://api.openai.com/v1" />
-                      </label>
-                      <label class="settings-ai-field" for="settings-ai-provider-model">
-                        <span>模型</span>
-                        <input id="settings-ai-provider-model" type="text" maxlength="160" placeholder="gpt-4.1-mini" />
-                      </label>
-                      <label class="settings-ai-field" for="settings-ai-provider-env">
-                        <span>环境变量 Key</span>
-                        <input id="settings-ai-provider-env" type="text" maxlength="100" placeholder="OPENAI_API_KEY" />
-                      </label>
-                      <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-provider-api-key">
-                        <span>API Key</span>
-                        <input id="settings-ai-provider-api-key" type="password" autocomplete="off" placeholder="留空则保留已保存 Key" />
-                      </label>
-                    </div>
-
-                    <div class="settings-ai-provider-actions">
-                      <label class="settings-ai-enable">
-                        <input id="settings-ai-provider-enabled" type="checkbox" checked />
-                        <span>启用为当前 Provider</span>
-                      </label>
-                      <button id="settings-ai-provider-save-btn" class="btn-primary" type="submit">保存 Provider</button>
-                      <button id="settings-ai-provider-test-btn" class="btn-secondary" type="button">本地校验</button>
-                      <button id="settings-ai-provider-network-test-btn" class="btn-secondary" type="button">网络测试</button>
-                    </div>
-
-                    <dl id="settings-ai-provider-summary" class="settings-kv-list settings-ai-kv" aria-label="AI Provider 状态"></dl>
-                    <p id="settings-ai-provider-status" class="settings-ai-status" aria-live="polite"></p>
-                  </form>
-
-                  <section class="settings-ai-mcp" aria-label="MCP 接入">
-                    <div class="settings-ai-section-head">
-                      <span>MCP</span>
-                      <button id="settings-ai-mcp-refresh-btn" class="btn-secondary" type="button">刷新</button>
-                    </div>
-                    <dl id="settings-ai-mcp-summary" class="settings-kv-list settings-ai-kv" aria-label="MCP 状态"></dl>
-                    <div id="settings-ai-mcp-tools" class="settings-ai-mcp-tools" aria-label="MCP 工具列表"></div>
-                    <div class="settings-ai-mcp-actions">
-                      <button id="settings-ai-mcp-copy-http-btn" class="btn-secondary" type="button">复制 HTTP 配置</button>
-                      <button id="settings-ai-mcp-copy-stdio-btn" class="btn-secondary" type="button">复制 stdio 配置</button>
-                    </div>
-                    <p id="settings-ai-mcp-status" class="settings-ai-status" aria-live="polite"></p>
-                  </section>
-
-                  <section class="settings-ai-actions" aria-labelledby="settings-ai-actions-title">
-                    <div class="settings-ai-section-head">
-                      <span id="settings-ai-actions-title">Action 管理</span>
-                      <button id="settings-ai-actions-refresh-btn" class="btn-secondary" type="button">刷新</button>
-                    </div>
-                    <p id="settings-ai-actions-summary" class="settings-ai-actions-summary">正在读取 Action Registry。</p>
-
-                    <div class="settings-ai-actions-workspace">
-                      <section class="settings-ai-actions-pane" aria-label="Action 列表">
-                        <div class="settings-ai-memory-pane-head">
-                          <span>Action</span>
-                          <small>业务能力 / 流程 / 卡片</small>
+                        <div class="settings-data-actions">
+                          <button id="settings-data-snapshot-refresh-btn" class="btn-secondary" type="button">刷新快照</button>
+                          <button id="settings-data-snapshot-preview-btn" class="btn-secondary" type="button" disabled>预览</button>
+                          <button id="settings-data-snapshot-restore-btn" class="btn-primary" type="button" disabled>恢复此快照</button>
+                          <button id="settings-data-snapshot-delete-btn" class="btn-secondary" type="button" disabled>删除快照</button>
                         </div>
-                        <div id="settings-ai-action-list" class="settings-ai-action-list"></div>
-                      </section>
-
-                      <section class="settings-ai-actions-pane" aria-label="Step 列表">
-                        <div class="settings-ai-memory-pane-head">
-                          <span>Step</span>
-                          <small>内部子动作 / 执行类型</small>
-                        </div>
-                        <div id="settings-ai-step-list" class="settings-ai-step-list"></div>
-                      </section>
-                    </div>
-                    <p id="settings-ai-actions-status" class="settings-ai-status" aria-live="polite"></p>
-                  </section>
-
-                  <section class="settings-ai-memory" aria-labelledby="settings-ai-memory-title">
-                    <div class="settings-ai-section-head">
-                      <span id="settings-ai-memory-title">AI 记忆</span>
-                      <div class="settings-ai-memory-head-actions">
-                        <button id="settings-ai-memory-new-btn" class="btn-secondary" type="button">新增记忆</button>
-                        <button id="settings-ai-memory-refresh-btn" class="btn-secondary" type="button">刷新</button>
+                        <p id="settings-data-snapshot-status" class="settings-data-status" aria-live="polite"></p>
                       </div>
                     </div>
-                    <p id="settings-ai-memory-summary" class="settings-ai-memory-summary">正在读取本地 AI 记忆。</p>
+                  </article>
+                </div>
+              </section>
 
-                    <div class="settings-ai-memory-workspace">
-                      <section class="settings-ai-memory-pane" aria-label="正式记忆">
-                        <div class="settings-ai-memory-pane-head">
-                          <span>正式记忆</span>
-                          <small>启用 / 停用 / 编辑</small>
-                        </div>
-                        <div id="settings-ai-memory-list" class="settings-ai-memory-list"></div>
-                      </section>
-
-                      <section class="settings-ai-memory-pane" aria-label="待确认记忆提案">
-                        <div class="settings-ai-memory-pane-head">
-                          <span>待确认提案</span>
-                          <small>确认后才进入 active memory</small>
-                        </div>
-                        <div id="settings-ai-memory-proposal-list" class="settings-ai-memory-list"></div>
-                      </section>
+              <section id="settings-page-app" class="settings-page" role="tabpanel" aria-labelledby="settings-tab-app" data-settings-page="app" hidden>
+                <div class="settings-grid" role="list">
+                  <article class="settings-card settings-card-install" role="listitem">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3>安装为独立应用</h3>
+                        <p>用 Chrome 生成独立窗口入口。</p>
+                      </div>
+                      <div class="settings-card-head-side">
+                        <span id="settings-install-mode" class="settings-card-badge">检测中</span>
+                      </div>
+                    </header>
+                    <div class="settings-install-controls">
+                      <ol class="settings-install-steps">
+                        <li>用 Chrome 打开当前页面。</li>
+                        <li>点地址栏右侧的安装图标，或打开 Chrome 菜单。</li>
+                        <li>选择“安装观时”或“保存并分享”里的“创建快捷方式”。</li>
+                        <li>勾选“作为窗口打开”，以后从启动台或 Dock 打开。</li>
+                      </ol>
+                      <div class="settings-install-actions">
+                        <button id="settings-install-btn" class="btn-primary" type="button" disabled>安装观时</button>
+                        <button id="settings-install-copy-btn" class="btn-secondary" type="button">复制地址</button>
+                      </div>
+                      <p id="settings-install-status" class="settings-install-status" aria-live="polite"></p>
                     </div>
+                  </article>
 
-                    <form id="settings-ai-memory-editor" class="settings-ai-memory-editor" hidden>
-                      <div class="settings-ai-memory-pane-head">
-                        <span id="settings-ai-memory-editor-title">编辑记忆</span>
-                        <small id="settings-ai-memory-editor-hint">保存后会更新本地记忆。</small>
+                  <article class="settings-card settings-card-update" role="listitem">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3>内测更新</h3>
+                        <p>从 GitHub 稳定 tag 更新源码。</p>
                       </div>
-                      <div class="settings-ai-memory-editor-grid">
-                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-title-input">
-                          <span>标题</span>
-                          <input id="settings-ai-memory-title-input" type="text" maxlength="160" placeholder="例如：上午深度工作偏好" />
-                        </label>
-                        <label class="settings-ai-field" for="settings-ai-memory-type-select">
-                          <span>类型</span>
-                          <select id="settings-ai-memory-type-select">
-                            <option value="principle">原则</option>
-                            <option value="boundary">边界</option>
-                            <option value="preference">偏好</option>
-                            <option value="habit">习惯</option>
-                            <option value="rule">规则</option>
-                            <option value="profile">画像</option>
-                            <option value="playbook">经验方法</option>
-                            <option value="capability_request">能力需求</option>
-                            <option value="review">复盘观察</option>
-                          </select>
-                        </label>
-                        <label class="settings-ai-field" for="settings-ai-memory-strength-select">
-                          <span>强度</span>
-                          <select id="settings-ai-memory-strength-select">
-                            <option value="soft">soft</option>
-                            <option value="hard">hard</option>
-                            <option value="observed">observed</option>
-                          </select>
-                        </label>
-                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-applies-input">
-                          <span>适用场景</span>
-                          <input id="settings-ai-memory-applies-input" type="text" placeholder="plan_today, plan_week, reflow_unfinished, schedule_draft" />
-                        </label>
-                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-body-input">
-                          <span>内容</span>
-                          <textarea id="settings-ai-memory-body-input" rows="4" maxlength="4000" placeholder="写下这条记忆的正文。"></textarea>
-                        </label>
-                        <label class="settings-ai-field settings-ai-field-wide" for="settings-ai-memory-rule-input">
-                          <span>结构化规则 JSON</span>
-                          <textarea id="settings-ai-memory-rule-input" rows="3" placeholder='{"kind":"no_work_after","time":"21:30"}'></textarea>
-                        </label>
+                      <div class="settings-card-head-side">
+                        <span class="settings-card-badge">macOS</span>
                       </div>
-                      <div class="settings-ai-memory-editor-actions">
-                        <label class="settings-ai-enable">
-                          <input id="settings-ai-memory-engine-readable" type="checkbox" checked />
-                          <span>允许进入 AI 上下文 / 排程投影</span>
-                        </label>
-                        <button id="settings-ai-memory-save-btn" class="btn-primary" type="submit">保存</button>
-                        <button id="settings-ai-memory-cancel-btn" class="btn-secondary" type="button">取消</button>
+                    </header>
+                    <div class="settings-update-controls">
+                      <dl class="settings-kv-list settings-environment-kv" aria-label="运行环境检查">
+                        <div>
+                          <dt>macOS</dt>
+                          <dd id="settings-env-platform">--</dd>
+                        </div>
+                        <div>
+                          <dt>Node.js</dt>
+                          <dd id="settings-env-node">--</dd>
+                        </div>
+                        <div>
+                          <dt>Chrome</dt>
+                          <dd id="settings-env-chrome">--</dd>
+                        </div>
+                        <div>
+                          <dt>Git</dt>
+                          <dd id="settings-env-git">--</dd>
+                        </div>
+                      </dl>
+                      <dl class="settings-kv-list settings-update-kv">
+                        <div>
+                          <dt>当前版本</dt>
+                          <dd id="settings-update-current">--</dd>
+                        </div>
+                        <div>
+                          <dt>最新版本</dt>
+                          <dd id="settings-update-latest">--</dd>
+                        </div>
+                        <div>
+                          <dt>源码状态</dt>
+                          <dd id="settings-update-worktree">--</dd>
+                        </div>
+                        <div>
+                          <dt>远端仓库</dt>
+                          <dd id="settings-update-remote">--</dd>
+                        </div>
+                      </dl>
+                      <p id="settings-update-details" class="settings-update-details"></p>
+                      <div class="settings-update-actions">
+                        <button id="settings-update-check-btn" class="btn-secondary" type="button">检查更新</button>
+                        <button id="settings-update-apply-btn" class="btn-primary" type="button" disabled>更新到稳定版</button>
+                        <button id="settings-update-force-apply-btn" class="btn-secondary settings-update-force-btn" type="button" disabled>备份并强制更新</button>
                       </div>
-                    </form>
-
-                    <div class="settings-ai-memory-preview">
-                      <label class="settings-ai-field" for="settings-ai-memory-preview-action">
-                        <span>调用预览</span>
-                        <select id="settings-ai-memory-preview-action">
-                          <option value="assistant">assistant</option>
-                          <option value="plan_today">plan_today</option>
-                          <option value="plan_week">plan_week</option>
-                          <option value="breakdown_task">breakdown_task</option>
-                          <option value="reflow_unfinished">reflow_unfinished</option>
-                          <option value="review_day">review_day</option>
+                      <div class="settings-update-backups">
+                        <label class="settings-field-label" for="settings-update-backup-select">更新保护备份</label>
+                        <select id="settings-update-backup-select" aria-label="选择更新保护备份" disabled>
+                          <option value="">暂无更新保护备份</option>
                         </select>
-                      </label>
-                      <button id="settings-ai-memory-preview-btn" class="btn-secondary" type="button">查看注入内容</button>
-                      <pre id="settings-ai-memory-preview-body" class="settings-ai-memory-preview-body" hidden></pre>
+                        <div class="settings-update-actions">
+                          <button id="settings-update-backup-export-btn" class="btn-secondary" type="button" disabled>导出副本</button>
+                          <button id="settings-update-backup-restore-btn" class="btn-secondary" type="button" disabled>恢复到原位置</button>
+                          <button id="settings-update-backup-delete-btn" class="btn-secondary" type="button" disabled>删除备份</button>
+                        </div>
+                        <p id="settings-update-backup-status" class="settings-update-status" aria-live="polite"></p>
+                      </div>
+                      <p id="settings-update-status" class="settings-update-status" aria-live="polite"></p>
                     </div>
-                    <p id="settings-ai-memory-status" class="settings-ai-status" aria-live="polite"></p>
-                  </section>
+                  </article>
                 </div>
-              </article>
+              </section>
 
-              <article class="settings-card settings-card-sync" role="listitem">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3>日历同步</h3>
-                    <p>设置日历/提醒目标，一键刷新列表。</p>
-                  </div>
-                  <div class="settings-card-head-side">
-                    <button id="settings-sync-all-refresh-btn" class="btn-secondary settings-sync-refresh-btn" type="button">刷新列表</button>
-                    <span class="settings-card-badge">核心配置</span>
-                  </div>
-                </header>
-                <div class="settings-sync-compact-grid">
-                  <div class="settings-sync-target">
-                    <label class="settings-field-label" for="settings-sync-calendar-select">同步目标日历</label>
-                    <div class="settings-sync-target-row">
-                      <select id="settings-sync-calendar-select" aria-label="同步目标日历"></select>
+              <section id="settings-page-preferences" class="settings-page" role="tabpanel" aria-labelledby="settings-tab-preferences" data-settings-page="preferences" hidden>
+                <div class="settings-grid" role="list">
+                  <article class="settings-card settings-card-category" role="listitem">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3>分类</h3>
+                        <p>可新增、重命名、排序；同步到待办和日历。</p>
+                      </div>
+                    </header>
+                    <div class="settings-category-controls">
+                      <label class="settings-field-label" for="settings-category-add-input">新增分类</label>
+                      <div class="settings-category-add">
+                        <input id="settings-category-add-input" type="text" maxlength="20" placeholder="输入新分类名称" />
+                        <button id="settings-category-add-btn" class="btn-secondary" type="button">新增</button>
+                        <button id="settings-category-reset-btn" class="btn-secondary" type="button">恢复默认</button>
+                      </div>
                     </div>
-                  </div>
-                  <div class="settings-sync-target">
-                    <label class="settings-field-label" for="settings-sync-reminder-select">同步提醒列表</label>
-                    <div class="settings-sync-target-row">
-                      <select id="settings-sync-reminder-select" aria-label="同步提醒列表"></select>
-                    </div>
-                  </div>
-                  <div class="settings-sync-target">
-                    <label class="settings-field-label" for="settings-reminder-lead-select">默认提前提醒</label>
-                    <div class="settings-sync-target-row">
-                      <select id="settings-reminder-lead-select" aria-label="默认提醒时间"></select>
-                    </div>
-                  </div>
-                </div>
-              </article>
+                    <div id="settings-category-list" class="settings-category-list" aria-label="分类可编辑列表"></div>
+                  </article>
 
-              <article class="settings-card settings-card-data" role="listitem">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3>数据与运行</h3>
-                    <p>导出/导入本地数据，设置下次启动端口。</p>
-                  </div>
-                </header>
-                <div class="settings-data-controls">
-                  <div class="settings-runtime-port">
-                    <label class="settings-field-label" for="settings-runtime-port-input">本地端口</label>
-                    <div class="settings-runtime-port-row">
-                      <input id="settings-runtime-port-input" type="number" inputmode="numeric" min="1" max="65535" step="1" />
-                      <button id="settings-runtime-port-save-btn" class="btn-secondary" type="button">保存端口</button>
+                  <article class="settings-card settings-card-quote" role="listitem">
+                    <header class="settings-card-head">
+                      <div class="settings-card-head-main">
+                        <h3>语录</h3>
+                        <p>总览语录管理，每行一条：内容 —— 作者。</p>
+                      </div>
+                    </header>
+                    <div class="settings-quote-controls">
+                      <label class="settings-field-label" for="settings-quote-editor">语录</label>
+                      <textarea
+                        id="settings-quote-editor"
+                        class="settings-quote-editor"
+                        rows="10"
+                        placeholder="例如：在黑暗中抱怨，不如点亮一盏灯。 —— 刘彝"
+                      ></textarea>
+                      <div class="settings-quote-actions">
+                        <button id="settings-quote-save-btn" class="btn-secondary" type="button">保存语录</button>
+                        <button id="settings-quote-reset-btn" class="btn-secondary" type="button">恢复默认</button>
+                      </div>
+                      <p id="settings-quote-status" class="settings-quote-status" aria-live="polite"></p>
                     </div>
-                    <p id="settings-runtime-port-status" class="settings-data-status" aria-live="polite"></p>
-                  </div>
-                  <div class="settings-data-actions">
-                    <button id="settings-data-export-btn" class="btn-secondary" type="button">导出数据</button>
-                    <button id="settings-data-import-btn" class="btn-secondary" type="button">导入数据</button>
-                    <input id="settings-data-import-input" type="file" accept="application/json,.json" hidden />
-                  </div>
-                  <p id="settings-data-status" class="settings-data-status" aria-live="polite"></p>
-                  <div class="settings-data-recovery">
-                    <label class="settings-field-label" for="settings-data-snapshot-select">本地快照</label>
-                    <select id="settings-data-snapshot-select" aria-label="选择本地数据快照" disabled>
-                      <option value="">正在读取快照</option>
-                    </select>
-                    <div class="settings-data-actions">
-                      <button id="settings-data-snapshot-refresh-btn" class="btn-secondary" type="button">刷新快照</button>
-                      <button id="settings-data-snapshot-preview-btn" class="btn-secondary" type="button" disabled>预览</button>
-                      <button id="settings-data-snapshot-restore-btn" class="btn-primary" type="button" disabled>恢复此快照</button>
-                      <button id="settings-data-snapshot-delete-btn" class="btn-secondary" type="button" disabled>删除快照</button>
-                    </div>
-                    <p id="settings-data-snapshot-status" class="settings-data-status" aria-live="polite"></p>
-                  </div>
+                  </article>
                 </div>
-              </article>
-
-              <article class="settings-card settings-card-install" role="listitem">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3>安装为独立应用</h3>
-                    <p>用 Chrome 生成独立窗口入口。</p>
-                  </div>
-                  <div class="settings-card-head-side">
-                    <span id="settings-install-mode" class="settings-card-badge">检测中</span>
-                  </div>
-                </header>
-                <div class="settings-install-controls">
-                  <ol class="settings-install-steps">
-                    <li>用 Chrome 打开当前页面。</li>
-                    <li>点地址栏右侧的安装图标，或打开 Chrome 菜单。</li>
-                    <li>选择“安装观时”或“保存并分享”里的“创建快捷方式”。</li>
-                    <li>勾选“作为窗口打开”，以后从启动台或 Dock 打开。</li>
-                  </ol>
-                  <div class="settings-install-actions">
-                    <button id="settings-install-btn" class="btn-primary" type="button" disabled>安装观时</button>
-                    <button id="settings-install-copy-btn" class="btn-secondary" type="button">复制地址</button>
-                  </div>
-                  <p id="settings-install-status" class="settings-install-status" aria-live="polite"></p>
-                </div>
-              </article>
-
-              <article class="settings-card settings-card-update" role="listitem">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3>内测更新</h3>
-                    <p>从 GitHub 稳定 tag 更新源码。</p>
-                  </div>
-                  <div class="settings-card-head-side">
-                    <span class="settings-card-badge">macOS</span>
-                  </div>
-                </header>
-                <div class="settings-update-controls">
-                  <dl class="settings-kv-list settings-environment-kv" aria-label="运行环境检查">
-                    <div>
-                      <dt>macOS</dt>
-                      <dd id="settings-env-platform">--</dd>
-                    </div>
-                    <div>
-                      <dt>Node.js</dt>
-                      <dd id="settings-env-node">--</dd>
-                    </div>
-                    <div>
-                      <dt>Chrome</dt>
-                      <dd id="settings-env-chrome">--</dd>
-                    </div>
-                    <div>
-                      <dt>Git</dt>
-                      <dd id="settings-env-git">--</dd>
-                    </div>
-                  </dl>
-                  <dl class="settings-kv-list settings-update-kv">
-                    <div>
-                      <dt>当前版本</dt>
-                      <dd id="settings-update-current">--</dd>
-                    </div>
-                    <div>
-                      <dt>最新版本</dt>
-                      <dd id="settings-update-latest">--</dd>
-                    </div>
-                    <div>
-                      <dt>源码状态</dt>
-                      <dd id="settings-update-worktree">--</dd>
-                    </div>
-                    <div>
-                      <dt>远端仓库</dt>
-                      <dd id="settings-update-remote">--</dd>
-                    </div>
-                  </dl>
-                  <p id="settings-update-details" class="settings-update-details"></p>
-                  <div class="settings-update-actions">
-                    <button id="settings-update-check-btn" class="btn-secondary" type="button">检查更新</button>
-                    <button id="settings-update-apply-btn" class="btn-primary" type="button" disabled>更新到稳定版</button>
-                    <button id="settings-update-force-apply-btn" class="btn-secondary settings-update-force-btn" type="button" disabled>备份并强制更新</button>
-                  </div>
-                  <div class="settings-update-backups">
-                    <label class="settings-field-label" for="settings-update-backup-select">更新保护备份</label>
-                    <select id="settings-update-backup-select" aria-label="选择更新保护备份" disabled>
-                      <option value="">暂无更新保护备份</option>
-                    </select>
-                    <div class="settings-update-actions">
-                      <button id="settings-update-backup-export-btn" class="btn-secondary" type="button" disabled>导出副本</button>
-                      <button id="settings-update-backup-restore-btn" class="btn-secondary" type="button" disabled>恢复到原位置</button>
-                      <button id="settings-update-backup-delete-btn" class="btn-secondary" type="button" disabled>删除备份</button>
-                    </div>
-                    <p id="settings-update-backup-status" class="settings-update-status" aria-live="polite"></p>
-                  </div>
-                  <p id="settings-update-status" class="settings-update-status" aria-live="polite"></p>
-                </div>
-              </article>
-
-              <article class="settings-card settings-card-category" role="listitem">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3>分类管理</h3>
-                    <p>可新增、重命名、排序；同步到待办和日历。</p>
-                  </div>
-                </header>
-                <div class="settings-category-controls">
-                  <label class="settings-field-label" for="settings-category-add-input">新增分类</label>
-                  <div class="settings-category-add">
-                    <input id="settings-category-add-input" type="text" maxlength="20" placeholder="输入新分类名称" />
-                    <button id="settings-category-add-btn" class="btn-secondary" type="button">新增</button>
-                    <button id="settings-category-reset-btn" class="btn-secondary" type="button">恢复默认</button>
-                  </div>
-                </div>
-                <div id="settings-category-list" class="settings-category-list" aria-label="分类可编辑列表"></div>
-              </article>
-
-              <article class="settings-card settings-card-quote" role="listitem">
-                <header class="settings-card-head">
-                  <div class="settings-card-head-main">
-                    <h3>名人名言管理</h3>
-                    <p>总览语录管理，每行一条：内容 —— 作者。</p>
-                  </div>
-                </header>
-                <div class="settings-quote-controls">
-                  <label class="settings-field-label" for="settings-quote-editor">语录</label>
-                  <textarea
-                    id="settings-quote-editor"
-                    class="settings-quote-editor"
-                    rows="10"
-                    placeholder="例如：在黑暗中抱怨，不如点亮一盏灯。 —— 刘彝"
-                  ></textarea>
-                  <div class="settings-quote-actions">
-                    <button id="settings-quote-save-btn" class="btn-secondary" type="button">保存语录</button>
-                    <button id="settings-quote-reset-btn" class="btn-secondary" type="button">恢复默认</button>
-                  </div>
-                  <p id="settings-quote-status" class="settings-quote-status" aria-live="polite"></p>
-                </div>
-              </article>
+              </section>
             </div>
           </section>
         </section>
@@ -1263,6 +1393,22 @@
     </div>
   </div>
 
+  <div id="sync-governance-modal" class="sync-governance-modal" hidden>
+    <div class="sync-governance-backdrop" data-sync-governance-close="true"></div>
+    <section class="sync-governance-card" role="dialog" aria-modal="true" aria-labelledby="sync-governance-title">
+      <header class="sync-governance-head">
+        <h2 id="sync-governance-title">同步确认</h2>
+        <nav id="sync-governance-nav" class="sync-governance-nav" aria-label="待确认问题"></nav>
+        <button class="sync-governance-close" type="button" data-sync-governance-close="true" aria-label="关闭">×</button>
+      </header>
+      <main id="sync-governance-content" class="sync-governance-content"></main>
+      <footer class="sync-governance-foot">
+        <span><strong id="sync-governance-normal-count">0</strong> 项正常完成</span>
+        <span>待确认 <strong id="sync-governance-remaining-count">0</strong> 项</span>
+      </footer>
+    </section>
+  </div>
+
   <div id="sync-error-modal" class="sync-error-modal" hidden>
     <div class="sync-error-backdrop" data-sync-error-close="true"></div>
     <section class="sync-error-card" role="dialog" aria-modal="true" aria-labelledby="sync-error-title">
@@ -1289,11 +1435,13 @@
   <script src="app-core-utils.js"></script>
   <script src="app-overview.js"></script>
   <script src="app-layout-shell.js"></script>
+  <script src="app-ai-ui-reactions.js"></script>
   <script src="app-ai-sidebar.js"></script>
   <script src="app-todo-model.js"></script>
   <script src="app-todo-sync-bridge.js"></script>
   <script src="app-sync.js"></script>
   <script src="app-external-calendar-import.js"></script>
+  <script src="app-sync-governance.js"></script>
   <script src="app-sync-runtime.js"></script>
   <script src="app-todo-actions.js"></script>
   <script src="app-calendar-actions.js"></script>

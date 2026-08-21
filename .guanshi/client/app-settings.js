@@ -21,6 +21,8 @@
     const DATA_EXPORT_STORAGE_PREFIX = String(deps.DATA_EXPORT_STORAGE_PREFIX || "time_quality_");
     const RUNTIME_CONFIG_URL = String(deps.RUNTIME_CONFIG_URL || "/api/runtime/config");
     const CACHE_RESET_ONCE_KEY = String(deps.CACHE_RESET_ONCE_KEY || "time_quality_cache_reset_once_v2");
+    const SETTINGS_TAB_STORAGE_KEY = String(deps.SETTINGS_TAB_STORAGE_KEY || "time_quality_settings_tab_v1");
+    const SETTINGS_TAB_IDS = ["ai-connect", "memory", "capabilities", "sync", "app", "preferences"];
     const DEFAULT_CATEGORIES = normalizeList(deps.DEFAULT_CATEGORIES).map((item) => String(item));
     const MOTIVATION_QUOTES = normalizeList(deps.MOTIVATION_QUOTES).map((item) => ({
       text: String(item?.text || ""),
@@ -105,6 +107,7 @@
     const settingsRuntimePortStatus = deps.settingsRuntimePortStatus || null;
 
     let eventsBound = false;
+    let activeSettingsTab = loadSettingsTab();
 
     function isHtmlSelect(node) {
       return typeof globalScope.HTMLSelectElement !== "undefined" && node instanceof globalScope.HTMLSelectElement;
@@ -120,6 +123,117 @@
 
     function isElement(node) {
       return typeof globalScope.Element !== "undefined" && node instanceof globalScope.Element;
+    }
+
+    function normalizeSettingsTab(value) {
+      const text = String(value || "").trim();
+      return SETTINGS_TAB_IDS.includes(text) ? text : SETTINGS_TAB_IDS[0];
+    }
+
+    function loadSettingsTab() {
+      try {
+        return normalizeSettingsTab(localStorageRef?.getItem(SETTINGS_TAB_STORAGE_KEY));
+      } catch {
+        return SETTINGS_TAB_IDS[0];
+      }
+    }
+
+    function saveSettingsTab(value) {
+      try {
+        localStorageRef?.setItem(SETTINGS_TAB_STORAGE_KEY, normalizeSettingsTab(value));
+      } catch {
+        // ignore storage failures
+      }
+    }
+
+    function getSettingsTabButtons() {
+      if (!documentRef?.querySelectorAll) return [];
+      return Array.from(documentRef.querySelectorAll("[data-settings-tab-target]"));
+    }
+
+    function getSettingsTabPanels() {
+      if (!documentRef?.querySelectorAll) return [];
+      return Array.from(documentRef.querySelectorAll("[data-settings-page]"));
+    }
+
+    function renderSettingsTabs() {
+      activeSettingsTab = normalizeSettingsTab(activeSettingsTab);
+
+      for (const button of getSettingsTabButtons()) {
+        const tabId = normalizeSettingsTab(button.dataset?.settingsTabTarget);
+        const isActive = tabId === activeSettingsTab;
+        button.classList?.toggle("is-active", isActive);
+        button.setAttribute?.("aria-selected", isActive ? "true" : "false");
+        button.setAttribute?.("tabindex", isActive ? "0" : "-1");
+      }
+
+      for (const panel of getSettingsTabPanels()) {
+        const tabId = normalizeSettingsTab(panel.dataset?.settingsPage);
+        const isActive = tabId === activeSettingsTab;
+        panel.hidden = !isActive;
+        panel.classList?.toggle("is-active", isActive);
+      }
+
+      return activeSettingsTab;
+    }
+
+    function focusSettingsTabButton(tabId) {
+      const normalized = normalizeSettingsTab(tabId);
+      const button = getSettingsTabButtons().find((item) => normalizeSettingsTab(item.dataset?.settingsTabTarget) === normalized);
+      button?.focus?.();
+    }
+
+    function scrollSettingsPanelToTop(options = {}) {
+      const panel = documentRef?.querySelector?.(".settings-panel");
+      if (!panel) return;
+      if (typeof panel.scrollTo === "function") {
+        panel.scrollTo({ top: 0, behavior: options.smooth === false ? "auto" : "smooth" });
+        return;
+      }
+      panel.scrollTop = 0;
+    }
+
+    function setActiveSettingsTab(tabId, options = {}) {
+      const next = normalizeSettingsTab(tabId);
+      const changed = activeSettingsTab !== next;
+      activeSettingsTab = next;
+      saveSettingsTab(next);
+      renderSettingsTabs();
+      if (options.focus) focusSettingsTabButton(next);
+      if (options.scroll && changed && getActiveView() === "settings") scrollSettingsPanelToTop(options);
+      return next;
+    }
+
+    function handleSettingsTabClick(event) {
+      const button = event?.currentTarget || (isElement(event?.target) ? event.target.closest("[data-settings-tab-target]") : null);
+      if (!button) return;
+      setActiveSettingsTab(button.dataset?.settingsTabTarget, { scroll: true });
+    }
+
+    function handleSettingsTabKeydown(event) {
+      const key = String(event?.key || "");
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
+
+      const buttons = getSettingsTabButtons();
+      if (!buttons.length) return;
+      const currentIndex = Math.max(0, buttons.indexOf(event.currentTarget));
+      let nextIndex = currentIndex;
+      if (key === "Home") nextIndex = 0;
+      if (key === "End") nextIndex = buttons.length - 1;
+      if (key === "ArrowLeft") nextIndex = (currentIndex + buttons.length - 1) % buttons.length;
+      if (key === "ArrowRight") nextIndex = (currentIndex + 1) % buttons.length;
+
+      event.preventDefault?.();
+      setActiveSettingsTab(buttons[nextIndex]?.dataset?.settingsTabTarget, { focus: true, scroll: true });
+    }
+
+    function initSettingsTabs() {
+      activeSettingsTab = loadSettingsTab();
+      renderSettingsTabs();
+    }
+
+    function getActiveSettingsTab() {
+      return normalizeSettingsTab(activeSettingsTab);
     }
 
     function normalizeCategoryName(value) {
@@ -839,6 +953,12 @@
       if (eventsBound) return;
       eventsBound = true;
 
+      for (const button of getSettingsTabButtons()) {
+        button.addEventListener("click", handleSettingsTabClick);
+        button.addEventListener("keydown", handleSettingsTabKeydown);
+      }
+      renderSettingsTabs();
+
       if (settingsCategoryAddBtn) {
         settingsCategoryAddBtn.addEventListener("click", handleCategoryAdd);
       }
@@ -893,12 +1013,16 @@
       loadMotivationQuotes,
       loadQuoteState,
       getCurrentMotivationQuotes,
+      initSettingsTabs,
       initCategoryConfiguration,
       initRuntimePortConfiguration,
       bindEvents,
+      getActiveSettingsTab,
       renderCategoryManager,
       renderQuoteManager,
       renderHeroQuote,
+      renderSettingsTabs,
+      setActiveSettingsTab,
       setQuoteStatus,
     };
   }
