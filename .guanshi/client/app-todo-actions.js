@@ -22,6 +22,7 @@
       getEntries,
       getCategories,
       getSelectedTodoId,
+      getSelectedTodoIds,
       setSelectedTodoId,
       getShowTodoHistoryInMainList,
       createTodoDraft,
@@ -85,6 +86,7 @@
       ["getEntries", getEntries],
       ["getCategories", getCategories],
       ["getSelectedTodoId", getSelectedTodoId],
+      ["getSelectedTodoIds", getSelectedTodoIds],
       ["setSelectedTodoId", setSelectedTodoId],
       ["getShowTodoHistoryInMainList", getShowTodoHistoryInMainList],
       ["createTodoDraft", createTodoDraft],
@@ -334,14 +336,41 @@
 
     function handleTodoDelete() {
       refreshDataRefs();
+      const rawSelectedIds = getSelectedTodoIds();
+      const selectedIds = new Set(
+        (Array.isArray(rawSelectedIds) ? rawSelectedIds : [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean),
+      );
       const selected = getSelectedTodo();
-      if (!selected) return;
+      if (!selectedIds.size && selected?.id) {
+        selectedIds.add(String(selected.id));
+      }
 
-      const index = todos.findIndex((item) => String(item.id) === String(selected.id));
-      if (index < 0) return;
-      deleteTodoByIndex(index, { queueRemoteDelete: true, timestampIso: new Date().toISOString() });
+      const targetIndices = todos
+        .map((item, index) => (selectedIds.has(String(item.id)) ? index : -1))
+        .filter((index) => index >= 0);
+      if (!targetIndices.length) return 0;
+
+      const firstTargetIndex = Math.min(...targetIndices);
+      const nextSelectedTodo =
+        todos.slice(firstTargetIndex).find((item) => !selectedIds.has(String(item.id)))
+        || [...todos.slice(0, firstTargetIndex)].reverse().find((item) => !selectedIds.has(String(item.id)))
+        || null;
+      const timestampIso = new Date().toISOString();
+      let deletedCount = 0;
+
+      for (const index of [...targetIndices].sort((a, b) => b - a)) {
+        if (deleteTodoByIndex(index, { queueRemoteDelete: true, timestampIso })) {
+          deletedCount += 1;
+        }
+      }
+
+      if (!deletedCount) return 0;
+      setSelectedTodoId(nextSelectedTodo ? String(nextSelectedTodo.id) : null);
       saveTodos(todos);
       render();
+      return deletedCount;
     }
 
     function deleteTodoByTaskId(todoId, { queueRemoteDelete = false, timestampIso = new Date().toISOString() } = {}) {

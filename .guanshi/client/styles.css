@@ -6574,14 +6574,19 @@ body::after {
 
 .todo-item {
   --todo-item-column-gap: clamp(3px, 0.8cqw, 6px);
+  --todo-item-check-column-width: 19.6px;
   border: 0;
   border-bottom: 1px solid #e2e8ef;
   border-radius: 5px;
   background: transparent;
   min-height: 29px;
-  padding: 3px 8px;
+  padding: 3.5px 8px 2.5px;
   display: grid;
-  grid-template-columns: 24px repeat(3, minmax(0, 1fr));
+  grid-template-columns:
+    var(--todo-item-check-column-width)
+    minmax(0, 1fr)
+    fit-content(180px)
+    fit-content(240px);
   align-items: center;
   gap: var(--todo-item-column-gap);
   overflow: hidden;
@@ -6608,12 +6613,20 @@ body::after {
 }
 
 .todo-item.has-no-context {
-  grid-template-columns: 24px repeat(2, minmax(0, 1fr));
+  grid-template-columns:
+    var(--todo-item-check-column-width)
+    minmax(0, 1fr)
+    fit-content(240px);
 }
 
 .todo-item:hover {
   background: #f2f7f5;
   box-shadow: inset 3px 0 0 #9dc1b7;
+}
+
+.todo-item:focus-visible {
+  outline: 2px solid rgba(62, 141, 132, 0.42);
+  outline-offset: -2px;
 }
 
 .todo-item.is-selected:hover {
@@ -6723,14 +6736,15 @@ body::after {
 }
 
 .todo-check {
-  width: 17px;
-  height: 17px;
+  width: 13.6px;
+  height: 13.6px;
   position: relative;
   display: inline-flex;
+  align-self: center;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  border: 1.5px solid #bfcbd9;
+  border: 1.2px solid #bfcbd9;
   background: linear-gradient(180deg, #ffffff 0%, #f6f9fd 100%);
   color: transparent;
   font-size: 0;
@@ -6746,11 +6760,11 @@ body::after {
 
 .todo-check::after {
   content: "";
-  width: 8px;
-  height: 4px;
-  border-left: 2px solid #ffffff;
-  border-bottom: 2px solid #ffffff;
-  transform: translateY(-1px) rotate(-45deg) scale(0.68);
+  width: 6.4px;
+  height: 3.2px;
+  border-left: 1.6px solid #ffffff;
+  border-bottom: 1.6px solid #ffffff;
+  transform: translateY(-0.8px) rotate(-45deg) scale(0.68);
   transform-origin: center;
   opacity: 0;
   transition: transform 0.15s ease, opacity 0.15s ease;
@@ -6774,7 +6788,7 @@ body::after {
 
 .todo-check.is-completed::after {
   opacity: 1;
-  transform: translateY(-1px) rotate(-45deg) scale(1);
+  transform: translateY(-0.8px) rotate(-45deg) scale(1);
 }
 
 .todo-item-main {
@@ -6806,6 +6820,15 @@ body::after {
   text-overflow: ellipsis;
 }
 
+.todo-item.is-plan-locked .todo-item-title-text {
+  color: #245c48;
+  font-weight: 1000;
+}
+
+.todo-item.is-selected.is-plan-locked .todo-item-title-text {
+  color: #f6fbf9;
+}
+
 .todo-item-title-meta {
   flex: 0 0 auto;
   display: inline-flex;
@@ -6821,6 +6844,27 @@ body::after {
   max-width: 66px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.todo-item-note-icon {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+
+.todo-item-note-icon svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .todo-item-subline {
@@ -6852,6 +6896,8 @@ body::after {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding-inline-start: clamp(10px, 1.2cqw, 14px);
+  padding-inline-end: calc(20px - var(--todo-item-column-gap));
   overflow: hidden;
 }
 
@@ -6879,6 +6925,12 @@ body::after {
   font-size: 9px;
   font-weight: 500;
   line-height: 1.1;
+}
+
+.todo-item-context .todo-badge.tag {
+  flex: 0 1 auto;
+  max-width: 64px;
+  padding-inline: 4px;
 }
 
 .todo-badges {
@@ -6936,7 +6988,10 @@ body::after {
 
 @container todo-list (max-width: 500px) {
   .todo-item:not(.has-no-context) {
-    grid-template-columns: 24px repeat(2, minmax(0, 1fr));
+    grid-template-columns:
+      var(--todo-item-check-column-width)
+      minmax(0, 1fr)
+      fit-content(240px);
   }
 
   .todo-item .todo-item-context {
@@ -6964,17 +7019,16 @@ body::after {
   color: #3d7b65;
 }
 
+.todo-badge.duration {
+  background: #edf2f0;
+  color: #52655d;
+}
+
 .todo-badge.synced {
   background: #eef4ff;
   color: #4d6c9a;
 }
 
-.todo-badge.lock {
-  background: #e8f3ff;
-  color: #3b648f;
-}
-
-.todo-lock-icon-badge,
 .todo-sync-icon-badge {
   display: inline-flex;
   align-items: center;
@@ -6983,7 +7037,6 @@ body::after {
   padding: 1px 4px;
 }
 
-.todo-lock-icon-badge svg,
 .todo-sync-icon-badge svg {
   width: 10px;
   height: 10px;

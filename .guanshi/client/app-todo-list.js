@@ -121,6 +121,19 @@
     let todoDragExpandTimer = null;
     let todoDragExpandKey = "";
     let todoSelectionAnchorId = "";
+    let todoListRefreshAfterDragScheduled = false;
+
+    function scheduleTodoListRefreshAfterDrag() {
+      if (todoListRefreshAfterDragScheduled) return;
+      todoListRefreshAfterDragScheduled = true;
+      const schedule = typeof globalScope.requestAnimationFrame === "function"
+        ? globalScope.requestAnimationFrame.bind(globalScope)
+        : (callback) => globalScope.setTimeout(callback, 0);
+      schedule(() => {
+        todoListRefreshAfterDragScheduled = false;
+        renderTodos();
+      });
+    }
 
     function bindEvents() {
       if (eventsBound) return;
@@ -902,6 +915,38 @@
       };
     }
 
+    function getBottomBlankDragGroupMeta(event, state = null) {
+      if (!todoGroups || !(event.target instanceof Element) || event.target !== todoGroups) return null;
+      const mode = String(state?.mode || "");
+      if (mode !== "time" && mode !== "project" && mode !== "tag") return null;
+
+      const listRect = todoGroups.getBoundingClientRect();
+      if (event.clientY < listRect.top || event.clientY > listRect.bottom) return null;
+      const groupSelector = mode === "project"
+        ? '.todo-project-tree-node[data-group-dimension="project"][data-drag-group-key]'
+        : `:scope > .todo-group[data-group-dimension="${mode}"][data-drag-group-key]`;
+      const groupNodes = todoGroups.querySelectorAll(groupSelector);
+      const groupNode = groupNodes[groupNodes.length - 1];
+      if (!(groupNode instanceof HTMLElement)) return null;
+
+      const groupRect = groupNode.getBoundingClientRect();
+      if (groupRect.bottom > listRect.bottom + 1 || event.clientY < groupRect.bottom) return null;
+      const groupKey = String(groupNode.dataset.dragGroupKey || "");
+      if (!groupKey) return null;
+      const dueDate = String(groupNode.dataset.todoDate || "").trim();
+      if (mode === "time" && !isValidDateInput(dueDate)) return null;
+
+      return {
+        groupNode,
+        mode,
+        groupKey,
+        dueDate,
+        isHeaderTarget: false,
+        isBeforeFirstItem: false,
+        isBottomBlankTarget: true,
+      };
+    }
+
     function getDragGroupDate(event) {
       const groupMeta = getDragGroupMeta(event, { mode: "time" });
       return groupMeta?.dueDate || "";
@@ -955,7 +1000,7 @@
         }
       }
 
-      const groupTarget = getDragGroupMeta(event, state);
+      const groupTarget = getDragGroupMeta(event, state) || getBottomBlankDragGroupMeta(event, state);
       if (!groupTarget) return null;
       const groupTodoCount = getTodoDragGroupItemCount(groupTarget.mode, groupTarget.groupKey);
       const shouldInsertAtGroupStart =
@@ -1026,7 +1071,11 @@
       updateTodoDragGhost(event);
       scheduleCollapsedGroupExpand(event);
       const dropPayload = getDragDropPayload(event, todoListDragState);
-      if (!dropPayload) return;
+      if (!dropPayload) {
+        clearDragVisualState({ keepDragging: true });
+        todoListDragState.lastDropPayload = null;
+        return;
+      }
 
       event.preventDefault();
       if (event.dataTransfer) {
@@ -1045,6 +1094,7 @@
     function handleGroupDrop(event) {
       if (!todoListDragState) return;
       event.preventDefault();
+      scheduleTodoListRefreshAfterDrag();
 
       const {
         todoId,
@@ -1106,6 +1156,7 @@
       clearTodoDragExpandTimer();
       clearDragVisualState({ keepDragging: false });
       todoListDragState = null;
+      scheduleTodoListRefreshAfterDrag();
     }
 
     function handleGroupDragLeave(event) {
@@ -1114,6 +1165,22 @@
       if (nextTarget instanceof Node && todoGroups.contains(nextTarget)) return;
       clearTodoDragExpandTimer();
       clearDragVisualState({ keepDragging: true });
+    }
+
+    function renderTodosAndFocusRow(todoId) {
+      renderTodos();
+      const id = String(todoId || "").trim();
+      if (!id || !todoGroups) return;
+      const schedule = typeof globalScope.requestAnimationFrame === "function"
+        ? globalScope.requestAnimationFrame.bind(globalScope)
+        : (callback) => callback();
+      schedule(() => {
+        const row = Array.from(todoGroups.querySelectorAll(".todo-item[data-id]"))
+          .find((item) => String(item.dataset.id || "") === id);
+        if (row && typeof row.focus === "function") {
+          row.focus({ preventScroll: true });
+        }
+      });
     }
 
     function handleGroupClick(event) {
@@ -1188,24 +1255,24 @@
             : rangeIds;
           setSelectedTodoIds(nextIds, id);
         }
-        renderTodos();
+        renderTodosAndFocusRow(id);
         return;
       }
       if (isMultiSelect) {
         toggleSelectedTodoId(id);
         todoSelectionAnchorId = id;
-        renderTodos();
+        renderTodosAndFocusRow(id);
         return;
       }
       if (getSelectedTodoIds().includes(id)) {
         setSelectedTodoId(null);
         todoSelectionAnchorId = "";
-        renderTodos();
+        renderTodosAndFocusRow(id);
         return;
       }
       setSelectedTodoId(id);
       todoSelectionAnchorId = id;
-      renderTodos();
+      renderTodosAndFocusRow(id);
     }
 
     function buildDueBadge(todo) {
@@ -1249,27 +1316,17 @@
       const selectedClass = selectedIds.has(String(todo.id)) ? " is-selected" : "";
       const aiHighlightClass = isTodoAiHighlighted(todo.id) ? " is-ai-highlighted" : "";
       const completedClass = todo.completed ? " is-completed" : "";
+      const lockedClass = todo.planLocked && !todo.completed ? " is-plan-locked" : "";
       const checkClass = todo.completed ? " is-completed" : "";
       const dateBadge = buildDueBadge(todo);
-      const tagBadges = (todo.tags || [])
+      const contextTagBadges = (todo.tags || [])
         .slice(0, 2)
         .map((tag) => `<span class=\"todo-badge tag\">#${escapeHtml(tag)}</span>`)
         .join("");
       const syncedBadge = buildSyncBadge(todo);
-      const timeBadge =
-        todo.startTime && todo.endTime
-          ? `<span class=\"todo-badge due-future\">${escapeHtml(todo.startTime)}-${escapeHtml(todo.endTime)}</span>`
+      const startTimeBadge = todo.startTime
+          ? `<span class=\"todo-badge due-future todo-badge-start-time\" title=\"开始时间\">${escapeHtml(todo.startTime)}</span>`
           : "";
-      const lockBadge = todo.planLocked
-        ? `
-      <span class="todo-badge lock todo-lock-icon-badge" aria-label="已锁定排期" title="已锁定排期">
-        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-          <rect x="5.3" y="9.2" width="9.4" height="6.7" rx="1.6"></rect>
-          <path d="M7.4 9.2V7.5a2.6 2.6 0 0 1 5.2 0v1.7"></path>
-        </svg>
-      </span>
-    `
-        : "";
       const categoryText = getTodoCategory(todo, todo.project) || "未分类";
       const projectText = normalizeProjectName(todo.project || "");
       const reminderText = formatTodoReminderLabel(todo.reminder, todo.repeat, {
@@ -1282,20 +1339,29 @@
       const reminderContextHtml = reminderLabel && reminderLabel !== "不提醒"
         ? `<p class=\"todo-item-context-score\">${escapeHtml(reminderLabel)}</p>`
         : "";
-      const contextHtml = projectContextHtml || reminderContextHtml
-        ? `<div class=\"todo-item-context\">${projectContextHtml}${reminderContextHtml}</div>`
+      const contextHtml = projectContextHtml || reminderContextHtml || contextTagBadges
+        ? `<div class=\"todo-item-context\">${projectContextHtml}${reminderContextHtml}${contextTagBadges}</div>`
         : "";
       const rowContextClass = contextHtml ? "" : " has-no-context";
       const durationMinutes = getTodoDurationMinutes(todo, TODO_PLAN_NEW_TODO_DURATION_MINUTES);
+      const durationBadge = `<span class=\"todo-badge duration\" title=\"持续时长\">${escapeHtml(formatTodoDurationMinutesLabel(durationMinutes))}</span>`;
       const hasNote = Boolean(String(todo.note || "").trim());
-      const titleMetaHtml = [
+      const titleMetaTextHtml = [
         categoryText,
-        formatTodoDurationMinutesLabel(durationMinutes),
-        hasNote ? "备注" : "",
       ]
         .filter(Boolean)
         .map((item) => `<span class=\"todo-item-title-meta-item\">${escapeHtml(item)}</span>`)
         .join('<span class=\"todo-subline-sep\" aria-hidden=\"true\">·</span>');
+      const noteIconHtml = hasNote
+        ? `<span class=\"todo-item-note-icon\" aria-label=\"有备注\" title=\"有备注\">
+            <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\" focusable=\"false\">
+              <path d=\"M3 2.5h6l4 4v7H3z\"></path>
+              <path d=\"M9 2.5v4h4\"></path>
+              <path d=\"M5.4 9h5.2M5.4 11.2h4\"></path>
+            </svg>
+          </span>`
+        : "";
+      const titleMetaHtml = `${titleMetaTextHtml}${noteIconHtml}`;
       const effectiveDragMode = dragMode || (allowTimeOrder ? "time" : "");
       const effectiveDragGroupKey = String(dragGroupKey || (allowTimeOrder ? todo.dueDate || "" : ""));
       const reorderIndex = effectiveDragMode === "time" && timeReorderIndexMap instanceof Map
@@ -1312,18 +1378,21 @@
         : "";
       const rowDragAttrs = canDragReorder ? ' draggable="true"' : "";
       const overdueDragSourceAttr = overdueDragSource ? ' data-overdue-drag-source="true"' : "";
+      const lockedTitleAttrs = todo.planLocked && !todo.completed
+        ? ` aria-label="${escapeHtml(`${todo.title}，已锁定排期`)}" title="已锁定排期"`
+        : "";
 
       return `
-    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${rowDragClass}${rowContextClass}\" data-id=\"${escapeHtml(String(todo.id))}\"${rowOrderAttrs}${rowDragAttrs}${overdueDragSourceAttr}>
+    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${lockedClass}${rowDragClass}${rowContextClass}\" data-id=\"${escapeHtml(String(todo.id))}\" tabindex=\"0\"${rowOrderAttrs}${rowDragAttrs}${overdueDragSourceAttr}>
       <button class=\"todo-check${checkClass}\" data-id=\"${escapeHtml(String(todo.id))}\" type=\"button\">${todo.completed ? "✓" : ""}</button>
       <div class=\"todo-item-main\">
         <p class=\"todo-item-title\">
-          <span class=\"todo-item-title-text\">${escapeHtml(todo.title)}</span>
+          <span class=\"todo-item-title-text\"${lockedTitleAttrs}>${escapeHtml(todo.title)}</span>
           <span class=\"todo-item-title-meta\">${titleMetaHtml}</span>
         </p>
       </div>
       ${contextHtml}
-      <div class=\"todo-badges\">${tagBadges}${timeBadge}${dateBadge}${lockBadge}${syncedBadge}</div>
+      <div class=\"todo-badges\">${durationBadge}${startTimeBadge}${dateBadge}${syncedBadge}</div>
     </li>
   `;
     }
@@ -1347,14 +1416,14 @@
       const reminderContextHtml = reminderLabel && reminderLabel !== "不提醒"
         ? `<p class=\"todo-item-context-score\">${escapeHtml(reminderLabel)}</p>`
         : "";
-      const contextHtml = projectContextHtml || reminderContextHtml
-        ? `<div class=\"todo-item-context\">${projectContextHtml}${reminderContextHtml}</div>`
-        : "";
-      const rowContextClass = contextHtml ? "" : " has-no-context";
-      const tagBadges = (item.tags || [])
+      const contextTagBadges = (item.tags || [])
         .slice(0, 2)
         .map((tag) => `<span class=\"todo-badge tag\">#${escapeHtml(tag)}</span>`)
         .join("");
+      const contextHtml = projectContextHtml || reminderContextHtml || contextTagBadges
+        ? `<div class=\"todo-item-context\">${projectContextHtml}${reminderContextHtml}${contextTagBadges}</div>`
+        : "";
+      const rowContextClass = contextHtml ? "" : " has-no-context";
       return `
     <li class=\"todo-item todo-item-history${rowContextClass}\" data-source=\"${escapeHtml(item.source)}\" data-id=\"${escapeHtml(recordId)}\" data-history-id=\"${escapeHtml(recordId)}\">
       <button
@@ -1372,7 +1441,6 @@
       </div>
       ${contextHtml}
       <div class=\"todo-badges\">
-        ${tagBadges}
         <span class=\"todo-badge due-future\">${escapeHtml(timeText)}</span>
         <span class=\"todo-badge due-future\">${escapeHtml(dateText)}</span>
         <span class=\"todo-badge synced\">${escapeHtml(sourceText)}</span>
@@ -1856,6 +1924,7 @@
       clearDragVisualState,
       getDragTargetMeta,
       getDragGroupDate,
+      getBottomBlankDragGroupMeta,
       normalizeDragDropOrder,
       getDragDropOrder,
       getDragDropPayload,

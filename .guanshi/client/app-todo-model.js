@@ -336,8 +336,10 @@
     function isTodoOverdue(todo, nowDate = new Date()) {
       if (!todo || todo.completed) return false;
       const current = nowDate instanceof Date && !Number.isNaN(nowDate.getTime()) ? nowDate : new Date();
-      const plannedEnd = getTodoPlannedEndDate(todo);
-      return Boolean(plannedEnd && plannedEnd < current);
+      const dueDate = String(todo.dueDate || "").trim();
+      if (!isValidDateInput(dueDate)) return false;
+      const currentDate = formatDateForInput(current);
+      return isValidDateInput(currentDate) && dueDate < currentDate;
     }
 
     function getTodoLifecycleState(todo, nowDate = new Date()) {

@@ -1425,6 +1425,7 @@ const todoActionsModule = createTodoActionsModule({
   getEntries: () => entries,
   getCategories: () => categories,
   getSelectedTodoId: () => selectedTodoId,
+  getSelectedTodoIds,
   setSelectedTodoId,
   getShowTodoHistoryInMainList: () => showTodoHistoryInMainList,
   createTodoDraft,
@@ -2583,6 +2584,9 @@ function getVisibleTodos() {
       const orderA = Number.isFinite(Number(a.orderInDay)) ? Number(a.orderInDay) : Number.MAX_SAFE_INTEGER;
       const orderB = Number.isFinite(Number(b.orderInDay)) ? Number(b.orderInDay) : Number.MAX_SAFE_INTEGER;
       if (orderA !== orderB) return orderA - orderB;
+      if (Boolean(a.__recentlyCompleted) !== Boolean(b.__recentlyCompleted)) {
+        return a.__recentlyCompleted ? -1 : 1;
+      }
     }
 
     return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
