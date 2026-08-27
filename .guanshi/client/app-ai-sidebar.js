@@ -250,6 +250,7 @@
       typeof deps.normalizeTodoOrderByClockForDate === "function" ? deps.normalizeTodoOrderByClockForDate : () => false;
     const saveTodos = typeof deps.saveTodos === "function" ? deps.saveTodos : () => {};
     const setTodos = typeof deps.setTodos === "function" ? deps.setTodos : () => {};
+    const toggleTodoCompleted = typeof deps.toggleTodoCompleted === "function" ? deps.toggleTodoCompleted : () => false;
     const setSelectedTodoId = typeof deps.setSelectedTodoId === "function" ? deps.setSelectedTodoId : () => {};
     const setActiveView = typeof deps.setActiveView === "function" ? deps.setActiveView : () => {};
     const setSettingsTab = typeof deps.setSettingsTab === "function" ? deps.setSettingsTab : () => {};
@@ -915,6 +916,18 @@
           ["workflow 输入", trimDisplayText(requestInput.text || requestInput.parentTitle || "未记录", 220)],
           ["输出数量", `${children.length} 个子任务`],
           ["总时长", `${result.rollup?.totalEstimatedMinutes || 0} 分钟`],
+          ["状态", "待确认"],
+        ];
+      }
+      if (action === "complete_task") {
+        const item = Array.isArray(result.items) ? result.items[0] : null;
+        const block = item?.completion?.calendarBlock || {};
+        return [
+          ["类型", "待办完成草稿"],
+          ["workflow 输入", trimDisplayText(requestInput.normalizedGoal || requestInput.text || "未记录", 220)],
+          ["目标待办", item?.targetTitle || item?.targetTodoId || "未识别"],
+          ["实际时间", block.date && block.start && block.end ? `${block.date} ${block.start}-${block.end}` : "未识别"],
+          ["评分", item?.update?.qualityScore || item?.update?.happinessScore ? `质量 ${item.update.qualityScore || "--"} / 幸福 ${item.update.happinessScore || "--"}` : "未提供"],
           ["状态", "待确认"],
         ];
       }
@@ -1808,6 +1821,7 @@
       if (item.type === "context_request") return "授权";
       if (item.type === "memory_proposal") return getMemoryProposalLabel(item.payload);
       if (item.type === "schedule_draft") return "draft";
+      if (item.type === "todo_completion_draft") return "完成";
       return "todo";
     }
 
@@ -2928,7 +2942,7 @@
     }
 
     function hasTodoReference(text) {
-      return /(待办|任务|事项|优先级|优先|接下来|下一步|先做|做什么|有哪些|梳理|复盘|延期|截止|风险|拆解|重排|安排|排程|todo|task|deadline)/i.test(String(text || ""));
+      return /(待办|任务|事项|优先级|优先|接下来|下一步|先做|做什么|有哪些|梳理|复盘|延期|截止|风险|拆解|重排|完成|做完|已做|安排|排程|todo|task|complete|deadline)/i.test(String(text || ""));
     }
 
     function hasScheduleReference(text) {
@@ -2971,7 +2985,7 @@
       if (action === "plan_today" || action === "review_day") return "today";
       if (action === "plan_week") return "week";
       if (action === "reflow_unfinished") return "reflow_unfinished";
-      if (action === "breakdown_task") return "selected_todo";
+      if (action === "breakdown_task" || action === "complete_task") return "selected_todo";
       if (action === "parse_task" || action === "save_memory_proposal" || action === "explore_principles") return "none";
       if (isCurrentTimeOnlyText(text)) return "none";
       const selectedRef = hasSelectedTodoReference(text);
@@ -3885,6 +3899,16 @@
           "先进入待确认区，你可以确认写入待办，也可以编辑后再重新生成。",
         ];
       }
+      if (action === "complete_task") {
+        const item = Array.isArray(result.items) ? result.items[0] : null;
+        const block = item?.completion?.calendarBlock || {};
+        return [
+          `我已生成「${item?.targetTitle || "当前待办"}」的待确认完成草稿。`,
+          block.date && block.start && block.end
+            ? `确认后会把待办更新为 ${block.date} ${block.start}-${block.end} 的实际记录，并沿现有同步链路生成对应日历块。`
+            : "确认后才会修改待办、标记完成并生成对应的日历实际记录。",
+        ];
+      }
       if (action === "plan_today" || action === "plan_week" || action === "reflow_unfinished") {
         const draft = artifacts.find((item) => item.kind === "schedule_draft")?.draft;
         if (!draft || !Array.isArray(draft.changes) || !draft.changes.length) {
@@ -4224,6 +4248,30 @@
             normalizedGoal: workflow?.request?.input?.normalizedGoal || "",
             parentTitle: result.parentTitle || "",
             sourceTodoId: result.sourceTodoId || "",
+            ...withWorkflowUiPayload({}, workflowAction),
+          },
+          editText: text,
+        }, { render: false }));
+      }
+      if (workflow?.request?.action === "complete_task" && Array.isArray(result.items) && result.items.length) {
+        const completionItem = result.items[0];
+        const block = completionItem?.completion?.calendarBlock || {};
+        const scoreText = completionItem?.update?.qualityScore || completionItem?.update?.happinessScore
+          ? `；质量 ${completionItem.update.qualityScore || "--"} / 幸福 ${completionItem.update.happinessScore || "--"}`
+          : "";
+        pendingIds.push(upsertPendingItem({
+          id: completionItem.completionDraftId || createId("completion"),
+          type: "todo_completion_draft",
+          title: "待办完成草稿",
+          detail: `${completionItem.targetTitle || completionItem.targetTodoId || "当前待办"}${scoreText}`,
+          preview: [{
+            time: block.start && block.end ? `${block.start}-${block.end}` : block.date || "--",
+            text: block.date ? `${block.date} · 实际记录` : "完成后生成实际记录",
+          }],
+          payload: {
+            items: result.items,
+            originalText: workflow?.request?.input?.sourceText || workflow?.request?.input?.text || text,
+            normalizedGoal: workflow?.request?.input?.normalizedGoal || "",
             ...withWorkflowUiPayload({}, workflowAction),
           },
           editText: text,
@@ -4741,6 +4789,16 @@
           ...source,
         };
       }
+      if (item?.type === "todo_completion_draft") {
+        return {
+          view: "todo",
+          select: "first_applied",
+          highlight: "applied_items",
+          scroll: "first_applied",
+          ...fallback,
+          ...source,
+        };
+      }
       return { ...fallback, ...source };
     }
 
@@ -4887,6 +4945,100 @@
       return { applied: appliedIds.length, created, missing, invalid, appliedIds, createdIds, updatedIds };
     }
 
+    function applyTodoCompletionDraft(draft) {
+      const item = Array.isArray(draft?.items) ? draft.items[0] : draft;
+      const targetTodoId = normalizeText(item?.targetTodoId);
+      const currentTodos = Array.isArray(getTodos()) ? getTodos() : [];
+      const todo = currentTodos.find((candidate) => String(candidate?.id || "") === targetTodoId);
+      if (!targetTodoId || !todo || todo.completed) {
+        return { applied: 0, missing: 1, invalid: 0, appliedIds: [], updatedIds: [], targetIds: [] };
+      }
+
+      const update = item?.update && typeof item.update === "object" && !Array.isArray(item.update) ? item.update : {};
+      const block = item?.completion?.calendarBlock && typeof item.completion.calendarBlock === "object"
+        ? item.completion.calendarBlock
+        : {};
+      const dueDate = normalizeText(block.date || update.dueDate);
+      const startTime = normalizeText(block.start || update.startTime);
+      const endTime = normalizeText(block.end || update.endTime);
+      const startMinutes = parseClockToMinutes(startTime);
+      const endMinutes = parseClockToMinutes(endTime);
+      const durationMinutes = endMinutes !== null && startMinutes !== null ? endMinutes - startMinutes : 0;
+      const scoreFields = ["qualityScore", "happinessScore"];
+      const scoresValid = scoreFields.every((field) => {
+        if (!Object.prototype.hasOwnProperty.call(update, field)) return true;
+        const value = Number(update[field]);
+        return Number.isInteger(value) && value >= 1 && value <= 10;
+      });
+      if (!isValidDate(dueDate) || startMinutes === null || endMinutes === null || endMinutes <= startMinutes || !scoresValid) {
+        return { applied: 0, missing: 0, invalid: 1, appliedIds: [], updatedIds: [], targetIds: [] };
+      }
+
+      const mutableFields = [
+        "title",
+        "project",
+        "category",
+        "tags",
+        "note",
+        "dueDate",
+        "startTime",
+        "endTime",
+        "estimatedMinutes",
+        "qualityScore",
+        "happinessScore",
+        "aiMeta",
+      ];
+      const before = Object.fromEntries(mutableFields.map((field) => [field, todo[field]]));
+      for (const field of ["title", "project", "category", "note"]) {
+        if (Object.prototype.hasOwnProperty.call(update, field) && normalizeText(update[field])) {
+          todo[field] = normalizeText(update[field]);
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(update, "tags") && Array.isArray(update.tags)) {
+        todo.tags = update.tags.map((tag) => normalizeText(tag)).filter(Boolean).slice(0, 16);
+      }
+      for (const field of scoreFields) {
+        if (Object.prototype.hasOwnProperty.call(update, field)) todo[field] = Number(update[field]);
+      }
+      todo.aiMeta = {
+        ...(todo.aiMeta || {}),
+        source: "ai_todo_completion",
+        completionDraftId: normalizeText(item.completionDraftId),
+        completionConfirmedAt: new Date().toISOString(),
+      };
+
+      try {
+        toggleTodoCompleted(targetTodoId, {
+          skipLinkedPomodoroInterception: true,
+          completionWindow: {
+            date: dueDate,
+            start: startTime,
+            end: endTime,
+            durationMinutes,
+          },
+        });
+      } catch (error) {
+        Object.assign(todo, before);
+        throw error;
+      }
+      const latestTodo = (Array.isArray(getTodos()) ? getTodos() : currentTodos)
+        .find((candidate) => String(candidate?.id || "") === targetTodoId);
+      const recurringCompletion = normalizeText(todo.repeat || "none") !== "none";
+      if (!latestTodo || (!latestTodo.completed && !recurringCompletion)) {
+        Object.assign(todo, before);
+        return { applied: 0, missing: 0, invalid: 1, appliedIds: [], updatedIds: [], targetIds: [] };
+      }
+      return {
+        applied: 1,
+        missing: 0,
+        invalid: 0,
+        recurring: recurringCompletion,
+        appliedIds: [targetTodoId],
+        updatedIds: [targetTodoId],
+        targetIds: [targetTodoId],
+      };
+    }
+
     function findPendingItem(id) {
       return pendingItems.find((item) => item.id === id) || null;
     }
@@ -5001,6 +5153,32 @@
             paragraphs: ["排程草稿已确认，但没有匹配到可写入的本地待办，所以界面不会发生排程变化。请重新生成包含待办引用的排程草稿。"],
           });
           setStatus("排程草稿已确认，但未应用。");
+        }
+        return;
+      }
+      if (item.type === "todo_completion_draft") {
+        const applyResult = applyTodoCompletionDraft(item.payload || {});
+        if (applyResult.applied > 0) {
+          runPostApplyUiReaction(getPostApplyReaction(item), applyResult);
+          setPendingStatus(item.id, "confirmed");
+          appendMessage({
+            role: "assistant",
+            state: "已确认",
+            paragraphs: [applyResult.recurring
+              ? "已完成本次周期待办，并生成对应的日历实际记录；下一周期待办仍保持未完成。"
+              : "待办已完成，并已生成对应的日历实际记录；如已启用系统日历同步，会继续沿现有同步流程处理。"],
+          });
+          setStatus("待办完成草稿已应用。");
+        } else {
+          setPendingStatus(item.id, "rejected");
+          appendMessage({
+            role: "assistant",
+            state: "未执行",
+            paragraphs: [applyResult.missing
+              ? "没有找到仍处于未完成状态的目标待办，因此未修改数据。"
+              : "完成草稿中的实际时间或评分无效，因此未修改数据。"],
+          });
+          setStatus("待办完成草稿未应用。");
         }
         return;
       }

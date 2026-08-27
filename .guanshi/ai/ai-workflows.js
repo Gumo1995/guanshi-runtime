@@ -10,6 +10,7 @@ const AI_COMPOSED_CONTEXT_SCHEMA = "guanshi-ai-composed-context-v1";
 const AI_WORKFLOW_EXECUTION_SCHEMA = "guanshi-ai-workflow-execution-v1";
 const TASK_PARSE_SCHEMA = "guanshi-task-parse-result-v1";
 const TASK_BREAKDOWN_SCHEMA = "guanshi-task-breakdown-result-v1";
+const TODO_COMPLETION_SCHEMA = "guanshi-todo-completion-result-v1";
 const PRINCIPLE_MEMORY_PROPOSAL_SCHEMA = "guanshi-principle-memory-proposal-v1";
 const PLAN_INTENT_SCHEMA = "guanshi-plan-intent-v1";
 const REFLOW_SUGGESTION_SCHEMA = "guanshi-reflow-suggestion-v1";
@@ -19,6 +20,7 @@ const ACTIONS = new Set([
   "explore_principles",
   "parse_task",
   "breakdown_task",
+  "complete_task",
   "save_memory_proposal",
   "plan_today",
   "plan_week",
@@ -907,6 +909,179 @@ function resolveBreakdownParent(input = {}) {
   return findTodoByReference(input.todos, collectBreakdownParentRefs(input));
 }
 
+function collectCompletionTargetRefs(input = {}) {
+  const completion = normalizeObject(input.completion || input.completionDraft || input.taskCompletion);
+  const targetTodo = normalizeObject(input.targetTodo || completion.targetTodo);
+  const refs = collectBreakdownParentRefs(input);
+  addReferenceId(refs, input.targetTodoId || input.sourceTodoId || completion.todoId || completion.targetTodoId);
+  addReferenceId(refs, targetTodo.id || targetTodo.todoId);
+  return Array.from(new Set(refs));
+}
+
+function resolveCompletionTarget(input = {}) {
+  const targetTodo = normalizeObject(input.targetTodo);
+  if (Object.keys(targetTodo).length && (targetTodo.id || targetTodo.todoId)) return targetTodo;
+  const refs = collectCompletionTargetRefs(input);
+  const referencedTarget = findTodoByReference([
+    normalizeObject(input.todo),
+    normalizeObject(input.selectedTodo),
+    ...(Array.isArray(input.todos) ? input.todos : []),
+  ], refs);
+  if (Object.keys(referencedTarget).length) return referencedTarget;
+  const selectedTarget = normalizeObject(input.todo || input.selectedTodo);
+  return Object.keys(selectedTarget).length ? selectedTarget : {};
+}
+
+function normalizeOptionalScore(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const normalized = String(value).trim();
+  const score = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN;
+  if (!Number.isInteger(score) || score < 1 || score > 10) {
+    throw createWorkflowError("AI_TODO_COMPLETION_SCORE_INVALID", "Todo completion scores must be integers from 1 to 10.", 400);
+  }
+  return score;
+}
+
+function getCompletionCandidate(input = {}) {
+  const completion = normalizeObject(input.completion || input.completionDraft || input.taskCompletion || input.actual);
+  const updates = normalizeObject(input.updates || input.taskUpdates || completion.updates);
+  return {
+    ...completion,
+    ...updates,
+    actualDate: input.actualDate || completion.actualDate || completion.date || updates.actualDate,
+    actualStartTime: input.actualStartTime || completion.actualStartTime || completion.startTime || updates.actualStartTime,
+    actualEndTime: input.actualEndTime || completion.actualEndTime || completion.endTime || updates.actualEndTime,
+    actualDurationMinutes:
+      input.actualDurationMinutes
+      || completion.actualDurationMinutes
+      || completion.durationMinutes
+      || updates.actualDurationMinutes,
+    qualityScore: input.qualityScore ?? completion.qualityScore ?? completion.quality ?? updates.qualityScore,
+    happinessScore: input.happinessScore ?? completion.happinessScore ?? completion.happiness ?? updates.happinessScore,
+    updatedTitle: input.updatedTitle || input.title || completion.updatedTitle || updates.title,
+    updatedProject: input.updatedProject || input.project || completion.updatedProject || updates.project,
+    updatedCategory: input.updatedCategory || input.category || completion.updatedCategory || updates.category,
+    updatedTags: input.updatedTags || input.tags || completion.updatedTags || updates.tags,
+    updatedNote: input.updatedNote || input.note || input.notes || completion.updatedNote || updates.note || updates.notes,
+  };
+}
+
+function buildTodoCompletionResult(request, targetTodo, nowIso) {
+  const target = normalizeObject(targetTodo);
+  const targetTodoId = normalizeText(target.id || target.todoId, 120);
+  if (!targetTodoId) {
+    throw createWorkflowError("AI_TODO_COMPLETION_TARGET_REQUIRED", "Todo completion requires one explicit todo target.", 400);
+  }
+  if (target.completed === true) {
+    throw createWorkflowError("AI_TODO_ALREADY_COMPLETED", "The selected todo is already completed.", 409, { todoId: targetTodoId });
+  }
+
+  const candidate = getCompletionCandidate(request.input);
+  const runtimeClock = getZonedRuntimeClock(nowIso, request.timezone) || {};
+  const actualDate = normalizeDate(candidate.actualDate) || normalizeDate(runtimeClock.localDate) || getCurrentDate(nowIso);
+  const fallbackDuration = normalizePositiveInteger(
+    target.remainingMinutes || target.estimatedMinutes,
+    30,
+    5,
+    24 * 60,
+  );
+  const suppliedDuration = normalizePositiveInteger(candidate.actualDurationMinutes, fallbackDuration, 5, 24 * 60);
+  let startTime = normalizeClock(candidate.actualStartTime);
+  let endTime = normalizeClock(candidate.actualEndTime);
+  let startMinutes = parseClockToMinutes(startTime);
+  let endMinutes = parseClockToMinutes(endTime);
+  const assumptions = normalizeStringList(
+    request.input.assumptions || normalizeObject(request.input.semanticAction).assumptions,
+    8,
+    220,
+  );
+  const warnings = normalizeStringList(
+    request.input.warnings || normalizeObject(request.input.semanticAction).warnings,
+    8,
+    220,
+  );
+
+  if (startMinutes === null && endMinutes === null) {
+    endTime = normalizeClock(runtimeClock.localTime) || "09:30";
+    endMinutes = parseClockToMinutes(endTime);
+    startMinutes = Math.max(0, (endMinutes ?? suppliedDuration) - suppliedDuration);
+    startTime = formatMinutes(startMinutes);
+    assumptions.push(`未提供实际时间，按完成时刻向前回推 ${Math.max(5, (endMinutes ?? suppliedDuration) - startMinutes)} 分钟。`);
+  } else if (startMinutes !== null && endMinutes === null) {
+    endMinutes = startMinutes + suppliedDuration;
+    if (endMinutes >= 24 * 60) {
+      throw createWorkflowError("AI_TODO_COMPLETION_TIME_INVALID", "Todo completion time cannot cross midnight in one calendar block.", 400);
+    }
+    endTime = formatMinutes(endMinutes);
+  } else if (startMinutes === null && endMinutes !== null) {
+    startMinutes = Math.max(0, endMinutes - suppliedDuration);
+    startTime = formatMinutes(startMinutes);
+  }
+  if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+    throw createWorkflowError("AI_TODO_COMPLETION_TIME_INVALID", "Todo completion requires a valid actual start and end time.", 400);
+  }
+
+  const actualDurationMinutes = endMinutes - startMinutes;
+  const qualityScore = normalizeOptionalScore(candidate.qualityScore);
+  const happinessScore = normalizeOptionalScore(candidate.happinessScore);
+  const update = {
+    dueDate: actualDate,
+    startTime,
+    endTime,
+    estimatedMinutes: actualDurationMinutes,
+  };
+  const updatedTitle = normalizeText(candidate.updatedTitle, 160);
+  const updatedProject = normalizeText(candidate.updatedProject, 120);
+  const updatedCategory = normalizeText(candidate.updatedCategory, 80);
+  const updatedNote = normalizeText(candidate.updatedNote, 2000);
+  const updatedTags = Array.isArray(candidate.updatedTags)
+    ? normalizeStringList(candidate.updatedTags, 16, 60)
+    : null;
+  if (updatedTitle) update.title = updatedTitle;
+  if (updatedProject) update.project = updatedProject;
+  if (updatedCategory) update.category = updatedCategory;
+  if (updatedNote) update.note = updatedNote;
+  if (updatedTags) update.tags = updatedTags;
+  if (qualityScore !== null) update.qualityScore = qualityScore;
+  if (happinessScore !== null) update.happinessScore = happinessScore;
+
+  const item = {
+    schema: "guanshi-todo-completion-draft-v1",
+    completionDraftId: `completion_draft_${request.requestId}`,
+    targetTodoId,
+    targetTitle: normalizeText(target.title || "未命名待办", 160),
+    original: {
+      title: normalizeText(target.title, 160),
+      dueDate: normalizeDate(target.dueDate),
+      startTime: normalizeClock(target.startTime),
+      endTime: normalizeClock(target.endTime),
+      estimatedMinutes: normalizePositiveInteger(target.estimatedMinutes, 0, 0, 24 * 60),
+    },
+    update,
+    completion: {
+      completed: true,
+      completedAt: nowIso,
+      calendarBlock: {
+        date: actualDate,
+        start: startTime,
+        end: endTime,
+        durationMinutes: actualDurationMinutes,
+        source: target.repeat && target.repeat !== "none" ? "todo-recurring-completed" : "todo-completed",
+        needsReview: qualityScore === null || happinessScore === null,
+      },
+    },
+    assumptions: Array.from(new Set(assumptions)),
+    warnings: Array.from(new Set(warnings)),
+    requiresConfirmation: true,
+  };
+  return {
+    schema: TODO_COMPLETION_SCHEMA,
+    sourceRequestId: request.requestId,
+    items: [item],
+    warnings: item.warnings,
+  };
+}
+
 function splitMinutesByWeights(total, weights, minMinutes = 5) {
   const rawTotal = normalizePositiveInteger(total, minMinutes * weights.length, minMinutes, 24 * 60);
   const normalizedTotal = Math.max(minMinutes * weights.length, Math.round(rawTotal / 5) * 5);
@@ -1594,6 +1769,52 @@ const REGISTRY_STEP_HANDLERS = {
     };
   },
 
+  "time.step.todo.resolve_completion_target"(state) {
+    const target = resolveCompletionTarget(state.request.input);
+    const targetTodoId = normalizeText(target.id || target.todoId, 120);
+    if (!targetTodoId) {
+      throw createWorkflowError("AI_TODO_COMPLETION_TARGET_REQUIRED", "Todo completion requires one explicit todo target.", 400);
+    }
+    state.completionTarget = target;
+    return {
+      output: {
+        schema: "guanshi-todo-completion-target-step-v1",
+        todoId: targetTodoId,
+        title: normalizeText(target.title || "未命名待办", 160),
+        completed: target.completed === true,
+      },
+      summary: normalizeText(target.title || targetTodoId, 160),
+    };
+  },
+
+  "time.step.todo.normalize_completion"(state) {
+    const result = buildTodoCompletionResult(
+      state.request,
+      state.completionTarget || resolveCompletionTarget(state.request.input),
+      state.nowIso,
+    );
+    state.result = result;
+    const item = result.items[0];
+    return {
+      output: result,
+      summary: `${item.targetTitle} / ${item.completion.calendarBlock.date} ${item.completion.calendarBlock.start}-${item.completion.calendarBlock.end}`,
+    };
+  },
+
+  "time.step.draft.create_todo_completion"(state) {
+    const items = Array.isArray(state.result?.items) ? state.result.items : [];
+    return {
+      output: {
+        schema: "guanshi-pending-todo-completion-step-v1",
+        count: items.length,
+        targetTodoIds: items.map((item) => item.targetTodoId).filter(Boolean),
+        requiresConfirmation: items.length > 0,
+        writeLocalData: false,
+      },
+      summary: `${items.length} 个待确认完成草稿`,
+    };
+  },
+
   "time.step.time.resolve_reference_scope"(state) {
     state.dateRange = resolveWorkflowDateRange(state.request, state.currentDate);
     return {
@@ -1842,6 +2063,14 @@ function executeAiWorkflow(rawRequest, stores = {}, options = {}) {
   }
   if (request.action === "breakdown_task") {
     return { request, context, result: buildTaskBreakdownResult(request), artifacts: [] };
+  }
+  if (request.action === "complete_task") {
+    return {
+      request,
+      context,
+      result: buildTodoCompletionResult(request, resolveCompletionTarget(request.input), nowIso),
+      artifacts: [],
+    };
   }
   if (request.action === "save_memory_proposal") {
     const proposal = inferMemoryProposal(request, currentDate);

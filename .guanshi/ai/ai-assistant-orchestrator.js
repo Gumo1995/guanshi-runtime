@@ -72,6 +72,10 @@ const LEGACY_TOOL_DEFINITIONS = {
     label: "拆解任务",
     description: "用于把当前任务拆成待确认子任务草稿。",
   },
+  complete_task: {
+    label: "完成待办并记录实际时间",
+    description: "用于修订当前待办的实际时间、评分或备注，生成待确认完成草稿；确认后才完成待办并生成日历实际记录。",
+  },
   plan_today: {
     label: "生成今日排程草稿",
     description: "用于根据待办、忙碌块和记忆生成今日待确认排程草稿。",
@@ -173,7 +177,7 @@ function sanitizeAssistantAnswerText(value) {
 
 function buildPendingToolAnswer(decision = {}) {
   const label = normalizeText(decision.label || "工具草稿", 160);
-  return /^(创建|生成|解析|拆解|重排)/.test(label)
+  return /^(创建|生成|解析|拆解|重排|完成)/.test(label)
     ? `我会先${label}，等你确认。`
     : `我会先创建${label}，等你确认。`;
 }
@@ -897,6 +901,9 @@ function normalizeWorkflowTodoCandidate(todo) {
       : [],
     planLocked: source.planLocked === true,
     completed: source.completed === true,
+    repeat: normalizeText(source.repeat || "none", 40),
+    qualityScore: Number.isInteger(Number(source.qualityScore)) ? Number(source.qualityScore) : undefined,
+    happinessScore: Number.isInteger(Number(source.happinessScore)) ? Number(source.happinessScore) : undefined,
     orderInDay: Number.isFinite(Number(source.orderInDay)) ? Number(source.orderInDay) : undefined,
   };
 }
@@ -1917,6 +1924,10 @@ function buildSystemPrompt(toolCatalog) {
 	    "估时字段规则：选择 time.parse_task 时，如果用户没有明确时长，也要结合任务语义、上下文和已确认记忆输出 task.estimatedMinutes、task.taskType、task.minimumBlockMinutes，并在 assumptions 或 warnings 里说明估时依据或不确定性。",
 	    "拆解估时规则：选择 time.breakdown_task 时，尽量输出 parentTask 或 contextRefs；父任务已有 dueDate/startTime/endTime 时要带给 workflow。如果能拆出步骤，输出 subtasks 数组，每项包含 title、estimatedMinutes、taskType；子任务时间要按步骤成本分配，不要机械平分。",
 	    "拆解命名规则：拆解出的子待办 title 尽量使用“总事项 - 子事项”格式；总事项代表父任务的核心目标，子事项代表当前步骤，两段都要精简，例如“回复客户 - 整理要点”。",
+	    "完成待办规则：用户明确说某个待办已经完成、做完或要标记完成时，选择 time.complete_task；默认目标是当前选中待办，若用户明确指定其他待办则在 todoId、todoRefs 或 targetTodo.id 中给出引用。",
+	    "完成信息字段：选择 time.complete_task 时，在 arguments.completion 中只填写用户明确提供或能从本轮语义可靠换算的 actualDate、actualStartTime、actualEndTime、actualDurationMinutes、qualityScore、happinessScore；需要修改标题、项目、分类、标签或备注时放在 completion.updates。评分范围为 1-10。",
+	    "完成信息缺省：实际时间和评分都不是选择完成 Action 的前提；用户没提供实际时间时不要追问，Workflow 会按当前完成时刻和原任务估时生成实际时间块。不要为了填满字段虚构评分或业务信息。",
+	    "完成确认边界：time.complete_task 只生成待确认完成草稿；不要声称待办已经完成或日历块已经写入。用户确认后，本地完成链路才会更新待办并生成 todo-completed 实际记录。",
 	    "记忆化估时规则：如果用户表达“以后/一般/通常/默认/按某类任务估多少分钟”，选择 time.save_memory_proposal，生成 rule.kind=task_duration_estimate 的记忆提案，并让 appliesTo 覆盖 assistant、parse_task、breakdown_task。",
 	    "记忆分流规则：只有用户特有、跨会话有用、相对稳定且会影响未来协作的偏好、原则、习惯或边界，才能选择 time.save_memory_proposal；一次性要求、当前任务事实、通用建议和模型自己的建议不能保存为记忆。自由输入的语义分流由你在本轮完成一次，本地 Workflow 只校验结构、权限和确认边界，不会再用关键词替你重判意图。",
 	    "记忆不确定规则：如果无法判断用户说的是本次临时要求还是长期规则，选择 answer/clarify 并只追问这一点；不要猜测，也不要先生成记忆提案。",
@@ -2274,10 +2285,22 @@ function stabilizeDecision(_request, decision, _toolCatalog = createAssistantToo
 
 function collectPlannerTodoReferences(args) {
   const source = normalizeObject(args);
+  const targetTodo = normalizeObject(source.targetTodo);
+  const completion = normalizeObject(source.completion || source.completionDraft || source.taskCompletion);
+  const completionTarget = normalizeObject(completion.targetTodo);
   const references = [
     ...(Array.isArray(source.todoRefs) ? source.todoRefs : []),
     ...(Array.isArray(source.contextRefs) ? source.contextRefs : []),
     ...(Array.isArray(source.todoIds) ? source.todoIds : []),
+    source.todoId,
+    source.targetTodoId,
+    source.sourceTodoId,
+    targetTodo.id,
+    targetTodo.todoId,
+    completion.todoId,
+    completion.targetTodoId,
+    completionTarget.id,
+    completionTarget.todoId,
     ...[...(Array.isArray(source.todos) ? source.todos : []), ...(Array.isArray(source.tasks) ? source.tasks : [])]
       .flatMap((item) => {
         if (typeof item === "string") return [item];
@@ -2351,6 +2374,32 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
     const semanticStartTime = extractClockFromText(input.normalizedGoal) || extractClockFromText(input.text);
     if (!input.targetDate && !input.date && semanticDate) input.targetDate = semanticDate;
     if (!input.startTime && semanticStartTime) input.startTime = semanticStartTime;
+  }
+
+  if (action === "complete_task") {
+    const selectedObjects = normalizeObject(requestInput.selectedObjects || requestInput.contextCandidates?.selectedObjects);
+    const selectedTodoIds = normalizeIdList(selectedObjects.selectedTodoIds, 10);
+    const explicitRefs = collectPlannerTodoReferences(mergedArgs);
+    const resolution = resolveWorkflowScheduleTodos(request, {
+      ...mergedArgs,
+      todoIds: explicitRefs.length ? explicitRefs : selectedTodoIds,
+    }, turnContext);
+    const requestTodo = normalizeWorkflowTodoCandidate(requestInput.todo);
+    const targetTodo = resolution.todos[0] || requestTodo;
+    input.todo = targetTodo || null;
+    input.todos = targetTodo ? [targetTodo] : [];
+    input.targetTodoId = normalizeText(
+      targetTodo?.id || explicitRefs[0] || selectedTodoIds[0],
+      120,
+    );
+    input.contextResolution = {
+      schema: "guanshi-ai-workflow-input-resolution-v1",
+      todosSource: resolution.todos.length ? resolution.source : requestTodo ? "request_selected_todo" : "missing",
+      todoCount: targetTodo ? 1 : 0,
+      plannerRefCount: explicitRefs.length,
+      busyBlockCount: 0,
+    };
+    delete input.tasks;
   }
 
   if (action === "plan_today" || action === "plan_week") {

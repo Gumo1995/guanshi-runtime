@@ -698,6 +698,7 @@ const aiSidebarModule = createAiSidebarModule({
   markTodoPlanningDirty,
   normalizeTodoOrderByClockForDate,
   saveTodos,
+  toggleTodoCompleted,
   setActiveView,
   render,
   uiReactionsModule: aiUiReactionsModule,

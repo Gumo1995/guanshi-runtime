@@ -88,6 +88,7 @@
     assistant: "通用对话",
     parse_task: "任务录入",
     breakdown_task: "任务拆解",
+    complete_task: "完成待办",
     plan_today: "今日排程",
     plan_week: "周排程",
     reflow_unfinished: "重排未完成",

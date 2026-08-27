@@ -25,7 +25,8 @@
   --input-placeholder: #8f99a8;
   --todo-list-min-width: 420px;
   --todo-detail-min-width: 320px;
-  --todo-detail-resizer-width: 12px;
+  --todo-detail-resizer-width: 6px;
+  --todo-detail-resizer-hit-width: 12px;
   --todo-layout-min-width: calc(var(--todo-list-min-width) + var(--todo-detail-resizer-width) + var(--todo-detail-min-width));
   --main-stage-horizontal-padding: 36px;
   --main-shell-min-width: calc(var(--todo-layout-min-width) + var(--main-stage-horizontal-padding));
@@ -6084,11 +6085,11 @@ body::after {
 }
 
 .todo-panel {
-  margin-right: 7px;
+  margin-right: 5px;
 }
 
 .todo-detail-panel {
-  margin-left: 7px;
+  margin-left: 5px;
   container: todo-detail / inline-size;
   --todo-note-min-height: 40px;
   --todo-note-default-height: 94px;
@@ -6112,6 +6113,15 @@ body::after {
   position: relative;
   align-self: stretch;
   touch-action: none;
+}
+
+.todo-detail-resizer::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: var(--todo-detail-resizer-hit-width);
+  transform: translateX(-50%);
 }
 
 .todo-detail-resizer::before {

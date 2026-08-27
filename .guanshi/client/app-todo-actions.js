@@ -909,6 +909,25 @@
       };
     }
 
+    function normalizeTodoCompletionWindowOverride(value) {
+      const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const date = String(source.date || "").trim();
+      const start = String(source.start || "").trim();
+      const end = String(source.end || "").trim();
+      const startMinutes = parseClockToMinutes(start);
+      const endMinutes = parseClockToMinutes(end);
+      if (!isValidDateInput(date) || !Number.isInteger(startMinutes) || !Number.isInteger(endMinutes) || endMinutes <= startMinutes) {
+        return null;
+      }
+      return {
+        date,
+        start,
+        end,
+        duration: calcDurationHours(start, end),
+        durationMinutes: endMinutes - startMinutes,
+      };
+    }
+
     function appendRecurringTodoCompletionEntry(todo, completionWindow, timestampIso = new Date().toISOString()) {
       refreshDataRefs();
       if (!todo || !completionWindow) return "";
@@ -1089,6 +1108,7 @@
     function toggleTodoCompleted(todoId, options = {}) {
       refreshDataRefs();
       const skipLinkedPomodoroInterception = Boolean(options && options.skipLinkedPomodoroInterception);
+      const requestedCompletionWindow = normalizeTodoCompletionWindowOverride(options?.completionWindow);
       const todo = todos.find((item) => String(item.id) === String(todoId));
       if (!todo) return;
       if (!skipLinkedPomodoroInterception && pomodoroModule.hasLinkedTodoProgress(todo.id)) {
@@ -1117,7 +1137,7 @@
       const shouldRollRecurringTodo = !todo.completed && nextCompleted && isRecurringTodoRepeatMode(reminderRepeat);
 
       if (shouldRollRecurringTodo) {
-        const completionWindow = resolveTodoCompletionWindow(todo, new Date());
+        const completionWindow = requestedCompletionWindow || resolveTodoCompletionWindow(todo, new Date());
         if (completionWindow) {
           appendRecurringTodoCompletionEntry(todo, completionWindow, nowIso);
         }
@@ -1206,7 +1226,7 @@
         todo.reminderSyncState = "synced";
         todo.reminderCompletedAt = null;
 
-        const completionWindow = resolveTodoCompletionWindow(todo, new Date());
+        const completionWindow = requestedCompletionWindow || resolveTodoCompletionWindow(todo, new Date());
         if (completionWindow) {
           todo.dueDate = completionWindow.date;
           todo.startTime = completionWindow.start;

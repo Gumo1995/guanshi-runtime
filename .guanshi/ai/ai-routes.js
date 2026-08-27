@@ -284,6 +284,13 @@ function collectWorkflowPendingEvents(workflow) {
       result: { items: result.children },
     });
   }
+  if (workflow?.request?.action === "complete_task" && Array.isArray(result.items) && result.items.length) {
+    events.push({
+      kind: "todo_completion_draft",
+      action: "complete_task",
+      result: { items: result.items },
+    });
+  }
   return events;
 }
 
