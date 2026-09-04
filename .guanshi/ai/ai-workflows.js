@@ -1,10 +1,15 @@
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const { createDomainModuleRegistry } = require("./ai-domain-module-registry");
 const { normalizeRuleMatcherValues } = require("./ai-memory-rule-registry");
 const { normalizeMatch } = require("./ai-memory-selector");
 const { deriveSubjectKey, validateMemoryCandidate } = require("./ai-memory-policy");
-const liuyaoEngine = require("../../client/app-liuyao-engine");
+const developmentLiuyaoEnginePath = path.resolve(__dirname, "../../client/app-liuyao-engine.js");
+const liuyaoEngine = require(fs.existsSync(developmentLiuyaoEnginePath)
+  ? developmentLiuyaoEnginePath
+  : path.resolve(__dirname, "../client/app-liuyao-engine.js"));
 
 const AI_ACTION_REQUEST_SCHEMA = "guanshi-ai-action-request-v1";
 const AI_COMPOSED_CONTEXT_SCHEMA = "guanshi-ai-composed-context-v1";
