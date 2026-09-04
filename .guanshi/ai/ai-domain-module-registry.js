@@ -28,6 +28,10 @@ const REGISTRY_ID_FIELDS = {
 const MEMORY_NAMESPACE_PATTERN = /^memory:\/\/[a-z][a-z0-9_-]{1,31}\/$/;
 const SCOPE_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/;
 const TOOL_MODES = new Set(["answer", "read", "draft", "insight", "disabled"]);
+const ARTIFACT_PERSISTENCE_MODES = new Set(["ephemeral", "pending", "persisted"]);
+const CONTEXT_HISTORY_MODES = new Set(["current_turn_only", "same_reading", "recent"]);
+const CONTEXT_MEMORY_MODES = new Set(["none", "module_only", "active_index_only"]);
+const CONTEXT_CROSS_MODULE_MODES = new Set(["deny", "explicit_reference_only", "allow"]);
 
 const TIME_ACTION_REGISTRY = [
   {
@@ -226,7 +230,7 @@ const TIME_ACTION_REGISTRY = [
     action_id: "time.reflow_unfinished",
     legacy_action: "reflow_unfinished",
     label: "重排未完成任务草稿",
-    intent: "把未完成且可移动的任务重新安排到最近可用时间。",
+    intent: "默认保留未完成任务的手动顺序和有效时间，仅调整失效排期；用户明确要求整体优化时才重新排序。锁定任务和未选中安排始终作为占用。",
     action_kind: "draft",
     execution_mode: "registry_pipeline",
     planner_fields: ["dateRange", "unfinishedTodos", "busyBlocks", "strategy"],
@@ -1010,6 +1014,279 @@ const TIME_MODULE_MANIFEST = {
   test_fixtures: ["tools/fixtures/ai/ai-domain-module-routing.zh.json"],
 };
 
+const LIUYAO_ACTION_REGISTRY = [
+  {
+    action_id: "liuyao.create_hexagram",
+    legacy_action: "create_hexagram",
+    label: "起一卦并解读",
+    intent: "用户明确要求问卦，或在六爻页没有当前卦时直接输入具体所问事项，以安全三钱法生成确定性卦盘，再交给 Writer 解读。",
+    action_kind: "insight",
+    execution_mode: "registry_pipeline",
+    resolver: {
+      intent_terms: ["六爻", "问卦", "问一卦", "算一卦", "起卦", "摇一卦", "再起一卦", "重新起卦"],
+      default_when: "selectedReading_absent",
+    },
+    planner_fields: ["question", "category", "background", "focus"],
+    steps: [
+      "liuyao.step.context.collect",
+      "liuyao.step.cast.secure_three_coin",
+      "liuyao.step.chart.compute",
+      "liuyao.step.writer.interpret",
+    ],
+    prompt_refs: ["liuyao.prompt.planner.route", "liuyao.prompt.writer.interpret"],
+    policy_refs: ["liuyao.policy.read_only_interpretation"],
+    ui_ref: "liuyao.ui.card.interpretation",
+    output_schema: "liuyao.schema.ReadingDraft",
+    context_contract: {
+      schema: "guanshi-ai-action-context-contract-v1",
+      history: { mode: "current_turn_only", maxTurns: 0 },
+      memory: { mode: "none", namespace: "memory://liuyao/" },
+      required: [],
+      optional: ["selectedTodo"],
+      explicit_reference_only: ["selectedTodo"],
+      denied: ["selectedReading", "todos", "entries", "busyBlocks", "globalBackgroundContext"],
+      cross_module: "explicit_reference_only",
+    },
+  },
+  {
+    action_id: "liuyao.interpret_hexagram",
+    legacy_action: "interpret_hexagram",
+    label: "解读当前卦",
+    intent: "围绕当前选中的确定性卦盘继续解读或回答追问；若未选中但本地存在历史卦，先自动选择最近一卦，不重新起卦。",
+    action_kind: "insight",
+    execution_mode: "registry_pipeline",
+    resolver: {
+      intent_terms: ["解卦", "这卦", "此卦", "这个卦", "继续分析", "继续解读"],
+      default_when: "selectedReading_present",
+    },
+    planner_fields: ["question", "focus", "followUp"],
+    minimum_context: {
+      required: ["selectedReading"],
+      scope_mode: "view_liuyao_reading",
+    },
+    steps: [
+      "liuyao.step.context.collect",
+      "liuyao.step.chart.resolve_selected",
+      "liuyao.step.writer.interpret",
+    ],
+    prompt_refs: ["liuyao.prompt.planner.route", "liuyao.prompt.writer.interpret"],
+    policy_refs: ["liuyao.policy.read_only_interpretation"],
+    ui_ref: "liuyao.ui.card.interpretation",
+    output_schema: "liuyao.schema.Interpretation",
+    context_contract: {
+      schema: "guanshi-ai-action-context-contract-v1",
+      history: { mode: "same_reading", key: "readingId", maxTurns: 6 },
+      memory: { mode: "none", namespace: "memory://liuyao/" },
+      required: ["selectedReading"],
+      optional: [],
+      explicit_reference_only: [],
+      denied: ["selectedTodo", "todos", "entries", "busyBlocks", "globalBackgroundContext"],
+      fallback: { selectedReading: "latest_available" },
+      cross_module: "deny",
+    },
+  },
+];
+
+const LIUYAO_STEP_REGISTRY = [
+  {
+    step_id: "liuyao.step.context.collect",
+    label: "收集问卦上下文",
+    type: "deterministic",
+    side_effect: false,
+    retryable: true,
+    input_schema: "liuyao.schema.ActionRequest",
+    output_schema: "liuyao.schema.ActionContext",
+  },
+  {
+    step_id: "liuyao.step.cast.secure_three_coin",
+    label: "安全三钱起卦",
+    type: "deterministic",
+    side_effect: false,
+    retryable: true,
+    input_schema: "liuyao.schema.ActionContext",
+    output_schema: "liuyao.schema.CoinCast",
+  },
+  {
+    step_id: "liuyao.step.chart.compute",
+    label: "计算确定性卦盘",
+    type: "deterministic",
+    side_effect: false,
+    retryable: true,
+    input_schema: "liuyao.schema.CoinCast",
+    output_schema: "liuyao.schema.ReadingDraft",
+  },
+  {
+    step_id: "liuyao.step.chart.resolve_selected",
+    label: "校验并重建选中卦盘",
+    type: "deterministic",
+    side_effect: false,
+    retryable: true,
+    input_schema: "liuyao.schema.ActionContext",
+    output_schema: "liuyao.schema.ReadingDraft",
+  },
+  {
+    step_id: "liuyao.step.writer.interpret",
+    label: "组织解卦结果",
+    type: "writer",
+    side_effect: false,
+    retryable: true,
+    input_schema: "liuyao.schema.ReadingDraft",
+    output_schema: "liuyao.schema.Interpretation",
+  },
+];
+
+const LIUYAO_PROMPT_REGISTRY = [
+  {
+    prompt_id: "liuyao.prompt.planner.route",
+    label: "问卦与追问路由",
+    owner: "planner",
+    status: "code_prompt",
+    output_schema: "liuyao.schema.PlannerDecision",
+  },
+  {
+    prompt_id: "liuyao.prompt.writer.interpret",
+    label: "基于确定性卦盘解读",
+    owner: "writer",
+    status: "code_prompt_structured_output",
+    output_schema: "liuyao.schema.Interpretation",
+  },
+];
+
+const LIUYAO_POLICY_REGISTRY = [
+  {
+    policy_id: "liuyao.policy.read_only_interpretation",
+    label: "排盘确定性与解读只读边界",
+    risk: "L1",
+    requires_confirmation: false,
+    allow_auto_apply: true,
+    constraints: [
+      "writer_must_not_recalculate_chart",
+      "no_cross_module_write",
+      "no_fatalistic_certainty",
+    ],
+  },
+];
+
+const LIUYAO_UI_REGISTRY = [
+  {
+    ui_id: "liuyao.ui.surface.reading",
+    label: "六爻卦象工作区",
+    surface: "context_surface",
+    component: "LiuyaoView",
+    editable: false,
+    allow_regenerate: false,
+    context_surface: {
+      view: "liuyao",
+      surface_ids: ["liuyao", "liuyao.reading"],
+      provides: ["selectedReading"],
+      context_modes: ["view_liuyao_reading"],
+      action_refs: ["liuyao.create_hexagram", "liuyao.interpret_hexagram"],
+      intent_terms: ["六爻", "问卦", "问一卦", "起卦", "摇一卦", "解卦", "这卦", "此卦"],
+      priority: 5,
+      reaction: {
+        schema: "guanshi-ui-reaction-v1",
+        trigger: "before_context_request",
+        view: "liuyao",
+      },
+    },
+  },
+  {
+    ui_id: "liuyao.ui.card.interpretation",
+    label: "六爻解卦工作区",
+    surface: "assistant_message_and_main",
+    component: "LiuyaoInterpretation",
+    editable: false,
+    allow_regenerate: true,
+  },
+];
+
+const LIUYAO_SCHEMA_REGISTRY = [
+  { schema_id: "liuyao.schema.ActionRequest", label: "六爻 Action 输入", owner: "executor" },
+  { schema_id: "liuyao.schema.ActionContext", label: "六爻 Action 上下文", owner: "context" },
+  { schema_id: "liuyao.schema.PlannerDecision", label: "六爻 Planner 输出", owner: "planner" },
+  { schema_id: "liuyao.schema.CoinCast", label: "三钱起卦结果", owner: "engine" },
+  { schema_id: "liuyao.schema.ReadingDraft", label: "确定性卦盘", owner: "engine" },
+  { schema_id: "liuyao.schema.Interpretation", label: "结构化解卦", owner: "writer" },
+];
+
+const LIUYAO_TRACE_REGISTRY = [
+  {
+    trace_id: "liuyao.trace.action_run",
+    label: "一次六爻问卦或追问链路",
+    schema: "guanshi-ai-turn-trace-v1",
+    includes: ["modelInput", "plannerDecision", "chartFacts", "writer"],
+  },
+];
+
+const LIUYAO_MODULE_MANIFEST = {
+  schema: DOMAIN_MODULE_MANIFEST_SCHEMA,
+  module_id: "liuyao",
+  display_name: "六爻",
+  version: "1",
+  enabled: true,
+  description: "六爻确定性起卦、当前卦上下文与 AI 只读解读模块。",
+  data_schema: {
+    primary: "guanshi-liuyao-reading-v1",
+    runtimeDataPath: ".runtime/domain-modules/liuyao/",
+    legacyRuntimeDataPaths: [],
+  },
+  context_adapter: {
+    adapter: "liuyao.context_adapter.v1",
+    defaultMode: "selected_reading_only",
+    maxItems: 1,
+    redaction: ["selected_reading_only", "no_cross_module_context"],
+  },
+  tool_manifest: [
+    {
+      tool_id: "liuyao.create_hexagram",
+      legacy_action: "create_hexagram",
+      label: "起一卦并解读",
+      mode: "insight",
+      requiresUserConfirmation: false,
+      artifactPersistence: "ephemeral",
+      scopes: ["liuyao:read", "liuyao:cast"],
+      draft_schema: ["ReadingDraft", "Interpretation"],
+    },
+    {
+      tool_id: "liuyao.interpret_hexagram",
+      legacy_action: "interpret_hexagram",
+      label: "解读当前卦",
+      mode: "insight",
+      requiresUserConfirmation: false,
+      artifactPersistence: "ephemeral",
+      scopes: ["liuyao:read"],
+      draft_schema: ["Interpretation"],
+    },
+  ],
+  memory_namespace: "memory://liuyao/",
+  draft_schema: ["ReadingDraft", "Interpretation"],
+  apply_policy: {
+    requiresUiConfirmation: false,
+    supportsUndo: false,
+    allowExternalApply: false,
+  },
+  permission_scope: {
+    mcpRead: ["liuyao:read"],
+    mcpDraft: [],
+    forbidden: ["liuyao:save_without_user_action", "time:write", "provider:secret_read"],
+  },
+  ui_slots: {
+    leftSidebar: ["conversation"],
+    settings: ["module_permissions", "action_registry"],
+    main: ["reading_list", "chart", "interpretation"],
+  },
+  registry: {
+    action_registry: LIUYAO_ACTION_REGISTRY,
+    step_registry: LIUYAO_STEP_REGISTRY,
+    prompt_registry: LIUYAO_PROMPT_REGISTRY,
+    policy_registry: LIUYAO_POLICY_REGISTRY,
+    ui_registry: LIUYAO_UI_REGISTRY,
+    schema_registry: LIUYAO_SCHEMA_REGISTRY,
+    trace_registry: LIUYAO_TRACE_REGISTRY,
+  },
+  test_fixtures: ["tools/fixtures/ai/ai-domain-module-routing.zh.json"],
+};
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1041,6 +1318,68 @@ function normalizeStringArray(value, maxLength = 80) {
 
 function normalizeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizeActionContextContract(moduleId, value, actionId) {
+  const source = normalizeObject(value);
+  if (!Object.keys(source).length) return null;
+  const history = normalizeObject(source.history);
+  const memory = normalizeObject(source.memory);
+  const fallback = normalizeObject(source.fallback);
+  const historyMode = normalizeText(history.mode || "recent", 40);
+  const memoryMode = normalizeText(memory.mode || "active_index_only", 40);
+  const crossModule = normalizeText(source.cross_module || source.crossModule || "allow", 40);
+  if (!CONTEXT_HISTORY_MODES.has(historyMode)) {
+    throw createDomainModuleError("AI_DOMAIN_ACTION_CONTEXT_HISTORY_INVALID", "Action context history mode is invalid.", 400, {
+      module_id: moduleId,
+      action_id: actionId,
+      mode: historyMode,
+    });
+  }
+  if (!CONTEXT_MEMORY_MODES.has(memoryMode)) {
+    throw createDomainModuleError("AI_DOMAIN_ACTION_CONTEXT_MEMORY_INVALID", "Action context memory mode is invalid.", 400, {
+      module_id: moduleId,
+      action_id: actionId,
+      mode: memoryMode,
+    });
+  }
+  if (!CONTEXT_CROSS_MODULE_MODES.has(crossModule)) {
+    throw createDomainModuleError("AI_DOMAIN_ACTION_CONTEXT_CROSS_MODULE_INVALID", "Action cross-module context mode is invalid.", 400, {
+      module_id: moduleId,
+      action_id: actionId,
+      mode: crossModule,
+    });
+  }
+  const memoryNamespace = normalizeText(memory.namespace || `memory://${moduleId}/`, 80);
+  if (memoryMode !== "none" && memoryNamespace !== `memory://${moduleId}/`) {
+    throw createDomainModuleError("AI_DOMAIN_ACTION_CONTEXT_NAMESPACE_INVALID", "Action context memory namespace is invalid.", 400, {
+      module_id: moduleId,
+      action_id: actionId,
+      memory_namespace: memoryNamespace,
+    });
+  }
+  return {
+    schema: "guanshi-ai-action-context-contract-v1",
+    history: {
+      mode: historyMode,
+      key: normalizeText(history.key, 80),
+      maxTurns: Math.max(0, Math.min(20, Number.parseInt(String(history.maxTurns ?? 8), 10) || 0)),
+    },
+    memory: {
+      mode: memoryMode,
+      namespace: memoryNamespace,
+    },
+    required: normalizeStringArray(source.required, 80),
+    optional: normalizeStringArray(source.optional, 80),
+    explicit_reference_only: normalizeStringArray(source.explicit_reference_only || source.explicitReferenceOnly, 80),
+    denied: normalizeStringArray(source.denied, 80),
+    fallback: Object.fromEntries(
+      Object.entries(fallback)
+        .map(([capability, strategy]) => [normalizeText(capability, 80), normalizeText(strategy, 80)])
+        .filter(([capability, strategy]) => capability && strategy),
+    ),
+    cross_module: crossModule,
+  };
 }
 
 function normalizeTool(moduleId, tool, index) {
@@ -1080,6 +1419,9 @@ function normalizeTool(moduleId, tool, index) {
     label: normalizeText(source.label || toolId, 100),
     mode,
     requiresUserConfirmation: source.requiresUserConfirmation === true,
+    artifactPersistence: ARTIFACT_PERSISTENCE_MODES.has(normalizeText(source.artifactPersistence || source.artifact_persistence, 40))
+      ? normalizeText(source.artifactPersistence || source.artifact_persistence, 40)
+      : "pending",
     scopes,
     draft_schema: normalizeStringArray(source.draft_schema || source.draftSchema, 80),
   };
@@ -1150,6 +1492,8 @@ function normalizeActionRegistryBundle(moduleId, rawRegistry = {}) {
 
   for (const action of registry.action_registry) {
     const actionId = action.action_id;
+    const contextContract = normalizeActionContextContract(moduleId, action.context_contract || action.contextContract, actionId);
+    if (contextContract) action.context_contract = contextContract;
     for (const stepId of normalizeStringArray(action.steps, 120)) {
       assertKnownRegistryRef(moduleId, actionId, stepId, registry, "step_registry", "step_id");
     }
@@ -1246,7 +1590,7 @@ function normalizeDomainModuleManifest(input = {}) {
 function createDomainModuleRegistry(options = {}) {
   const initialModules = Array.isArray(options.modules) && options.modules.length > 0
     ? options.modules
-    : [TIME_MODULE_MANIFEST];
+    : [TIME_MODULE_MANIFEST, LIUYAO_MODULE_MANIFEST];
   const modules = new Map();
 
   for (const manifest of initialModules) {
@@ -1280,12 +1624,16 @@ function createDomainModuleRegistry(options = {}) {
     const selectedModules = moduleId
       ? [getModule(moduleId)]
       : listModules().modules;
-    const tools = selectedModules.flatMap((moduleInfo) => moduleInfo.tool_manifest.map((tool) => ({
-      ...tool,
-      module_id: moduleInfo.module_id,
-      memory_namespace: moduleInfo.memory_namespace,
-      apply_policy: moduleInfo.apply_policy,
-    })));
+    const tools = selectedModules.flatMap((moduleInfo) => moduleInfo.tool_manifest.map((tool) => {
+      const action = moduleInfo.registry.action_registry.find((item) => item.action_id === tool.tool_id);
+      return {
+        ...tool,
+        module_id: moduleInfo.module_id,
+        memory_namespace: moduleInfo.memory_namespace,
+        apply_policy: moduleInfo.apply_policy,
+        context_contract: action?.context_contract || null,
+      };
+    }));
     return {
       schema: DOMAIN_MODULE_TOOL_LIST_SCHEMA,
       module_id: normalizeText(moduleId, 80),
@@ -1314,6 +1662,7 @@ function createDomainModuleRegistry(options = {}) {
       module_id: moduleId,
       memory_namespace: moduleInfo.memory_namespace,
       apply_policy: moduleInfo.apply_policy,
+      context_contract: moduleInfo.registry.action_registry.find((item) => item.action_id === id)?.context_contract || null,
     };
   }
 
@@ -1350,6 +1699,7 @@ module.exports = {
   DOMAIN_MODULE_LIST_SCHEMA,
   DOMAIN_MODULE_TOOL_LIST_SCHEMA,
   TIME_MODULE_MANIFEST,
+  LIUYAO_MODULE_MANIFEST,
   createDomainModuleError,
   createDomainModuleRegistry,
   normalizeDomainModuleManifest,

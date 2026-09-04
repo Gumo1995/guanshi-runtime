@@ -116,6 +116,7 @@
     view_calendar_day: "当前日历日",
     view_calendar_week: "当前日历周",
     view_review_range: "当前复盘范围",
+    view_liuyao_reading: "当前卦",
   };
   const AI_CONTEXT_RERUN_MAX = 2;
   const AI_CONTEXT_CONVERSATION_TTL_MS = 60 * 60 * 1000;
@@ -224,6 +225,10 @@
     const getTodos = typeof deps.getTodos === "function" ? deps.getTodos : () => [];
     const getEntries = typeof deps.getEntries === "function" ? deps.getEntries : () => [];
     const getSelectedTodo = typeof deps.getSelectedTodo === "function" ? deps.getSelectedTodo : () => null;
+    const getLiuyaoCurrentReading = typeof deps.getLiuyaoCurrentReading === "function" ? deps.getLiuyaoCurrentReading : () => null;
+    const getLiuyaoReadings = typeof deps.getLiuyaoReadings === "function" ? deps.getLiuyaoReadings : () => [];
+    const selectLiuyaoLatestReading = typeof deps.selectLiuyaoLatestReading === "function" ? deps.selectLiuyaoLatestReading : () => null;
+    const applyLiuyaoAiResult = typeof deps.applyLiuyaoAiResult === "function" ? deps.applyLiuyaoAiResult : () => false;
     const getViewContext = typeof deps.getViewContext === "function" ? deps.getViewContext : () => ({});
     const getCategories = typeof deps.getCategories === "function" ? deps.getCategories : () => [];
     const getTodayDateInputValue =
@@ -280,9 +285,13 @@
     const contextScopeLabel = panel?.querySelector("[data-ai-context-scope-label]") || null;
     const providerSwitchButton = panel?.querySelector("[data-ai-provider-switch]") || null;
     const providerSwitchLogo = panel?.querySelector("[data-ai-provider-switch-logo]") || null;
+    const stopButton = panel?.querySelector("[data-ai-stop]") || null;
+    const readingContext = panel?.querySelector("[data-ai-reading-context]") || null;
+    const defaultInputPlaceholder = input?.getAttribute?.("placeholder") || "告诉 AI 你想处理什么…";
 
     let eventsBound = false;
     let isBusy = false;
+    let activeRequestController = null;
     const deltaBuffers = new Map();
     let currentProviderIdentity = { label: "模型", logoKey: "generic" };
     let activeTurnScroll = null;
@@ -408,7 +417,7 @@
     }
 
     function renderContextTrigger(message) {
-      if (!hasContextSnapshot(message)) return "";
+      if (message?.suppressActions || !hasContextSnapshot(message)) return "";
       const activeClass = activeContextMessageId === message.id ? " is-active" : "";
       return `
         <button class="sidebar-ai-context-trigger${activeClass}" type="button" data-ai-context-message-id="${escapeHtml(message.id)}" aria-label="查看本轮模型输入" title="查看本轮模型输入">
@@ -1604,13 +1613,39 @@
       status.textContent = String(message || "AI 工作台准备中。");
     }
 
+    function syncLiuyaoContext() {
+      const viewContext = readViewContext();
+      const isLiuyao = normalizeText(viewContext.activeView) === "liuyao" || normalizeText(viewContext.surface) === "liuyao.reading";
+      const reading = isLiuyao ? getLiuyaoCurrentReading() : null;
+      if (readingContext) {
+        readingContext.hidden = !isLiuyao;
+        readingContext.textContent = reading
+          ? `当前卦 · ${normalizeText(reading.primary?.name, "未命名")}${reading.changed?.name ? ` → ${normalizeText(reading.changed.name)}` : " · 静卦"}`
+          : "六爻页 · 直接说出所问之事即可起卦";
+      }
+      if (input) {
+        input.placeholder = isLiuyao
+          ? reading
+            ? `继续询问「${trimDisplayText(reading.question || reading.primary?.name, 32)}」…`
+            : "例如：这次合作是否适合推进？"
+          : defaultInputPlaceholder;
+      }
+    }
+
     function setBusy(nextValue) {
       isBusy = Boolean(nextValue);
       for (const button of actionButtons) {
         button.disabled = isBusy;
       }
       const submitButton = form?.querySelector("button[type='submit']");
-      if (submitButton) submitButton.disabled = isBusy;
+      if (submitButton) {
+        submitButton.disabled = isBusy;
+        submitButton.hidden = isBusy;
+      }
+      if (stopButton) {
+        stopButton.hidden = !isBusy;
+        stopButton.disabled = !isBusy;
+      }
       if (contextScopeButton) contextScopeButton.disabled = isBusy;
     }
 
@@ -1748,6 +1783,15 @@
     function queueNextActionsForMessage(messageId) {
       if (!messageId) return;
       clearNextActionsTimer();
+      const targetMessage = messages.find((message) => message.id === messageId);
+      if (targetMessage?.suppressActions) {
+        nextActionsPendingMessageId = "";
+        messages = messages.map((message) => message.id === messageId
+          ? { ...message, actionsPending: false, showActions: false }
+          : message);
+        renderMessages();
+        return;
+      }
       nextActionsPendingMessageId = messageId;
       let didQueue = false;
       messages = messages.map((message) => {
@@ -1778,6 +1822,7 @@
 
     function open({ focusInput = true } = {}) {
       if (!panel) return;
+      syncLiuyaoContext();
       panel.hidden = false;
       panel.setAttribute("aria-hidden", "false");
       if (!embedded) {
@@ -2098,12 +2143,14 @@
         .map((id) => pendingItems.find((item) => item.id === id))
         .filter(Boolean);
       const blocks = [
-        renderSemanticActionBlock(
-          message.semanticAction || message.contextSnapshot?.semanticAction,
-          message.actionReview || message.contextSnapshot?.actionReview,
-          message.id,
-          message.semanticExpanded === true,
-        ),
+        message.suppressActions
+          ? ""
+          : renderSemanticActionBlock(
+            message.semanticAction || message.contextSnapshot?.semanticAction,
+            message.actionReview || message.contextSnapshot?.actionReview,
+            message.id,
+            message.semanticExpanded === true,
+          ),
         renderGeneratedBlock(generated),
         renderPendingBlock(pending),
         message.showActions ? renderActionBlock() : "",
@@ -2414,6 +2461,10 @@
         elapsedMs: Math.max(0, Number(message.elapsedMs || 0)),
         timerActive: Boolean(message.timerActive),
         contextSnapshot: message.contextSnapshot && typeof message.contextSnapshot === "object" ? message.contextSnapshot : null,
+        moduleId: normalizeText(message.moduleId),
+        actionId: normalizeText(message.actionId),
+        readingId: normalizeText(message.readingId),
+        castSessionId: normalizeText(message.castSessionId),
       };
       if (normalized.role === "assistant") {
         clearNextActionsTimer();
@@ -2453,9 +2504,39 @@
           excludedCurrentUserText = true;
           continue;
         }
-        history.push({ role, content });
+        history.push({
+          role,
+          content,
+          moduleId: normalizeText(message.moduleId),
+          actionId: normalizeText(message.actionId),
+          readingId: normalizeText(message.readingId),
+          castSessionId: normalizeText(message.castSessionId),
+        });
       }
       return history.reverse();
+    }
+
+    function getWorkflowConversationBinding(workflow) {
+      const actionId = normalizeText(workflow?.request?.module?.toolId)
+        || normalizeText(workflow?.request?.action);
+      const moduleId = normalizeText(workflow?.request?.module?.moduleId)
+        || (actionId.includes(".") ? actionId.split(".")[0] : isLiuyaoWorkflow(workflow) ? "liuyao" : "");
+      const readingId = normalizeText(workflow?.result?.reading?.id);
+      return {
+        moduleId,
+        actionId,
+        readingId,
+        castSessionId: readingId,
+      };
+    }
+
+    function bindUserMessageToWorkflow(userMessageId, workflow) {
+      const binding = getWorkflowConversationBinding(workflow);
+      if (!binding.moduleId && !binding.actionId && !binding.readingId) return binding;
+      messages = messages.map((message) => message.id === userMessageId && message.role === "user"
+        ? { ...message, ...binding }
+        : message);
+      return binding;
     }
 
     function renderGeneratedItems() {
@@ -2634,10 +2715,28 @@
       if (!fetchFn) return null;
       if (actionRegistryPayload) return actionRegistryPayload;
       if (!actionRegistryRequest) {
-        actionRegistryRequest = requestJson("/api/ai/action-registry?module=time")
-          .then((payload) => {
-            const result = payload?.result;
-            actionRegistryPayload = result && typeof result === "object" && !Array.isArray(result) ? result : null;
+        actionRegistryRequest = Promise.allSettled([
+          requestJson("/api/ai/action-registry?module=time"),
+          requestJson("/api/ai/action-registry?module=liuyao"),
+        ])
+          .then((payloads) => {
+            const results = payloads
+              .filter((item) => item.status === "fulfilled")
+              .map((item) => item.value?.result)
+              .filter((result) => result && typeof result === "object" && !Array.isArray(result));
+            const registryKeys = [
+              "action_registry",
+              "step_registry",
+              "prompt_registry",
+              "policy_registry",
+              "ui_registry",
+              "schema_registry",
+              "trace_registry",
+            ];
+            actionRegistryPayload = results.length ? registryKeys.reduce((merged, key) => {
+              merged[key] = results.flatMap((result) => Array.isArray(result[key]) ? result[key] : []);
+              return merged;
+            }, { schema: "guanshi-ai-merged-action-registry-v1", modules: ["time", "liuyao"] }) : null;
             return actionRegistryPayload;
           })
           .catch(() => null)
@@ -2681,6 +2780,7 @@
           "Content-Type": "application/json",
         },
         body: JSON.stringify(assistantRequest),
+        signal: handlers.signal,
       });
       if (!response.ok) {
         const payload = typeof response.json === "function" ? await response.json().catch(() => ({})) : {};
@@ -2742,6 +2842,11 @@
         if (typeof reader.releaseLock === "function") reader.releaseLock();
       }
 
+      if (!finalResult) {
+        const error = new Error("AI 响应在完成事件之前结束。");
+        error.code = "AI_STREAM_INCOMPLETE";
+        throw error;
+      }
       return finalResult;
     }
 
@@ -2779,6 +2884,25 @@
       }
       if (code === "AI_REQUEST_BODY_TOO_LARGE") {
         return "本轮原始输入和上下文超过本地请求保护上限。长资料应作为材料分段读取；当前可缩小参考范围后重试。";
+      }
+      if (code === "AI_PROVIDER_REQUEST_ABORTED") {
+        return "已停止本轮生成。";
+      }
+      if (code === "AI_PROVIDER_REQUEST_TIMEOUT" || code === "AI_PROVIDER_STREAM_IDLE_TIMEOUT") {
+        return stage === "liuyao_writer"
+          ? "卦盘已保留，但解读等待超时。你可以围绕当前卦继续追问，不会重新起卦。"
+          : "本轮等待超时，没有把未完成内容当成完整结果。请重试。";
+      }
+      if (["AI_PROVIDER_OUTPUT_TRUNCATED", "AI_PROVIDER_OUTPUT_INCOMPLETE", "AI_ASSISTANT_PLANNER_OUTPUT_INVALID"].includes(code)) {
+        return stage === "liuyao_writer"
+          ? "卦盘已保留，但解读没有完整结束。你可以围绕当前卦继续追问，不会重新起卦。"
+          : "模型输出没有完整结束，系统已停止后续执行，避免把残缺内容当成结果。请重试。";
+      }
+      if (code === "AI_STREAM_INCOMPLETE") {
+        return "连接在本轮完成前中断。已保留可见内容，但不会把它标记为完整结果。";
+      }
+      if (code === "AI_LIUYAO_WRITER_JSON_INVALID") {
+        return "卦盘已保留，但解读格式不完整。你可以围绕当前卦继续追问，不会重新起卦。";
       }
       if (code === "AI_ASSISTANT_PROVIDER_HTTP_STATUS" || stage === "provider_response") {
         const httpStatus = error?.details?.httpStatus;
@@ -2916,11 +3040,13 @@
           "currentRange",
           "showHistory",
           "showRecurringOnly",
+          "liuyaoPanel",
         ]),
         selection: {
           todoIds: normalizeIdList(selection.todoIds || selection.todoId),
           entryIds: normalizeIdList(selection.entryIds || selection.entryId),
           journalIds: normalizeIdList(selection.journalIds || selection.journalId),
+          readingIds: normalizeIdList(selection.readingIds || selection.readingId),
         },
       };
     }
@@ -2949,6 +3075,32 @@
       return /(安排|排程|日程|时间块|时间段|空档|忙|冲突|今天|今日|明天|后天|本周|这周|接下来|下一步|schedule|calendar)/i.test(String(text || ""));
     }
 
+    function hasLiuyaoReference(text) {
+      return /(六爻|问卦|起卦|摇一卦|占问|解卦|这(?:一)?卦|此卦|这个卦|当前卦|本卦|变卦|上一卦|最近(?:一)?卦|刚才(?:那|的)?卦|继续解读)/i.test(String(text || ""));
+    }
+
+    function hasExplicitLiuyaoNewCastIntent(text) {
+      const source = String(text || "");
+      return /(另起|再起|重新起|新起|另摇|再摇|重新摇|起卦|摇一卦|算一卦|问一卦|占一卦|六爻占问)/i.test(source)
+        || /^\s*问卦(?:[：:，,。 ]|$)/i.test(source)
+        || /(?:请|帮我|给我|替我|想|要)\s*(?:用六爻)?\s*问卦/i.test(source);
+    }
+
+    function hasExplicitLiuyaoInterpretIntent(text) {
+      if (hasExplicitLiuyaoNewCastIntent(text)) return false;
+      return /(解卦|这(?:一)?卦|此卦|这个卦|当前卦|本卦|上一卦|最近(?:一)?卦|刚才(?:那|的)?卦|继续(?:分析|解读|看|问))/i.test(String(text || ""));
+    }
+
+    function shouldAutoSelectLatestLiuyaoReading(text) {
+      if (!hasExplicitLiuyaoInterpretIntent(text)) return false;
+      const interpretAction = getActionRegistryActions().find((entry) => (
+        normalizeText(entry?.action_id) === "liuyao.interpret_hexagram"
+        || normalizeText(entry?.legacy_action) === "interpret_hexagram"
+      ));
+      const fallback = interpretAction?.context_contract?.fallback || interpretAction?.contextContract?.fallback;
+      return normalizeText(fallback?.selectedReading) === "latest_available";
+    }
+
     function isCurrentTimeOnlyText(text) {
       const source = normalizeText(text).replace(/\s+/g, "");
       if (!source) return false;
@@ -2960,6 +3112,9 @@
       const surface = normalizeText(viewContext?.surface);
       const activeView = normalizeText(viewContext?.activeView);
       const selectedTodoIds = normalizeIdList(viewContext?.selection?.todoIds);
+      const selectedReadingIds = normalizeIdList(viewContext?.selection?.readingIds);
+      if ((surface === "liuyao" || surface === "liuyao.reading" || activeView === "liuyao") && selectedReadingIds.length) return "view_liuyao_reading";
+      if (surface === "liuyao" || surface === "liuyao.reading" || activeView === "liuyao") return "view_liuyao_reading";
       if ((surface === "todo" || surface === "todo.detail" || activeView === "todo") && selectedTodoIds.length) return "view_todo_selected";
       if (surface === "todo" || surface === "todo.list" || activeView === "todo") return "view_todo_summary";
       if (surface === "calendar.day") return "view_calendar_day";
@@ -2971,6 +3126,7 @@
     function inferAutomaticContextScopeMode(action, text, viewContext = readViewContext()) {
       if (action === "assistant") {
         if (isCurrentTimeOnlyText(text)) return "none";
+        if (hasLiuyaoReference(text)) return "view_liuyao_reading";
         const selectedRef = hasSelectedTodoReference(text);
         const scheduleRef = hasScheduleReference(text);
         const todoRef = hasTodoReference(text);
@@ -2986,6 +3142,7 @@
       if (action === "plan_week") return "week";
       if (action === "reflow_unfinished") return "reflow_unfinished";
       if (action === "breakdown_task" || action === "complete_task") return "selected_todo";
+      if (action === "create_hexagram" || action === "interpret_hexagram") return "view_liuyao_reading";
       if (action === "parse_task" || action === "save_memory_proposal" || action === "explore_principles") return "none";
       if (isCurrentTimeOnlyText(text)) return "none";
       const selectedRef = hasSelectedTodoReference(text);
@@ -3002,6 +3159,9 @@
 
     function getReferenceScopeIncludes(resolvedMode) {
       const mode = normalizeText(resolvedMode);
+      if (mode === "view_liuyao_reading") {
+        return { selectedTodo: false, selectedReading: true, todos: false, busyBlocks: false, entries: false };
+      }
       if (mode === "selected_todo") {
         return { selectedTodo: true, todos: false, busyBlocks: false, entries: false };
       }
@@ -3047,6 +3207,7 @@
         "memory",
         "progress",
         "selectedTodo",
+        "selectedReading",
         "selectedObjects",
         "pageWorkContext",
         "globalBackgroundContext",
@@ -3068,6 +3229,7 @@
           if (item === "tag_todos") return "tagTodos";
           if (item === "status_todos") return "statusTodos";
           if (item === "calendar_busy_blocks") return "calendarBusyBlocks";
+          if (item === "selected_reading") return "selectedReading";
           return item;
         })
         .filter((item) => allowed.has(item))));
@@ -3149,7 +3311,7 @@
         if (["pageWorkContext", "projectTodos", "tagTodos", "statusTodos"].includes(item)) return "todos";
         if (item === "calendarBusyBlocks") return "busyBlocks";
         return item;
-      }).filter((item) => ["selectedTodo", "todos", "entries", "busyBlocks"].includes(item));
+      }).filter((item) => ["selectedTodo", "selectedReading", "todos", "entries", "busyBlocks"].includes(item));
       if (!requiredCapabilities.length) return null;
       const range = source.range && typeof source.range === "object" ? source.range : {};
       return {
@@ -3191,6 +3353,7 @@
           "tagTodos",
           "statusTodos",
           "calendarBusyBlocks",
+          "selectedReading",
         ],
         maxAutoReruns: AI_CONTEXT_RERUN_MAX,
       };
@@ -3222,6 +3385,7 @@
           viewContext,
           includes: {
             selectedTodo: (include.has("selectedTodo") || include.has("selectedObjects") || include.has("todoDetails")) && Boolean(getSelectedTodo()),
+            selectedReading: include.has("selectedReading"),
             todos: include.has("todos") || include.has("pageWorkContext") || include.has("projectTodos") || include.has("tagTodos") || include.has("statusTodos"),
             busyBlocks: include.has("busyBlocks") || include.has("calendarBusyBlocks"),
             entries: include.has("entries"),
@@ -3243,6 +3407,7 @@
           viewContext,
           includes: {
             selectedTodo: include.has("selectedTodo") && Boolean(getSelectedTodo()),
+            selectedReading: include.has("selectedReading"),
             todos: include.has("todos"),
             busyBlocks: include.has("busyBlocks"),
             entries: include.has("entries"),
@@ -3250,8 +3415,14 @@
         };
       }
       const requestedMode = getReferenceScopeRequestMode();
-      const isManual = requestedMode !== "auto";
-      const resolvedMode = isManual ? requestedMode : inferAutomaticContextScopeMode(action, text, viewContext);
+      const isLiuyaoActionContext = ["create_hexagram", "interpret_hexagram"].includes(normalizeText(action))
+        || hasLiuyaoReference(text);
+      const isManual = requestedMode !== "auto" && !isLiuyaoActionContext;
+      const resolvedMode = isLiuyaoActionContext
+        ? "view_liuyao_reading"
+        : isManual
+          ? requestedMode
+          : inferAutomaticContextScopeMode(action, text, viewContext);
       const includes = getReferenceScopeIncludes(resolvedMode);
       const selectedTodo = getSelectedTodo();
       const policyOption = getContextScopeOption(contextScopeMode);
@@ -3260,7 +3431,7 @@
         schema: AI_REFERENCE_SCOPE_SCHEMA,
         requestedMode,
         resolvedMode,
-        source: isManual ? "manual" : "auto",
+        source: isLiuyaoActionContext ? "action_context_contract" : isManual ? "manual" : "auto",
         label: isManual
           ? policyOption.label
           : AI_CONTEXT_SCOPE_RESOLVED_LABELS[resolvedMode] || policyOption.label,
@@ -3268,6 +3439,7 @@
         viewContext,
         includes: {
           selectedTodo: includes.selectedTodo && Boolean(selectedTodo),
+          selectedReading: includes.selectedReading === true,
           todos: includes.todos,
           busyBlocks: includes.busyBlocks,
           entries: includes.entries,
@@ -3504,10 +3676,25 @@
       return selectedTodos.slice(0, 5);
     }
 
+    function pickLiuyaoReading(reading) {
+      if (!reading || typeof reading !== "object" || Array.isArray(reading)) return null;
+      try {
+        const copy = JSON.parse(JSON.stringify(reading));
+        copy.interpretations = Array.isArray(copy.interpretations) ? copy.interpretations.slice(-3) : [];
+        return copy;
+      } catch {
+        return null;
+      }
+    }
+
     function buildSelectedObjectsContext(referenceScope, viewContext) {
       const selectedTodos = isBusinessContextDisabled(referenceScope, viewContext)
+        || referenceScope?.includes?.selectedTodo !== true
         ? []
         : getSelectedTodosForContext(viewContext);
+      const reading = referenceScope?.includes?.selectedReading
+        ? pickLiuyaoReading(getLiuyaoCurrentReading())
+        : null;
       return {
         schema: AI_SELECTED_OBJECTS_CONTEXT_SCHEMA,
         surface: normalizeText(viewContext?.surface, "unknown"),
@@ -3516,11 +3703,14 @@
           includeNote: true,
           includeDependencies: true,
         })),
+        selectedReadingIds: reading?.id ? [normalizeText(reading.id)] : [],
+        reading,
         caps: {
           maxSelectedTodos: 5,
+          maxSelectedReadings: 1,
           noteMaxChars: 1500,
         },
-        emptyReason: selectedTodos.length ? "" : "none_selected",
+        emptyReason: selectedTodos.length || reading ? "" : "none_selected",
       };
     }
 
@@ -3613,6 +3803,26 @@
     }
 
     function buildPageWorkContext(referenceScope, viewContext) {
+      if (normalizeText(viewContext?.activeView) === "liuyao" || normalizeText(viewContext?.surface) === "liuyao.reading") {
+        return {
+          schema: AI_PAGE_WORK_CONTEXT_SCHEMA,
+          surface: "liuyao.reading",
+          businessDataIncluded: true,
+          timeWindow: { start: "", end: "" },
+          listState: { liuyaoPanel: normalizeText(viewContext?.filters?.liuyaoPanel, "cast") },
+          stats: {},
+          projectDistribution: [],
+          tagDistribution: [],
+          todos: [],
+          entries: [],
+          busyBlocks: [],
+          readingHistoryCount: Array.isArray(getLiuyaoReadings()) ? getLiuyaoReadings().length : 0,
+          caps: {
+            maxSelectedReadings: 1,
+            crossModuleTimeData: false,
+          },
+        };
+      }
       const disabled = isBusinessContextDisabled(referenceScope, viewContext);
       const pageScope = disabled ? null : buildTodoPageScope(referenceScope, viewContext);
       const todosForPage = pageScope ? buildTodosContext(pageScope) : [];
@@ -3715,20 +3925,21 @@
     }
 
     function buildGlobalBackgroundContext(referenceScope, viewContext) {
+      const isLiuyao = normalizeText(viewContext?.activeView) === "liuyao" || normalizeText(viewContext?.surface) === "liuyao.reading";
       const disabled = isBusinessContextDisabled(referenceScope, viewContext);
       const now = new Date();
       const windowRange = buildDefaultBackgroundWindow();
       const pendingDraftCount = pendingItems.filter((item) => item.status === "pending").length;
       return {
         schema: AI_GLOBAL_BACKGROUND_CONTEXT_SCHEMA,
-        businessDataIncluded: !disabled,
+        businessDataIncluded: !disabled && !isLiuyao,
         currentDate: normalizeText(getTodayDateInputValue(), now.toISOString().slice(0, 10)),
         localTime: now.toTimeString().slice(0, 5),
         defaultTimeWindow: windowRange,
-        timeWindowSummary: buildTimeWindowSummary(windowRange.start, windowRange.end, disabled),
+        timeWindowSummary: buildTimeWindowSummary(windowRange.start, windowRange.end, disabled || isLiuyao),
         pendingState: {
-          pendingDraftCount,
-          latestScheduleDraft: buildLatestScheduleDraftSummary(),
+          pendingDraftCount: isLiuyao ? 0 : pendingDraftCount,
+          latestScheduleDraft: isLiuyao ? null : buildLatestScheduleDraftSummary(),
         },
         caps: {
           noMemory: true,
@@ -3800,6 +4011,20 @@
         allowMoveExistingUnlocked: true,
         allowSplitLongTasks: true,
       };
+      if (referenceScope.resolvedMode === "view_liuyao_reading" || hasLiuyaoReference(text)) {
+        const now = new Date();
+        payload.liuyaoDateTime = {
+          year: now.getFullYear(),
+          month: now.getMonth() + 1,
+          day: now.getDate(),
+          hour: now.getHours(),
+          minute: now.getMinutes(),
+          tzOffsetMinutes: -now.getTimezoneOffset(),
+          instantMs: now.getTime(),
+          dateTimeText: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}T${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+        };
+      }
       if (action === "plan_today" || action === "plan_week") {
         payload.date = today;
         payload.targetDate = today;
@@ -3870,6 +4095,7 @@
       const action = workflow?.request?.action || "";
       const result = workflow?.result || {};
       const artifacts = Array.isArray(workflow?.artifacts) ? workflow.artifacts : [];
+      if (action === "create_hexagram" || action === "interpret_hexagram") return [];
       if (action === "explore_principles") {
         const prompts = Array.isArray(result.prompts) ? result.prompts : [];
         return [
@@ -4066,7 +4292,8 @@
         const detail = formatContextRequestDetail(assistantResult.contextRequest || assistantResult.decision?.contextRequest);
         paragraphs.push(`需要你允许本轮参考：${detail}。`);
       }
-      if (assistantResult?.workflow) {
+      const workflowAction = normalizeText(assistantResult?.workflow?.request?.action);
+      if (assistantResult?.workflow && !["create_hexagram", "interpret_hexagram"].includes(workflowAction)) {
         paragraphs.push(...buildAssistantParagraphs(assistantResult.workflow, text));
       }
       return paragraphs.length ? paragraphs : ["我已经处理完这次请求。"];
@@ -4075,7 +4302,34 @@
     function normalizeWorkflowActionId(action) {
       const value = normalizeText(action);
       if (!value) return "";
-      return value.includes(".") ? value : `time.${value}`;
+      if (value.includes(".")) return value;
+      const registryEntry = getActionRegistryActions().find((entry) => normalizeText(entry?.legacy_action) === value);
+      return normalizeText(registryEntry?.action_id, `time.${value}`);
+    }
+
+    function isLiuyaoWorkflow(workflow) {
+      return isLiuyaoAction(workflow?.request?.action);
+    }
+
+    function isLiuyaoAction(action) {
+      const value = normalizeText(action);
+      if (!value) return false;
+      return [
+        "create_hexagram",
+        "interpret_hexagram",
+        "liuyao.create_hexagram",
+        "liuyao.interpret_hexagram",
+      ].includes(value) || normalizeWorkflowActionId(value).startsWith("liuyao.");
+    }
+
+    function isLiuyaoDecision(decision, semanticAction = null) {
+      return [
+        decision?.legacyAction,
+        decision?.tool,
+        decision?.action,
+        semanticAction?.action,
+        semanticAction?.tool,
+      ].some(isLiuyaoAction);
     }
 
     function getActionRegistryActions() {
@@ -4451,6 +4705,13 @@
       );
       const turnUiExpectation = shouldPreflightUi ? resolvedUiExpectation : null;
       const uiTransition = reconcileTurnUiExpectation(turnUiExpectation, "before_context_request");
+      if (
+        actionKey === "assistant"
+        && shouldAutoSelectLatestLiuyaoReading(text)
+        && !getLiuyaoCurrentReading()
+      ) {
+        selectLiuyaoLatestReading();
+      }
       const assistantRequest = buildAssistantRequest(actionKey, text, {
         semanticFeedback: semanticFeedback ? { ...semanticFeedback, userFeedback: text } : null,
         contextGrant: options.contextGrant || null,
@@ -4466,6 +4727,9 @@
       }
       if (input && rawText && !suppressUserEcho) input.value = "";
       const assistantStartedAt = getAnimationTime();
+      const AbortControllerCtor = windowRef.AbortController || globalScope.AbortController;
+      const requestController = typeof AbortControllerCtor === "function" ? new AbortControllerCtor() : null;
+      activeRequestController = requestController;
       const assistantMessage = appendMessage({
         id: assistantMessageId,
         role: "assistant",
@@ -4480,11 +4744,13 @@
       setBusy(true);
       setStatus(`${config.label}：思考中。`);
       let deferredContextRerun = null;
+      let activeLiuyaoWorkflow = null;
 
       try {
         let artifactRefs = { pendingIds: [], generatedIds: [] };
         let streamWorkflowHandled = false;
         const assistantResult = await requestAssistantStream(assistantRequest, {
+          signal: requestController?.signal,
           onEvent(event) {
             if (event.type === "status") {
               setMessageState(assistantMessage.id, event.label || "运行中");
@@ -4498,24 +4764,38 @@
             if (event.type === "decision") {
               const semanticAction = event.decision?.semanticAction || event.semanticAction || null;
               const actionReview = event.decision?.actionReview || event.actionReview || null;
+              const suppressActions = isLiuyaoDecision(event.decision, semanticAction);
               updateMessage(assistantMessage.id, (message) => ({
                 ...message,
-                meta: getAssistantDecisionMeta(event.decision, config, "pending"),
+                meta: suppressActions ? "" : getAssistantDecisionMeta(event.decision, config, "pending"),
                 decision: event.decision && typeof event.decision === "object" ? event.decision : message.decision || null,
                 contextRequest: event.decision?.contextRequest || event.contextRequest || message.contextRequest || null,
                 contextGuard: event.decision?.contextGuard || event.contextGuard || message.contextGuard || null,
                 semanticAction: semanticAction && typeof semanticAction === "object" ? semanticAction : message.semanticAction || null,
                 actionReview: actionReview && typeof actionReview === "object" ? actionReview : message.actionReview || null,
+                suppressActions: suppressActions || message.suppressActions === true,
               }));
               return;
             }
             if (event.type === "workflow_result" && event.workflow) {
               flushAssistantDeltaBuffer(assistantMessage.id, { force: true });
-              artifactRefs = addWorkflowArtifacts(event.workflow, text, { render: false });
+              const conversationBinding = bindUserMessageToWorkflow(userMessageId, event.workflow);
+              if (isLiuyaoWorkflow(event.workflow)) {
+                activeLiuyaoWorkflow = event.workflow;
+                applyLiuyaoAiResult(event.workflow, {
+                  turnId: event.requestId || assistantRequest.requestId,
+                  answer: event.workflow?.result?.answer || event.workflow?.result?.interpretation?.summary || "",
+                  pendingInterpretation: event.phase === "chart_ready",
+                });
+                artifactRefs = { pendingIds: [], generatedIds: [] };
+              } else {
+                artifactRefs = addWorkflowArtifacts(event.workflow, text, { render: false });
+              }
               streamWorkflowHandled = true;
               updateMessage(assistantMessage.id, (message) => ({
                 ...message,
                 workflow: event.workflow && typeof event.workflow === "object" ? event.workflow : message.workflow || null,
+                ...conversationBinding,
               }));
               mergeArtifactRefsToMessage(assistantMessage.id, artifactRefs);
             }
@@ -4523,8 +4803,19 @@
         });
         flushAssistantDeltaBuffer(assistantMessage.id, { force: true });
         const finalResult = assistantResult || {};
+        const finalConversationBinding = finalResult.workflow
+          ? bindUserMessageToWorkflow(userMessageId, finalResult.workflow)
+          : {};
         if (finalResult.workflow && !streamWorkflowHandled) {
-          artifactRefs = addWorkflowArtifacts(finalResult.workflow, text, { render: false });
+          if (isLiuyaoWorkflow(finalResult.workflow)) {
+            applyLiuyaoAiResult(finalResult.workflow, {
+              turnId: finalResult.requestId || assistantRequest.requestId,
+              answer: finalResult.answer || finalResult.workflow?.result?.answer || "",
+            });
+            artifactRefs = { pendingIds: [], generatedIds: [] };
+          } else {
+            artifactRefs = addWorkflowArtifacts(finalResult.workflow, text, { render: false });
+          }
           mergeArtifactRefsToMessage(assistantMessage.id, artifactRefs);
         }
         if (finalResult.mode === "need_context_recompose") {
@@ -4595,15 +4886,19 @@
           || finalResult.decision?.actionReview
           || finalResult.contextSnapshot?.actionReview
           || null;
+        const suppressActions = isLiuyaoWorkflow(finalResult.workflow)
+          || isLiuyaoDecision(finalResult.decision, finalSemanticAction);
+        const finalIncomplete = finalResult.incomplete === true || finalResult.providerCompletion?.complete === false;
         updateMessage(assistantMessage.id, (message) => ({
           ...finalizeAssistantElapsedTimer(message),
-          state: "完成",
+          state: finalIncomplete ? "未完成" : "完成",
           paragraphs: buildAssistantTurnParagraphs(finalResult, text),
-          meta: getAssistantResultMeta(finalResult, config, assistantStartedAt),
+          meta: suppressActions ? "" : getAssistantResultMeta(finalResult, config, assistantStartedAt),
           decision: finalResult.decision && typeof finalResult.decision === "object" ? finalResult.decision : message.decision || null,
           contextRequest: finalResult.contextRequest || finalResult.decision?.contextRequest || message.contextRequest || null,
           contextGuard: finalResult.contextGuard || finalResult.contextSnapshot?.contextGuard || finalResult.decision?.contextGuard || message.contextGuard || null,
           workflow: finalResult.workflow && typeof finalResult.workflow === "object" ? finalResult.workflow : message.workflow || null,
+          ...finalConversationBinding,
           contextSnapshot: finalResult.contextSnapshot && typeof finalResult.contextSnapshot === "object"
             ? finalResult.contextSnapshot
             : message.contextSnapshot || null,
@@ -4611,6 +4906,7 @@
           actionReview: finalActionReview && typeof finalActionReview === "object" ? finalActionReview : message.actionReview || null,
           pendingIds: Array.from(new Set([...(message.pendingIds || []), ...(artifactRefs.pendingIds || [])])),
           generatedIds: Array.from(new Set([...(message.generatedIds || []), ...(artifactRefs.generatedIds || [])])),
+          suppressActions,
           showActions: false,
         }));
         const finalUiExpectation = resolveFinalTurnUiExpectation(turnUiExpectation, finalResult, text, {
@@ -4620,27 +4916,44 @@
         reconcileTurnUiExpectation(finalUiExpectation, "after_response_complete");
         queueNextActionsForMessage(assistantMessage.id);
         setStatus(
-          finalResult.mode === "need_more_context" || finalResult.contextRequest
+          finalIncomplete
+            ? "回答没有完整结束，已保留当前可见内容。"
+            : finalResult.mode === "need_more_context" || finalResult.contextRequest
             ? "需要你允许本轮参考更多数据。"
             : artifactRefs.pendingIds.length
               ? "已生成，等待你确认。"
               : finalResult.workflow
-                ? "AI 已完成处理，没有待确认产物。"
+                ? suppressActions
+                  ? "解卦已同步到右侧。"
+                  : "AI 已完成处理，没有待确认产物。"
                 : "AI 已回复。",
         );
       } catch (error) {
         flushAssistantDeltaBuffer(assistantMessage.id, { force: true });
         const message = getAssistantErrorMessage(error);
+        const cancelled = requestController?.signal?.aborted === true
+          || error?.name === "AbortError"
+          || error?.code === "AI_PROVIDER_REQUEST_ABORTED";
+        const currentMessage = getMessageById(assistantMessage.id);
+        const partialText = normalizeText(currentMessage?.streamText);
+        if (activeLiuyaoWorkflow) {
+          applyLiuyaoAiResult(activeLiuyaoWorkflow, {
+            turnId: assistantRequest.requestId,
+            pendingInterpretation: false,
+            interpretationFailed: true,
+          });
+        }
         updateMessage(assistantMessage.id, (current) => ({
           ...finalizeAssistantElapsedTimer(current),
-          state: "失败",
-          paragraphs: [message],
+          state: cancelled ? "已停止" : partialText || activeLiuyaoWorkflow ? "未完成" : "失败",
+          paragraphs: partialText ? splitAssistantAnswer(partialText) : [message],
           meta: "",
           showActions: false,
         }));
         queueNextActionsForMessage(assistantMessage.id);
         setStatus(message);
       } finally {
+        if (activeRequestController === requestController) activeRequestController = null;
         setBusy(false);
         finishActiveTurnScroll();
         if (deferredContextRerun) {
@@ -4699,57 +5012,6 @@
           confirmedAt: new Date().toISOString(),
         },
         updatedAt: new Date().toISOString(),
-      });
-    }
-
-    function resolveScheduleChangeFields(change, draft) {
-      const source = change && typeof change === "object" && !Array.isArray(change) ? change : {};
-      const after = source.after && typeof source.after === "object" && !Array.isArray(source.after) ? source.after : {};
-      const todoId = normalizeText(source.todoId || source.parentTodoId || source.target?.id || source.todo?.id);
-      const dueDate = normalizeText(after.dueDate || source.dueDate || draft?.dateRange?.start);
-      const startTime = normalizeText(after.startTime || after.start || source.startTime || source.start);
-      const endTime = normalizeText(after.endTime || after.end || source.endTime || source.end);
-      const startMinutes = parseClockToMinutes(startTime);
-      const endMinutes = parseClockToMinutes(endTime);
-      const durationMinutes = Number(source.durationMinutes) || (startMinutes !== null && endMinutes !== null ? endMinutes - startMinutes : 0);
-      if (!todoId || !isValidDate(dueDate) || startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
-        return null;
-      }
-      return {
-        todoId,
-        dueDate,
-        startTime,
-        endTime,
-        durationMinutes: Math.max(5, Math.min(24 * 60, Math.round(durationMinutes || endMinutes - startMinutes))),
-      };
-    }
-
-    function cloneTodoForSplitBlock(baseTodo, fields, change, draft, nowIso) {
-      const blockIndex = Number.isFinite(Number(change?.blockIndex)) ? Number(change.blockIndex) : 1;
-      const blockCount = Number.isFinite(Number(change?.blockCount)) ? Number(change.blockCount) : 2;
-      return normalizeTodo({
-        ...baseTodo,
-        id: createId("todo"),
-        title: blockCount > 1 ? `${baseTodo.title}（${blockIndex + 1}/${blockCount}）` : baseTodo.title,
-        dueDate: fields.dueDate,
-        startTime: fields.startTime,
-        endTime: fields.endTime,
-        estimatedMinutes: fields.durationMinutes,
-        remainingMinutes: fields.durationMinutes,
-        completed: false,
-        calendarSynced: false,
-        syncState: "dirty",
-        externalCalendarId: "",
-        aiMeta: {
-          ...(baseTodo.aiMeta || {}),
-          source: "ai_schedule_draft",
-          sourceTodoId: baseTodo.id,
-          scheduleDraftId: draft?.draftId || "",
-          scheduleChangeId: change?.changeId || "",
-          scheduleAppliedAt: nowIso,
-        },
-        createdAt: nowIso,
-        updatedAt: nowIso,
       });
     }
 
@@ -4860,89 +5122,11 @@
       }
     }
 
-    function applyScheduleDraftToTodos(draft) {
-      const changes = Array.isArray(draft?.changes) ? draft.changes : [];
-      const currentTodos = Array.isArray(getTodos()) ? getTodos() : [];
-      if (!changes.length || !currentTodos.length) {
-        return { applied: 0, created: 0, missing: changes.length, invalid: 0, appliedIds: [], createdIds: [], updatedIds: [] };
+    function applyScheduleDraftToTodos(draft, options = {}) {
+      if (typeof deps.applyTodoScheduleDraft !== "function") {
+        return { feasible: false, applied: 0, created: 0, invalid: 1, missing: 0, appliedIds: [], createdIds: [], updatedIds: [], message: "原生排程写入模块不可用，未应用草稿。" };
       }
-
-      const nowIso = new Date().toISOString();
-      const nextTodos = currentTodos.map((todo) => ({
-        ...todo,
-        tags: Array.isArray(todo.tags) ? [...todo.tags] : todo.tags,
-        dependencies: Array.isArray(todo.dependencies) ? [...todo.dependencies] : todo.dependencies,
-        aiMeta: todo.aiMeta && typeof todo.aiMeta === "object" && !Array.isArray(todo.aiMeta) ? { ...todo.aiMeta } : todo.aiMeta,
-      }));
-      const todoById = new Map(nextTodos.map((todo) => [String(todo.id), todo]));
-      const appliedOriginalTodoIds = new Set();
-      const touchedDates = new Set();
-      const appliedIds = [];
-      const createdIds = [];
-      const updatedIds = [];
-      let created = 0;
-      let missing = 0;
-      let invalid = 0;
-
-      for (const change of changes) {
-        const fields = resolveScheduleChangeFields(change, draft);
-        if (!fields) {
-          invalid += 1;
-          continue;
-        }
-        const baseTodo = todoById.get(fields.todoId);
-        if (!baseTodo || baseTodo.completed) {
-          missing += 1;
-          continue;
-        }
-
-        const targetTodo = appliedOriginalTodoIds.has(fields.todoId)
-          ? cloneTodoForSplitBlock(baseTodo, fields, change, draft, nowIso)
-          : baseTodo;
-        if (targetTodo !== baseTodo) {
-          const order = Number(getNextTodoOrderForDate(fields.dueDate));
-          if (Number.isFinite(order)) targetTodo.orderInDay = order + created;
-          nextTodos.push(targetTodo);
-          todoById.set(String(targetTodo.id), targetTodo);
-          createdIds.push(String(targetTodo.id));
-          created += 1;
-        } else {
-          updatedIds.push(String(targetTodo.id));
-        }
-
-        targetTodo.dueDate = fields.dueDate;
-        targetTodo.startTime = fields.startTime;
-        targetTodo.endTime = fields.endTime;
-        targetTodo.estimatedMinutes = fields.durationMinutes;
-        targetTodo.remainingMinutes = Math.min(
-          Math.max(0, Number(targetTodo.remainingMinutes) || fields.durationMinutes),
-          fields.durationMinutes,
-        );
-        targetTodo.aiMeta = {
-          ...(targetTodo.aiMeta || {}),
-          source: targetTodo.aiMeta?.source || "ai_schedule_draft",
-          scheduleSource: "ai_schedule_draft",
-          scheduleDraftId: draft?.draftId || "",
-          scheduleChangeId: change?.changeId || "",
-          scheduleAppliedAt: nowIso,
-        };
-        markTodoPlanningDirty(targetTodo, nowIso);
-        touchedDates.add(fields.dueDate);
-        appliedOriginalTodoIds.add(fields.todoId);
-        appliedIds.push(String(targetTodo.id));
-      }
-
-      if (!appliedIds.length) {
-        return { applied: 0, created, missing, invalid, appliedIds: [], createdIds, updatedIds };
-      }
-
-      setTodos(nextTodos);
-      for (const date of touchedDates) {
-        normalizeTodoOrderByClockForDate(date);
-      }
-      const finalTodos = Array.isArray(getTodos()) ? getTodos() : nextTodos;
-      saveTodos(finalTodos);
-      return { applied: appliedIds.length, created, missing, invalid, appliedIds, createdIds, updatedIds };
+      return deps.applyTodoScheduleDraft(draft, options);
     }
 
     function applyTodoCompletionDraft(draft) {
@@ -5123,6 +5307,13 @@
           setStatus("空排程草稿不能确认。");
           return;
         }
+        const preflight = applyScheduleDraftToTodos(item.payload, { dryRun: true });
+        if (!preflight.feasible) {
+          setPendingStatus(item.id, "rejected");
+          appendMessage({ role: "assistant", state: "未应用", paragraphs: [preflight.message || "草稿已失效，请重新生成。"] });
+          setStatus(preflight.message || "草稿已失效，未修改待办。");
+          return;
+        }
         const confirmPayload = await requestJson(`/api/ai/schedule-drafts/${encodeURIComponent(draftId)}/confirm`, {
           method: "POST",
           body: JSON.stringify({ confirmedBy: "sidebar" }),
@@ -5132,27 +5323,26 @@
           ? responseDraft
           : { ...(item.payload || {}), ...(responseDraft || {}), changes: item.payload?.changes || [] };
         const applyResult = applyScheduleDraftToTodos(confirmedDraft);
-        setPendingStatus(item.id, "confirmed");
+        setPendingStatus(item.id, applyResult.applied > 0 ? "confirmed" : "rejected");
         if (applyResult.applied > 0) {
           runPostApplyUiReaction(getPostApplyReaction(item), {
             ...applyResult,
             targetIds: applyResult.appliedIds,
           });
           const extra = applyResult.created > 0 ? `，其中新增 ${applyResult.created} 个拆分时间块` : "";
-          const skipped = applyResult.missing || applyResult.invalid ? `；${applyResult.missing + applyResult.invalid} 个变更未应用` : "";
           appendMessage({
             role: "assistant",
             state: "已确认",
-            paragraphs: [`排程草稿已确认，并已应用 ${applyResult.applied} 个时间块到本地待办${extra}${skipped}。这些待办已标记为待同步，日历/提醒仍走现有同步流程。`],
+            paragraphs: [`排程草稿已确认，并已应用 ${applyResult.applied} 个时间块到本地待办${extra}。这些待办已标记为待同步，日历/提醒仍走现有同步流程。`],
           });
           setStatus("排程草稿已应用到本地待办。");
         } else {
           appendMessage({
             role: "assistant",
-            state: "已确认",
-            paragraphs: ["排程草稿已确认，但没有匹配到可写入的本地待办，所以界面不会发生排程变化。请重新生成包含待办引用的排程草稿。"],
+            state: "未应用",
+            paragraphs: [applyResult.message || "草稿确认期间数据发生变化，未应用任何调整，请重新生成。"],
           });
-          setStatus("排程草稿已确认，但未应用。");
+          setStatus(applyResult.message || "排程草稿未应用，待办保持不变。");
         }
         return;
       }
@@ -5365,6 +5555,15 @@
       void runAction("assistant", { text });
     }
 
+    function handleStopClick(event) {
+      event.preventDefault();
+      handleAiPageActivity();
+      if (!isBusy || !activeRequestController) return;
+      stopButton.disabled = true;
+      setStatus("正在停止本轮生成。");
+      activeRequestController.abort();
+    }
+
     function handleProviderSwitchClick(event) {
       event.preventDefault();
       handleAiPageActivity();
@@ -5504,6 +5703,7 @@
       input?.addEventListener("keydown", handleInputKeydown);
       contextScopeButton?.addEventListener("click", handleContextScopeClick);
       providerSwitchButton?.addEventListener("click", handleProviderSwitchClick);
+      stopButton?.addEventListener("click", handleStopClick);
       providerSwitchLogo?.addEventListener("error", () => {
         if (!providerSwitchLogo || providerSwitchLogo.dataset.logoFallback === "1") return;
         providerSwitchLogo.dataset.logoFallback = "1";
@@ -5524,6 +5724,7 @@
       void refreshActionRegistry();
       void refreshProviderSwitchIdentity();
       void refreshPendingFromServer();
+      syncLiuyaoContext();
     }
 
     return {
@@ -5531,6 +5732,7 @@
       close,
       open,
       isOpen,
+      syncLiuyaoContext,
     };
   }
 

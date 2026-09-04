@@ -1,4 +1,8 @@
+/* global window */
+
 (function attachTimeQualityScoreWheelModule(globalScope) {
+  "use strict";
+
   if (!globalScope) return;
 
   function toNumber(value, fallback) {
@@ -6,21 +10,24 @@
     return Number.isFinite(parsed) ? parsed : fallback;
   }
 
-  function createScoreWheelModule(deps = {}) {
-    const DEFAULT_SCORE = toNumber(deps.DEFAULT_SCORE, 7);
-    const SCORE_INPUT_WHEEL_PIXEL_THRESHOLD = toNumber(deps.SCORE_INPUT_WHEEL_PIXEL_THRESHOLD, 60);
-    const SCORE_INPUT_WHEEL_LINE_THRESHOLD = toNumber(deps.SCORE_INPUT_WHEEL_LINE_THRESHOLD, 3);
-    const SCORE_INPUT_WHEEL_RESET_MS = toNumber(deps.SCORE_INPUT_WHEEL_RESET_MS, 220);
-    const SCORE_WHEEL_ITEM_SPACING_PX = toNumber(deps.SCORE_WHEEL_ITEM_SPACING_PX, 25.5);
-    const SCORE_WHEEL_DRAG_STEP_PX = toNumber(deps.SCORE_WHEEL_DRAG_STEP_PX, 12);
-    const SCORE_WHEEL_SCROLL_THRESHOLD_PX = toNumber(deps.SCORE_WHEEL_SCROLL_THRESHOLD_PX, 14);
-    const SCORE_WHEEL_ITEM_VISIBLE_RADIUS = toNumber(deps.SCORE_WHEEL_ITEM_VISIBLE_RADIUS, 3);
-    const SCORE_WHEEL_INERTIA_MIN_VELOCITY = toNumber(deps.SCORE_WHEEL_INERTIA_MIN_VELOCITY, 0.045);
-    const SCORE_WHEEL_INERTIA_FRICTION_PER_FRAME = toNumber(deps.SCORE_WHEEL_INERTIA_FRICTION_PER_FRAME, 0.9);
-    const SCORE_WHEEL_INERTIA_MAX_DT_MS = toNumber(deps.SCORE_WHEEL_INERTIA_MAX_DT_MS, 34);
-    const SCORE_WHEEL_MAX_BOUNCES = toNumber(deps.SCORE_WHEEL_MAX_BOUNCES, 1);
-    const SCORE_WHEEL_BOUNCE_CLASS_HOLD_MS = toNumber(deps.SCORE_WHEEL_BOUNCE_CLASS_HOLD_MS, 190);
+  function clampScore(value, min = 1, max = 10) {
+    return Math.max(min, Math.min(max, Math.round(toNumber(value, min))));
+  }
 
+  function calculateScorePair(xRatio, yRatio, min = 1, max = 10) {
+    const safeMin = Number.isInteger(min) ? min : 1;
+    const safeMax = Number.isInteger(max) && max > safeMin ? max : 10;
+    const steps = safeMax - safeMin;
+    const x = Math.max(0, Math.min(1, toNumber(xRatio, 0)));
+    const y = Math.max(0, Math.min(1, toNumber(yRatio, 0)));
+    return {
+      quality: safeMin + Math.round(x * steps),
+      happiness: safeMax - Math.round(y * steps),
+    };
+  }
+
+  function createScoreWheelModule(deps = {}) {
+    const DEFAULT_SCORE = clampScore(deps.DEFAULT_SCORE || 7);
     const documentRef = deps.documentRef || globalScope.document || null;
     const windowRef = deps.windowRef || globalScope.window || globalScope;
     const scoreWheelPopover = deps.scoreWheelPopover || null;
@@ -32,45 +39,15 @@
         : typeof windowRef.requestAnimationFrame === "function"
           ? windowRef.requestAnimationFrame.bind(windowRef)
           : (callback) => windowRef.setTimeout(callback, 16);
-    const cancelAnimationFrameFn =
-      typeof deps.cancelAnimationFrameFn === "function"
-        ? deps.cancelAnimationFrameFn
-        : typeof windowRef.cancelAnimationFrame === "function"
-          ? windowRef.cancelAnimationFrame.bind(windowRef)
-          : (id) => windowRef.clearTimeout(id);
-    const setTimeoutFn =
-      typeof deps.setTimeoutFn === "function"
-        ? deps.setTimeoutFn
-        : typeof windowRef.setTimeout === "function"
-          ? windowRef.setTimeout.bind(windowRef)
-          : globalScope.setTimeout.bind(globalScope);
-    const clearTimeoutFn =
-      typeof deps.clearTimeoutFn === "function"
-        ? deps.clearTimeoutFn
-        : typeof windowRef.clearTimeout === "function"
-          ? windowRef.clearTimeout.bind(windowRef)
-          : globalScope.clearTimeout.bind(globalScope);
 
-    const scoreInputWheelState = new WeakMap();
+    const pairByInput = new WeakMap();
     const boundInputs = new WeakSet();
+    const boundTriggers = new WeakSet();
     let globalEventsBound = false;
-    const scoreWheelPickerState = {
-      activeInput: null,
-      min: 1,
-      max: 10,
-      value: DEFAULT_SCORE,
-      dragPointerId: null,
-      dragStartY: 0,
-      dragStartValue: DEFAULT_SCORE,
-      dragLastY: 0,
-      dragLastTime: 0,
-      dragVelocityY: 0,
-      accumulatedWheelDelta: 0,
-      inertiaRafId: 0,
-      inertiaLastTime: 0,
-      inertiaVelocityY: 0,
-      inertiaBounceCount: 0,
-      bounceClassTimer: 0,
+    let legacyPendingInput = null;
+    const pickerState = {
+      pair: null,
+      pointerId: null,
     };
 
     function isNumberInput(input) {
@@ -81,508 +58,346 @@
       );
     }
 
-    function isHtmlElement(node) {
-      return typeof globalScope.HTMLElement !== "undefined" && node instanceof globalScope.HTMLElement;
-    }
-
-    function isElement(node) {
-      return typeof globalScope.Element !== "undefined" && node instanceof globalScope.Element;
-    }
-
     function isNode(node) {
       return typeof globalScope.Node !== "undefined" && node instanceof globalScope.Node;
     }
 
-    function getNow() {
-      if (typeof deps.nowFn === "function") return deps.nowFn();
-      if (windowRef.performance && typeof windowRef.performance.now === "function") {
-        return windowRef.performance.now();
+    function parseInputScore(input) {
+      if (!isNumberInput(input)) return null;
+      const value = Number.parseInt(String(input.value || ""), 10);
+      if (!Number.isInteger(value)) return null;
+      const min = Number.parseInt(String(input.min || "1"), 10);
+      const max = Number.parseInt(String(input.max || "10"), 10);
+      const safeMin = Number.isInteger(min) ? min : 1;
+      const safeMax = Number.isInteger(max) ? max : 10;
+      return value >= safeMin && value <= safeMax ? value : null;
+    }
+
+    function getPairLimits(pair) {
+      const min = Number.parseInt(String(pair?.qualityInput?.min || "1"), 10);
+      const max = Number.parseInt(String(pair?.qualityInput?.max || "10"), 10);
+      return {
+        min: Number.isInteger(min) ? min : 1,
+        max: Number.isInteger(max) ? max : 10,
+      };
+    }
+
+    function getPairForInputs(qualityInput, happinessInput) {
+      const knownPair = pairByInput.get(qualityInput) || pairByInput.get(happinessInput);
+      if (
+        knownPair &&
+        knownPair.qualityInput === qualityInput &&
+        knownPair.happinessInput === happinessInput
+      ) {
+        return knownPair;
       }
-      return Date.now();
+      return registerRatingPair({ qualityInput, happinessInput });
     }
 
     function dispatchInputEvent(input, type) {
-      if (typeof EventCtor !== "function") return;
+      if (!isNumberInput(input) || typeof EventCtor !== "function") return;
       input.dispatchEvent(new EventCtor(type, { bubbles: true }));
     }
 
-    function bindScoreInputWheelControl(input) {
-      if (!isNumberInput(input)) return;
+    function getTriggerValueNode(trigger) {
+      return trigger?.querySelector?.("[data-score-pair-value]") || null;
+    }
 
-      input.addEventListener(
-        "wheel",
-        (event) => {
-          if (event.ctrlKey || event.metaKey || event.altKey) return;
+    function syncTrigger(pair) {
+      if (!pair?.trigger) return;
+      const quality = parseInputScore(pair.qualityInput);
+      const happiness = parseInputScore(pair.happinessInput);
+      const hasValue = Number.isInteger(quality) && Number.isInteger(happiness);
+      const disabled = Boolean(pair.qualityInput.disabled || pair.happinessInput.disabled);
+      const valueNode = getTriggerValueNode(pair.trigger);
+      const valueText = disabled ? "未来时段" : hasValue ? `${quality}*${happiness}` : "--*--";
 
-          const rawValue = Number.parseInt(String(input.value || ""), 10);
-          if (!Number.isFinite(rawValue)) return;
-
-          const parsedStep = Number.parseFloat(String(input.step || ""));
-          const step = Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 1;
-          const parsedMin = Number.parseFloat(String(input.min || ""));
-          const parsedMax = Number.parseFloat(String(input.max || ""));
-          const min = Number.isFinite(parsedMin) ? parsedMin : -Infinity;
-          const max = Number.isFinite(parsedMax) ? parsedMax : Infinity;
-          const threshold =
-            event.deltaMode === 1 ? SCORE_INPUT_WHEEL_LINE_THRESHOLD : SCORE_INPUT_WHEEL_PIXEL_THRESHOLD;
-
-          const prevState = scoreInputWheelState.get(input);
-          const state = prevState ? { ...prevState } : { accumulatedDelta: 0, lastTime: 0 };
-          const now = getNow();
-
-          if (now - state.lastTime > SCORE_INPUT_WHEEL_RESET_MS) {
-            state.accumulatedDelta = 0;
-          }
-          state.lastTime = now;
-          state.accumulatedDelta += event.deltaY;
-
-          let steps = 0;
-          while (state.accumulatedDelta >= threshold) {
-            steps += 1;
-            state.accumulatedDelta -= threshold;
-          }
-          while (state.accumulatedDelta <= -threshold) {
-            steps -= 1;
-            state.accumulatedDelta += threshold;
-          }
-
-          scoreInputWheelState.set(input, state);
-          event.preventDefault();
-          if (steps === 0) return;
-
-          const nextValue = Math.max(min, Math.min(max, rawValue - steps * step));
-          if (!Number.isFinite(nextValue) || nextValue === rawValue) return;
-
-          input.value = Number.isInteger(step) ? String(Math.round(nextValue)) : String(nextValue);
-          dispatchInputEvent(input, "input");
-          dispatchInputEvent(input, "change");
-        },
-        { passive: false },
+      if (valueNode) valueNode.textContent = valueText;
+      pair.trigger.disabled = disabled;
+      pair.trigger.classList.toggle("is-empty", !hasValue && !disabled);
+      pair.trigger.classList.toggle("is-score-open", pickerState.pair === pair);
+      pair.trigger.setAttribute(
+        "aria-label",
+        disabled ? "未来时段暂不评分" : hasValue ? `评分 ${quality} 乘 ${happiness}` : "设置质量与幸福感评分",
       );
+      pair.trigger.setAttribute("aria-expanded", pickerState.pair === pair ? "true" : "false");
     }
 
-    function bindScoreWheelPicker(input) {
-      if (!isNumberInput(input)) return;
+    function renderScoreQuadrant() {
+      const pair = pickerState.pair;
+      if (!pair || !scoreWheelTrack) return;
+      const marker = scoreWheelTrack.querySelector(".score-quadrant-marker");
+      const markerValue = scoreWheelTrack.querySelector(".score-quadrant-marker-value");
+      const quality = parseInputScore(pair.qualityInput);
+      const happiness = parseInputScore(pair.happinessInput);
+      const hasValue = Number.isInteger(quality) && Number.isInteger(happiness);
 
-      const openPicker = () => {
-        if (input.disabled || input.readOnly) return;
-        openScoreWheelPopoverForInput(input);
-      };
-
-      input.addEventListener("focus", openPicker);
-      input.addEventListener("click", openPicker);
-      input.addEventListener("input", () => {
-        if (scoreWheelPickerState.activeInput !== input) return;
-        const parsed = Number.parseInt(String(input.value || ""), 10);
-        if (!Number.isInteger(parsed)) return;
-        setScoreWheelValue(parsed, { emitInputEvent: false, emitChangeEvent: false, fromInput: true });
-      });
-    }
-
-    function isScoreWheelPopoverOpen() {
-      return Boolean(scoreWheelPopover && !scoreWheelPopover.hidden && scoreWheelPickerState.activeInput);
-    }
-
-    function openScoreWheelPopoverForInput(input) {
-      if (!isNumberInput(input) || !scoreWheelPopover || !scoreWheelTrack) return;
-
-      const parsedMin = Number.parseInt(String(input.min || ""), 10);
-      const parsedMax = Number.parseInt(String(input.max || ""), 10);
-      const min = Number.isInteger(parsedMin) ? parsedMin : 1;
-      const max = Number.isInteger(parsedMax) ? parsedMax : 10;
-      const parsedValue = Number.parseInt(String(input.value || ""), 10);
-      const value = Number.isInteger(parsedValue) ? parsedValue : DEFAULT_SCORE;
-      const normalizedValue = Math.max(min, Math.min(max, value));
-
-      const previousInput = scoreWheelPickerState.activeInput;
-      if (isNumberInput(previousInput) && previousInput !== input) {
-        previousInput.classList.remove("is-wheel-open");
+      if (marker) {
+        marker.hidden = !hasValue;
+        marker.classList.toggle("label-left", hasValue && quality >= 9);
+        if (hasValue) {
+          const { min, max } = getPairLimits(pair);
+          const steps = Math.max(1, max - min);
+          marker.style.left = `${((quality - min) / steps) * 100}%`;
+          marker.style.top = `${((max - happiness) / steps) * 100}%`;
+        }
       }
-
-      scoreWheelPickerState.activeInput = input;
-      scoreWheelPickerState.min = min;
-      scoreWheelPickerState.max = max;
-      scoreWheelPickerState.value = normalizedValue;
-      scoreWheelPickerState.accumulatedWheelDelta = 0;
-      scoreWheelPickerState.dragPointerId = null;
-      scoreWheelPickerState.dragVelocityY = 0;
-      stopScoreWheelInertia();
-      clearScoreWheelBounceClass();
-      input.classList.add("is-wheel-open");
-
-      scoreWheelPopover.hidden = false;
-      scoreWheelPopover.setAttribute("aria-hidden", "false");
-      renderScoreWheelPopover();
-      positionScoreWheelPopover(input);
-
-      requestAnimationFrameFn(() => {
-        if (!isScoreWheelPopoverOpen()) return;
-        scoreWheelPopover.classList.add("is-visible");
-      });
+      if (markerValue) markerValue.textContent = hasValue ? `${quality}*${happiness}` : "";
+      scoreWheelTrack.setAttribute(
+        "aria-label",
+        hasValue
+          ? `质量 ${quality}，幸福感 ${happiness}。左右调整质量，上下调整幸福感`
+          : "尚未评分。点击选择质量与幸福感，或使用方向键从七分开始",
+      );
+      syncTrigger(pair);
     }
 
-    function closeScoreWheelPopover({ keepInputFocus = true } = {}) {
-      if (!scoreWheelPopover) return;
-      stopScoreWheelInertia();
-      clearScoreWheelBounceClass();
+    function setPairValues(pair, quality, happiness, { emitInput = true, emitChange = true } = {}) {
+      if (!pair) return;
+      const { min, max } = getPairLimits(pair);
+      const nextQuality = clampScore(quality, min, max);
+      const nextHappiness = clampScore(happiness, min, max);
+      const previousQuality = parseInputScore(pair.qualityInput);
+      const previousHappiness = parseInputScore(pair.happinessInput);
 
-      const input = scoreWheelPickerState.activeInput;
-      if (isNumberInput(input)) {
-        input.classList.remove("is-wheel-open");
-        if (!keepInputFocus && documentRef && documentRef.activeElement === input) {
-          input.blur();
+      pair.qualityInput.value = String(nextQuality);
+      pair.happinessInput.value = String(nextHappiness);
+      renderScoreQuadrant();
+
+      if (emitInput && previousQuality !== nextQuality) dispatchInputEvent(pair.qualityInput, "input");
+      if (emitInput && previousHappiness !== nextHappiness) dispatchInputEvent(pair.happinessInput, "input");
+      if (emitChange && previousQuality !== nextQuality) dispatchInputEvent(pair.qualityInput, "change");
+      if (emitChange && previousHappiness !== nextHappiness) dispatchInputEvent(pair.happinessInput, "change");
+    }
+
+    function updatePairFromPointer(event) {
+      if (!pickerState.pair || !scoreWheelTrack) return;
+      const rect = scoreWheelTrack.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const { min, max } = getPairLimits(pickerState.pair);
+      const pair = calculateScorePair(
+        (event.clientX - rect.left) / rect.width,
+        (event.clientY - rect.top) / rect.height,
+        min,
+        max,
+      );
+      setPairValues(pickerState.pair, pair.quality, pair.happiness);
+    }
+
+    function positionScoreWheelPopover(pair) {
+      if (!pair || !scoreWheelPopover) return;
+      const anchor = pair.trigger || pair.qualityInput;
+      if (!anchor?.getBoundingClientRect) return;
+      const dialog = anchor.closest?.('[role="dialog"]');
+      const anchorRect = (dialog || anchor).getBoundingClientRect();
+      const width = scoreWheelPopover.offsetWidth || 252;
+      const height = scoreWheelPopover.offsetHeight || 282;
+      const viewportWidth = toNumber(windowRef.innerWidth, 1024);
+      const viewportHeight = toNumber(windowRef.innerHeight, 768);
+      const gap = 12;
+      const padding = 12;
+
+      let placement = "right";
+      let left = anchorRect.right + gap;
+      let top = anchorRect.top + (anchorRect.height - height) / 2;
+
+      if (left + width > viewportWidth - padding) {
+        const leftCandidate = anchorRect.left - width - gap;
+        if (leftCandidate >= padding) {
+          placement = "left";
+          left = leftCandidate;
+        } else {
+          placement = "below";
+          left = anchorRect.left + (anchorRect.width - width) / 2;
+          top = anchorRect.bottom + gap;
+          if (top + height > viewportHeight - padding) {
+            placement = "above";
+            top = anchorRect.top - height - gap;
+          }
         }
       }
 
-      scoreWheelPickerState.activeInput = null;
-      scoreWheelPickerState.dragPointerId = null;
-      scoreWheelPickerState.dragVelocityY = 0;
-      scoreWheelPickerState.accumulatedWheelDelta = 0;
-      scoreWheelPopover.classList.remove("is-visible", "is-dragging");
-      scoreWheelPopover.hidden = true;
-      scoreWheelPopover.setAttribute("aria-hidden", "true");
-      if (scoreWheelTrack) {
-        scoreWheelTrack.textContent = "";
-      }
-    }
-
-    function positionScoreWheelPopover(input) {
-      if (!isHtmlElement(input) || !scoreWheelPopover) return;
-      const rect = input.getBoundingClientRect();
-      const width = scoreWheelPopover.offsetWidth || 66;
-      const height = scoreWheelPopover.offsetHeight || 99;
-      const gap = 10;
-      const viewportPadding = 8;
-      const viewportWidth = toNumber(windowRef.innerWidth, 1024);
-      const viewportHeight = toNumber(windowRef.innerHeight, 768);
-
-      let left = rect.left;
-      left = Math.max(viewportPadding, Math.min(viewportWidth - width - viewportPadding, left));
-
-      let top = rect.bottom + gap;
-      if (top + height > viewportHeight - viewportPadding) {
-        top = rect.top - height - gap;
-      }
-      top = Math.max(viewportPadding, Math.min(viewportHeight - height - viewportPadding, top));
-
+      left = Math.max(padding, Math.min(viewportWidth - width - padding, left));
+      top = Math.max(padding, Math.min(viewportHeight - height - padding, top));
+      scoreWheelPopover.dataset.placement = placement;
       scoreWheelPopover.style.left = `${Math.round(left)}px`;
       scoreWheelPopover.style.top = `${Math.round(top)}px`;
     }
 
-    function renderScoreWheelPopover() {
-      if (!scoreWheelTrack || !isScoreWheelPopoverOpen() || !documentRef) return;
-
-      const { min, max, value } = scoreWheelPickerState;
-      scoreWheelTrack.textContent = "";
-
-      for (let option = min; option <= max; option += 1) {
-        const distance = option - value;
-        const absDistance = Math.abs(distance);
-
-        const item = documentRef.createElement("button");
-        item.type = "button";
-        item.className = "score-wheel-item";
-        item.dataset.value = String(option);
-        item.setAttribute("role", "option");
-        item.setAttribute("aria-selected", absDistance === 0 ? "true" : "false");
-        item.textContent = String(option);
-
-        const translateY = distance * SCORE_WHEEL_ITEM_SPACING_PX;
-        const rotateX = -distance * 17;
-        const scale = absDistance === 0 ? 1.8 : Math.max(0.62, 1 - absDistance * 0.1);
-        const opacity = absDistance > SCORE_WHEEL_ITEM_VISIBLE_RADIUS ? 0 : Math.max(0.08, 1 - absDistance * 0.22);
-
-        item.style.transform = `translate3d(0, ${translateY}px, 0) rotateX(${rotateX}deg) scale(${scale})`;
-        item.style.opacity = String(opacity);
-        item.style.zIndex = String(40 - absDistance);
-        item.style.pointerEvents = absDistance > SCORE_WHEEL_ITEM_VISIBLE_RADIUS ? "none" : "auto";
-
-        if (absDistance === 0) {
-          item.classList.add("is-active");
-        }
-
-        scoreWheelTrack.appendChild(item);
-      }
+    function isScoreWheelPopoverOpen() {
+      return Boolean(scoreWheelPopover && !scoreWheelPopover.hidden && pickerState.pair);
     }
 
-    function setScoreWheelValue(nextValue, { emitInputEvent = true, emitChangeEvent = true, fromInput = false } = {}) {
-      const input = scoreWheelPickerState.activeInput;
-      if (!isNumberInput(input)) return;
-
-      const clamped = Math.max(scoreWheelPickerState.min, Math.min(scoreWheelPickerState.max, Math.round(nextValue)));
-      const previousValue = scoreWheelPickerState.value;
-      const inputValue = Number.parseInt(String(input.value || ""), 10);
-
-      scoreWheelPickerState.value = clamped;
-      if (!Number.isInteger(inputValue) || inputValue !== clamped) {
-        input.value = String(clamped);
-      }
-
-      renderScoreWheelPopover();
-
-      if (fromInput || clamped === previousValue) return;
-      if (emitInputEvent) {
-        dispatchInputEvent(input, "input");
-      }
-      if (emitChangeEvent) {
-        dispatchInputEvent(input, "change");
-      }
-    }
-
-    function applyScoreWheelDelta(deltaY, thresholdPx) {
-      scoreWheelPickerState.accumulatedWheelDelta += deltaY;
-
-      let steps = 0;
-      while (scoreWheelPickerState.accumulatedWheelDelta >= thresholdPx) {
-        steps += 1;
-        scoreWheelPickerState.accumulatedWheelDelta -= thresholdPx;
-      }
-      while (scoreWheelPickerState.accumulatedWheelDelta <= -thresholdPx) {
-        steps -= 1;
-        scoreWheelPickerState.accumulatedWheelDelta += thresholdPx;
-      }
-
-      if (steps === 0) {
-        return { changed: false, hitBoundary: false };
-      }
-
-      const requested = scoreWheelPickerState.value + steps;
-      const previous = scoreWheelPickerState.value;
-      const hitBoundary = requested < scoreWheelPickerState.min || requested > scoreWheelPickerState.max;
-      setScoreWheelValue(requested);
-      const changed = scoreWheelPickerState.value !== previous;
-      return { changed, hitBoundary };
-    }
-
-    function clearScoreWheelBounceClass() {
+    function closeScoreWheelPopover({ keepInputFocus = true } = {}) {
       if (!scoreWheelPopover) return;
-      if (scoreWheelPickerState.bounceClassTimer) {
-        clearTimeoutFn(scoreWheelPickerState.bounceClassTimer);
-        scoreWheelPickerState.bounceClassTimer = 0;
-      }
-      scoreWheelPopover.classList.remove("is-bounce-min", "is-bounce-max");
-    }
-
-    function triggerScoreWheelBoundaryBounce(direction) {
-      if (!scoreWheelPopover) return;
-      clearScoreWheelBounceClass();
-      scoreWheelPopover.classList.add(direction === "min" ? "is-bounce-min" : "is-bounce-max");
-      scoreWheelPickerState.bounceClassTimer = setTimeoutFn(() => {
-        if (!scoreWheelPopover) return;
-        scoreWheelPopover.classList.remove("is-bounce-min", "is-bounce-max");
-        scoreWheelPickerState.bounceClassTimer = 0;
-      }, SCORE_WHEEL_BOUNCE_CLASS_HOLD_MS);
-    }
-
-    function stopScoreWheelInertia() {
-      if (scoreWheelPickerState.inertiaRafId) {
-        cancelAnimationFrameFn(scoreWheelPickerState.inertiaRafId);
-        scoreWheelPickerState.inertiaRafId = 0;
-      }
-      scoreWheelPickerState.inertiaLastTime = 0;
-      scoreWheelPickerState.inertiaVelocityY = 0;
-      scoreWheelPickerState.inertiaBounceCount = 0;
-    }
-
-    function stepScoreWheelInertia(timestamp) {
-      if (!isScoreWheelPopoverOpen()) {
-        stopScoreWheelInertia();
-        return;
-      }
-
-      const lastTime = scoreWheelPickerState.inertiaLastTime || timestamp;
-      const elapsedMs = Math.max(1, timestamp - lastTime);
-      const dtMs = Math.min(SCORE_WHEEL_INERTIA_MAX_DT_MS, elapsedMs);
-      scoreWheelPickerState.inertiaLastTime = timestamp;
-
-      const result = applyScoreWheelDelta(scoreWheelPickerState.inertiaVelocityY * dtMs, SCORE_WHEEL_DRAG_STEP_PX);
-
-      if (result.hitBoundary) {
-        const isMaxSide = scoreWheelPickerState.inertiaVelocityY > 0;
-        triggerScoreWheelBoundaryBounce(isMaxSide ? "max" : "min");
-
-        if (scoreWheelPickerState.inertiaBounceCount >= SCORE_WHEEL_MAX_BOUNCES) {
-          stopScoreWheelInertia();
-          return;
-        }
-
-        scoreWheelPickerState.inertiaBounceCount += 1;
-        scoreWheelPickerState.inertiaVelocityY *= -0.35;
-        scoreWheelPickerState.accumulatedWheelDelta = 0;
-      } else {
-        const friction = Math.pow(SCORE_WHEEL_INERTIA_FRICTION_PER_FRAME, dtMs / 16.6667);
-        scoreWheelPickerState.inertiaVelocityY *= friction;
-      }
-
-      if (Math.abs(scoreWheelPickerState.inertiaVelocityY) < SCORE_WHEEL_INERTIA_MIN_VELOCITY) {
-        stopScoreWheelInertia();
-        return;
-      }
-
-      if (!result.changed && !result.hitBoundary) {
-        stopScoreWheelInertia();
-        return;
-      }
-
-      scoreWheelPickerState.inertiaRafId = requestAnimationFrameFn(stepScoreWheelInertia);
-    }
-
-    function startScoreWheelInertia(initialVelocityY) {
-      if (!isScoreWheelPopoverOpen()) return;
-      stopScoreWheelInertia();
-      scoreWheelPickerState.inertiaVelocityY = initialVelocityY;
-      scoreWheelPickerState.inertiaLastTime = 0;
-      scoreWheelPickerState.inertiaBounceCount = 0;
-      scoreWheelPickerState.inertiaRafId = requestAnimationFrameFn(stepScoreWheelInertia);
-    }
-
-    function handleScoreWheelPopoverWheel(event) {
-      if (!isScoreWheelPopoverOpen()) return;
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-
-      event.preventDefault();
-      stopScoreWheelInertia();
-      const threshold = event.deltaMode === 1 ? 1 : SCORE_WHEEL_SCROLL_THRESHOLD_PX;
-      const result = applyScoreWheelDelta(event.deltaY, threshold);
-      if (result.hitBoundary) {
-        triggerScoreWheelBoundaryBounce(event.deltaY > 0 ? "max" : "min");
+      const pair = pickerState.pair;
+      pickerState.pointerId = null;
+      pickerState.pair = null;
+      scoreWheelPopover.classList.remove("is-visible", "is-dragging");
+      scoreWheelPopover.hidden = true;
+      scoreWheelPopover.setAttribute("aria-hidden", "true");
+      if (pair) {
+        syncTrigger(pair);
+        if (!keepInputFocus && documentRef?.activeElement === pair.trigger) pair.trigger.blur();
       }
     }
 
-    function handleScoreWheelPopoverPointerDown(event) {
-      if (!isScoreWheelPopoverOpen()) return;
-      if (event.button !== 0) return;
-      if (!isElement(event.target) || !event.target.closest(".score-wheel-shell")) return;
-
-      stopScoreWheelInertia();
-      scoreWheelPickerState.dragPointerId = event.pointerId;
-      scoreWheelPickerState.dragStartY = event.clientY;
-      scoreWheelPickerState.dragStartValue = scoreWheelPickerState.value;
-      scoreWheelPickerState.dragLastY = event.clientY;
-      scoreWheelPickerState.dragLastTime = typeof event.timeStamp === "number" ? event.timeStamp : getNow();
-      scoreWheelPickerState.dragVelocityY = 0;
-      scoreWheelPickerState.accumulatedWheelDelta = 0;
-
-      if (scoreWheelPopover) {
-        scoreWheelPopover.classList.add("is-dragging");
+    function openForPair(qualityInput, happinessInput, options = {}) {
+      if (!scoreWheelPopover || !scoreWheelTrack) return false;
+      const pair = getPairForInputs(qualityInput, happinessInput);
+      if (!pair || pair.qualityInput.disabled || pair.happinessInput.disabled) {
+        if (pair) syncTrigger(pair);
+        return false;
       }
+
+      const previousPair = pickerState.pair;
+      pickerState.pair = pair;
+      if (previousPair && previousPair !== pair) syncTrigger(previousPair);
+      scoreWheelPopover.hidden = false;
+      scoreWheelPopover.setAttribute("aria-hidden", "false");
+      renderScoreQuadrant();
+      positionScoreWheelPopover(pair);
+      requestAnimationFrameFn(() => {
+        if (!isScoreWheelPopoverOpen() || pickerState.pair !== pair) return;
+        scoreWheelPopover.classList.add("is-visible");
+        if (options.focus !== false && typeof scoreWheelTrack.focus === "function") scoreWheelTrack.focus();
+      });
+      return true;
+    }
+
+    function registerRatingPair({ qualityInput, happinessInput, trigger = null } = {}) {
+      if (!isNumberInput(qualityInput) || !isNumberInput(happinessInput)) return null;
+      const existing = pairByInput.get(qualityInput);
+      const pair = existing || { qualityInput, happinessInput, trigger: null };
+      if (trigger) pair.trigger = trigger;
+      pairByInput.set(qualityInput, pair);
+      pairByInput.set(happinessInput, pair);
+
+      for (const input of [qualityInput, happinessInput]) {
+        if (boundInputs.has(input)) continue;
+        boundInputs.add(input);
+        input.addEventListener("input", () => {
+          syncTrigger(pair);
+          if (pickerState.pair === pair) renderScoreQuadrant();
+        });
+        input.addEventListener("focus", () => {
+          if (!input.disabled) openForPair(qualityInput, happinessInput);
+        });
+      }
+
+      if (pair.trigger && !boundTriggers.has(pair.trigger)) {
+        boundTriggers.add(pair.trigger);
+        pair.trigger.addEventListener("click", () => {
+          if (pickerState.pair === pair && isScoreWheelPopoverOpen()) {
+            closeScoreWheelPopover();
+            return;
+          }
+          openForPair(qualityInput, happinessInput);
+        });
+      }
+      syncTrigger(pair);
+      return pair;
+    }
+
+    function handlePointerDown(event) {
+      if (!isScoreWheelPopoverOpen() || event.button !== 0) return;
+      pickerState.pointerId = event.pointerId;
+      scoreWheelPopover.classList.add("is-dragging");
+      scoreWheelTrack.setPointerCapture?.(event.pointerId);
+      scoreWheelTrack.focus?.();
+      updatePairFromPointer(event);
       event.preventDefault();
     }
 
-    function handleScoreWheelPopoverPointerMove(event) {
-      if (!isScoreWheelPopoverOpen()) return;
-      if (scoreWheelPickerState.dragPointerId !== event.pointerId) return;
-
-      const pointerTime = typeof event.timeStamp === "number" ? event.timeStamp : getNow();
-      const dt = Math.max(1, pointerTime - scoreWheelPickerState.dragLastTime);
-      const deltaSinceLast = event.clientY - scoreWheelPickerState.dragLastY;
-      const instantVelocity = deltaSinceLast / dt;
-      scoreWheelPickerState.dragVelocityY = scoreWheelPickerState.dragVelocityY * 0.62 + instantVelocity * 0.38;
-      scoreWheelPickerState.dragLastY = event.clientY;
-      scoreWheelPickerState.dragLastTime = pointerTime;
-
-      const result = applyScoreWheelDelta(deltaSinceLast, SCORE_WHEEL_DRAG_STEP_PX);
-      if (result.hitBoundary) {
-        triggerScoreWheelBoundaryBounce(deltaSinceLast > 0 ? "max" : "min");
-      }
+    function handlePointerMove(event) {
+      if (!isScoreWheelPopoverOpen() || pickerState.pointerId !== event.pointerId) return;
+      updatePairFromPointer(event);
       event.preventDefault();
     }
 
-    function handleScoreWheelPopoverPointerUp(event) {
-      if (scoreWheelPickerState.dragPointerId !== event.pointerId) return;
-      scoreWheelPickerState.dragPointerId = null;
-
-      const releaseVelocity = scoreWheelPickerState.dragVelocityY;
-      scoreWheelPickerState.dragVelocityY = 0;
-      scoreWheelPickerState.dragLastY = 0;
-      scoreWheelPickerState.dragLastTime = 0;
-
-      if (scoreWheelPopover) {
-        scoreWheelPopover.classList.remove("is-dragging");
-      }
-
-      if (Math.abs(releaseVelocity) >= SCORE_WHEEL_INERTIA_MIN_VELOCITY) {
-        startScoreWheelInertia(releaseVelocity);
-      }
+    function handlePointerUp(event) {
+      if (pickerState.pointerId !== event.pointerId) return;
+      pickerState.pointerId = null;
+      scoreWheelPopover?.classList.remove("is-dragging");
+      scoreWheelTrack?.releasePointerCapture?.(event.pointerId);
     }
 
-    function handleScoreWheelPopoverPointerCancel(event) {
-      handleScoreWheelPopoverPointerUp(event);
-    }
-
-    function handleScoreWheelPopoverClick(event) {
+    function handleKeydown(event) {
       if (!isScoreWheelPopoverOpen()) return;
-      if (!isElement(event.target)) return;
-
-      const target = event.target.closest(".score-wheel-item[data-value]");
-      if (!target) return;
-
-      const value = Number.parseInt(String(target.dataset.value || ""), 10);
-      if (!Number.isInteger(value)) return;
-
-      setScoreWheelValue(value);
-      closeScoreWheelPopover();
-    }
-
-    function handleScoreWheelOutsidePointerDown(event) {
-      if (!isScoreWheelPopoverOpen()) return;
-      if (!isNode(event.target)) return;
-
-      if (scoreWheelPopover?.contains(event.target)) return;
-
-      const input = scoreWheelPickerState.activeInput;
-      if (isNumberInput(input)) {
-        if (event.target === input) return;
-        if (input.parentElement && input.parentElement.contains(event.target)) return;
-      }
-
-      closeScoreWheelPopover();
-    }
-
-    function handleScoreWheelViewportChange() {
-      const input = scoreWheelPickerState.activeInput;
-      if (!isScoreWheelPopoverOpen() || !isNumberInput(input)) return;
-      if (!input.isConnected || input.disabled || input.readOnly) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
         closeScoreWheelPopover();
         return;
       }
-      positionScoreWheelPopover(input);
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const quality = parseInputScore(pickerState.pair.qualityInput);
+      const happiness = parseInputScore(pickerState.pair.happinessInput);
+      if (!Number.isInteger(quality) || !Number.isInteger(happiness)) {
+        setPairValues(pickerState.pair, DEFAULT_SCORE, DEFAULT_SCORE);
+        return;
+      }
+      if (event.key === "ArrowLeft") setPairValues(pickerState.pair, quality - 1, happiness);
+      if (event.key === "ArrowRight") setPairValues(pickerState.pair, quality + 1, happiness);
+      if (event.key === "ArrowUp") setPairValues(pickerState.pair, quality, happiness + 1);
+      if (event.key === "ArrowDown") setPairValues(pickerState.pair, quality, happiness - 1);
+    }
+
+    function handleOutsidePointerDown(event) {
+      if (!isScoreWheelPopoverOpen() || !isNode(event.target)) return;
+      if (scoreWheelPopover.contains(event.target)) return;
+      if (pickerState.pair?.trigger?.contains?.(event.target)) return;
+      closeScoreWheelPopover();
+    }
+
+    function handleViewportChange() {
+      if (!isScoreWheelPopoverOpen()) return;
+      const pair = pickerState.pair;
+      if (!pair.qualityInput.isConnected || pair.qualityInput.disabled || pair.happinessInput.disabled) {
+        closeScoreWheelPopover();
+        return;
+      }
+      positionScoreWheelPopover(pair);
     }
 
     const api = {
+      registerRatingPair,
+      registerRatingPairs(pairs) {
+        if (!Array.isArray(pairs)) return;
+        for (const pair of pairs) registerRatingPair(pair);
+      },
       registerRatingInput(input) {
         if (!isNumberInput(input)) return;
-        if (boundInputs.has(input)) return;
-        boundInputs.add(input);
-        bindScoreInputWheelControl(input);
-        bindScoreWheelPicker(input);
+        if (!legacyPendingInput) {
+          legacyPendingInput = input;
+          return;
+        }
+        registerRatingPair({ qualityInput: legacyPendingInput, happinessInput: input });
+        legacyPendingInput = null;
       },
       registerRatingInputs(inputs) {
         if (!Array.isArray(inputs)) return;
-        for (const input of inputs) {
-          api.registerRatingInput(input);
-        }
+        for (const input of inputs) api.registerRatingInput(input);
       },
       bindGlobalEvents() {
         if (globalEventsBound) return;
         globalEventsBound = true;
-
-        if (scoreWheelPopover) {
-          scoreWheelPopover.addEventListener("wheel", handleScoreWheelPopoverWheel, { passive: false });
-          scoreWheelPopover.addEventListener("pointerdown", handleScoreWheelPopoverPointerDown);
-          scoreWheelPopover.addEventListener("click", handleScoreWheelPopoverClick);
-        }
-
-        if (documentRef) {
-          documentRef.addEventListener("pointerdown", handleScoreWheelOutsidePointerDown, true);
-        }
-        if (windowRef && typeof windowRef.addEventListener === "function") {
-          windowRef.addEventListener("pointermove", handleScoreWheelPopoverPointerMove);
-          windowRef.addEventListener("pointerup", handleScoreWheelPopoverPointerUp);
-          windowRef.addEventListener("pointercancel", handleScoreWheelPopoverPointerCancel);
-          windowRef.addEventListener("resize", handleScoreWheelViewportChange);
-          windowRef.addEventListener("scroll", handleScoreWheelViewportChange, true);
-        }
+        scoreWheelTrack?.addEventListener("pointerdown", handlePointerDown);
+        scoreWheelTrack?.addEventListener("keydown", handleKeydown);
+        documentRef?.addEventListener("pointerdown", handleOutsidePointerDown, true);
+        windowRef?.addEventListener?.("pointermove", handlePointerMove);
+        windowRef?.addEventListener?.("pointerup", handlePointerUp);
+        windowRef?.addEventListener?.("pointercancel", handlePointerUp);
+        windowRef?.addEventListener?.("resize", handleViewportChange);
+        windowRef?.addEventListener?.("scroll", handleViewportChange, true);
+      },
+      openForPair,
+      syncPair(qualityInput, happinessInput) {
+        const pair = getPairForInputs(qualityInput, happinessInput);
+        if (!pair) return;
+        syncTrigger(pair);
+        if (pickerState.pair === pair) renderScoreQuadrant();
       },
       close(options) {
         closeScoreWheelPopover(options);
@@ -596,6 +411,7 @@
   }
 
   globalScope.TimeQualityScoreWheelModule = {
+    calculateScorePair,
     createScoreWheelModule,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -298,107 +298,6 @@
       return changed;
     }
 
-    function reflowTodoDayByMovePolicy(date, options = {}) {
-      const key = String(date || "").trim();
-      if (!isValidDateInput(key)) return false;
-      const markDirty = options.markDirty !== false;
-      const timestampIso = String(options.timestampIso || new Date().toISOString());
-      const startMinutesForDate =
-        key === getTodayDateInputValue()
-          ? clampMinutes(getCurrentClockMinutes())
-          : TODO_PLAN_DAY_FIRST_START_MINUTES;
-      const maxIterations = 14;
-      let currentDate = key;
-      let currentStartMinutes = startMinutesForDate;
-      let changed = false;
-
-      for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-        normalizeTodoOrderForDate(currentDate);
-        const dayTodos = getIncompleteTodosByDate(currentDate);
-        if (!dayTodos.length) {
-          return changed;
-        }
-        const lockedBlocks = buildLockedTimeBlocks(dayTodos);
-        if (!dayTodos.some((todo) => !getLockedTodoClockRange(todo))) {
-          return changed;
-        }
-
-        let cursor = clampMinutes(currentStartMinutes);
-        let overflowStartIndexInDay = -1;
-        let scheduledUnlockedCount = 0;
-
-        for (let index = 0; index < dayTodos.length; index += 1) {
-          const todo = dayTodos[index];
-          const lockedRange = getLockedTodoClockRange(todo);
-          if (lockedRange) {
-            cursor = Math.max(cursor, lockedRange.endMinutes + TODO_PLAN_DAY_GAP_MINUTES);
-            continue;
-          }
-
-          const fallbackDuration =
-            scheduledUnlockedCount === 0 ? TODO_PLAN_DAY_FIRST_DURATION_MINUTES : TODO_PLAN_DAY_NEXT_DURATION_MINUTES;
-          const durationRaw = getTodoDurationMinutes(todo, fallbackDuration);
-          const duration = Math.max(5, Math.min(24 * 60 - 1, durationRaw));
-          const nextStart = findNextAvailableStartSkippingLocked(cursor, duration, lockedBlocks);
-          const latestStartForDuration = (24 * 60 - 1) - duration;
-          if (nextStart > latestStartForDuration) {
-            overflowStartIndexInDay = index;
-            break;
-          }
-
-          const prevStart = String(todo.startTime || "");
-          const prevEnd = String(todo.endTime || "");
-          const prevEstimate = Number.parseInt(String(todo.estimatedMinutes ?? ""), 10);
-          const next = setTodoRangeByStartAndDuration(todo, nextStart, duration);
-          const nextEstimate = Math.max(5, duration);
-          if (prevEstimate !== nextEstimate) {
-            todo.estimatedMinutes = nextEstimate;
-          }
-          if (prevStart !== todo.startTime || prevEnd !== todo.endTime || prevEstimate !== nextEstimate) {
-            changed = true;
-            if (markDirty) {
-              markTodoPlanningDirty(todo, timestampIso);
-            }
-          }
-          cursor = next.endMinutes + TODO_PLAN_DAY_GAP_MINUTES;
-          scheduledUnlockedCount += 1;
-        }
-
-        if (overflowStartIndexInDay < 0) {
-          return changed;
-        }
-
-        const nextDate = addDaysToDateInput(currentDate, 1);
-        if (!isValidDateInput(nextDate)) {
-          return changed;
-        }
-
-        const overflowTodos = dayTodos
-          .slice(overflowStartIndexInDay)
-          .filter((todo) => !getLockedTodoClockRange(todo));
-        for (const todo of overflowTodos) {
-          const previousDate = String(todo.dueDate || "");
-          const previousOrder = Number.isFinite(Number(todo.orderInDay)) ? Number(todo.orderInDay) : null;
-          todo.dueDate = nextDate;
-          todo.orderInDay = getNextTodoOrderForDate(nextDate, todo.id);
-          const nextOrder = Number.isFinite(Number(todo.orderInDay)) ? Number(todo.orderInDay) : null;
-          if (previousDate !== todo.dueDate || previousOrder !== nextOrder) {
-            changed = true;
-            if (markDirty) {
-              markTodoPlanningDirty(todo, timestampIso);
-            }
-          }
-        }
-
-        normalizeTodoOrderForDate(currentDate);
-        normalizeTodoOrderForDate(nextDate);
-        currentDate = nextDate;
-        currentStartMinutes = TODO_PLAN_DAY_FIRST_START_MINUTES;
-      }
-
-      return changed;
-    }
-
     function reflowTodoDayAfterAnchor(date, anchorTodoId, options = {}) {
       const key = String(date || "").trim();
       const anchorId = String(anchorTodoId || "");
@@ -647,153 +546,157 @@
       return null;
     }
 
-    function moveTodoOrder(todoId, direction) {
-      const id = String(todoId || "");
-      const delta = Number(direction);
-      if (!id || !Number.isInteger(delta) || !delta) return;
-      const todos = getTodos();
-      const todo = todos.find((item) => String(item.id) === id);
-      if (!todo || todo.completed || !isValidDateInput(todo.dueDate)) return;
+    function scheduleCore() {
+      const core = deps.scheduleConstraints || globalScope.TimeQualityScheduleConstraints;
+      if (!core) throw new Error("Schedule constraints module is unavailable.");
+      return core;
+    }
 
-      normalizeTodoOrderForDate(todo.dueDate);
-      const dayTodos = getIncompleteTodosByDate(todo.dueDate);
-      const currentIndex = dayTodos.findIndex((item) => String(item.id) === id);
-      if (currentIndex < 0) return;
-      const nextIndex = currentIndex + delta;
-      if (nextIndex < 0 || nextIndex >= dayTodos.length) return;
+    function getScheduleBusyBlocks() {
+      return getEntries().filter((entry) => entry && entry.source !== "todo-plan")
+        .map((entry) => scheduleCore().normalizeBlock(entry)).filter(Boolean);
+    }
+
+    function previewTodoMove(todoIds, targetDate, targetOrder, anchor = {}) {
+      return scheduleCore().previewMove(
+        { todos: getTodos(), busyBlocks: getScheduleBusyBlocks() },
+        { todoIds: normalizeTodoIdList(todoIds), targetDate, targetOrder, ...anchor },
+        {
+          gapMinutes: TODO_PLAN_DAY_GAP_MINUTES,
+          firstStartMinutes: TODO_PLAN_DAY_FIRST_START_MINUTES,
+          notBefore: { date: getTodayDateInputValue(), time: formatMinutesForInput(getCurrentClockMinutes()) },
+        },
+      );
+    }
+
+    function applyTodoScheduleChanges(plan, options = {}) {
+      const core = scheduleCore();
+      const todos = getTodos();
+      const busyBlocks = getScheduleBusyBlocks();
+      const failure = (code, message) => ({ feasible: false, applied: 0, created: 0, invalid: 1, missing: 0, appliedIds: [], createdIds: [], updatedIds: [], code, message });
+      if (plan?.feasible === false) return failure(plan.code, plan.message);
+      if (plan?.expectedState && core.fingerprint(todos, busyBlocks, plan.expectedState.dates) !== plan.expectedState.fingerprint) {
+        return failure("schedule_state_changed", "拖动期间任务或占用发生变化，请重新拖动。");
+      }
+      const isAi = options.kind === "ai";
+      const changes = (Array.isArray(plan?.changes) ? plan.changes : []).map((change) => ({
+        ...change,
+        todoId: String(change.todoId || change.parentTodoId || change.target?.id || ""),
+        after: {
+          dueDate: change.after?.dueDate || change.dueDate || plan?.dateRange?.start,
+          startTime: change.after?.startTime || change.after?.start || change.startTime || change.start,
+          endTime: change.after?.endTime || change.after?.end || change.endTime || change.end,
+          ...(!isAi && Number.isInteger(change.after?.orderInDay) ? { orderInDay: change.after.orderInDay } : {}),
+        },
+      }));
+      if (!changes.length) return { ...failure("schedule_no_changes", "没有需要应用的调整。"), feasible: true, invalid: 0 };
+      if (isAi && changes.some((change) => todos.find((todo) => String(todo.id) === change.todoId)?.planLocked)) {
+        return failure("schedule_target_locked", "任务已锁定，请重新生成安排。");
+      }
+      const validation = core.validateChanges(todos, changes, {
+        busyBlocks: [...busyBlocks, ...(plan?.validation?.fixedBlocks || [])],
+        gapMinutes: plan?.gapMinutes ?? plan?.validation?.gapMinutes ?? TODO_PLAN_DAY_GAP_MINUTES,
+        preserveDuration: !isAi,
+        notBefore: { date: getTodayDateInputValue(), time: formatMinutesForInput(getCurrentClockMinutes()) },
+      });
+      if (!validation.feasible) return failure(validation.code, validation.message);
+      if (options.dryRun) return { feasible: true, applied: 0, created: 0, invalid: 0, missing: 0, appliedIds: [], createdIds: [], updatedIds: [] };
 
       const nowIso = new Date().toISOString();
-      const currentTodo = dayTodos[currentIndex];
-      const nextTodo = dayTodos[nextIndex];
-      const currentOrder = Number(currentTodo.orderInDay);
-      currentTodo.orderInDay = Number(nextTodo.orderInDay);
-      nextTodo.orderInDay = currentOrder;
-      markTodoPlanningDirty(currentTodo, nowIso);
-      markTodoPlanningDirty(nextTodo, nowIso);
+      const nextTodos = todos.map((todo) => ({ ...todo, aiMeta: todo.aiMeta ? { ...todo.aiMeta } : todo.aiMeta }));
+      const byId = new Map(nextTodos.map((todo) => [String(todo.id), todo]));
+      const originals = new Map(todos.map((todo) => [String(todo.id), todo]));
+      const used = new Set();
+      const splitIds = new Map();
+      const touchedDates = new Set();
+      const appliedIds = [], createdIds = [], updatedIds = [];
+      for (const change of changes) {
+        const base = byId.get(change.todoId);
+        const original = originals.get(change.todoId);
+        let todo = base;
+        if (isAi && used.has(change.todoId)) {
+          const blockIndex = Number(change.blockIndex) || 1;
+          const blockCount = Number(change.blockCount) || 2;
+          todo = {
+            ...original,
+            id: `todo_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+            title: `${original.title}（${blockIndex + 1}/${blockCount}）`,
+            externalCalendarId: "", externalReminderId: "", completionEntryId: "",
+            createdAt: nowIso, aiMeta: { ...(original.aiMeta || {}), sourceTodoId: original.id },
+          };
+          nextTodos.push(todo);
+          createdIds.push(todo.id);
+          splitIds.set(original.id, [...(splitIds.get(original.id) || []), todo.id]);
+        } else updatedIds.push(todo.id);
+        touchedDates.add(original.dueDate);
+        touchedDates.add(change.after.dueDate);
+        Object.assign(todo, change.after);
+        if (isAi) {
+          const time = core.range(change.after);
+          todo.estimatedMinutes = time.end - time.start;
+          todo.remainingMinutes = Math.min(Math.max(0, Number(original.remainingMinutes) || todo.estimatedMinutes), todo.estimatedMinutes);
+          todo.aiMeta = {
+            ...(todo.aiMeta || {}), source: todo.aiMeta?.source || "ai_schedule_draft", scheduleSource: "ai_schedule_draft",
+            scheduleDraftId: plan.draftId || "", scheduleChangeId: change.changeId || "", scheduleAppliedAt: nowIso,
+          };
+        }
+        markTodoPlanningDirty(todo, nowIso);
+        used.add(change.todoId);
+        appliedIds.push(todo.id);
+      }
+      if (isAi) {
+        // A dependency on a split task still means completion of all of its blocks.
+        for (const todo of nextTodos) {
+          const dependencies = Array.isArray(todo.dependencies) ? todo.dependencies : [];
+          const added = dependencies.flatMap((id) => splitIds.get(id) || []);
+          if (added.length) {
+            todo.dependencies = [...new Set([...dependencies, ...added])];
+            markTodoPlanningDirty(todo, nowIso);
+          }
+        }
+        for (const date of touchedDates) {
+          nextTodos.filter((todo) => !todo.completed && todo.dueDate === date)
+            .sort((a, b) => (core.range(a)?.start ?? 1440) - (core.range(b)?.start ?? 1440) || (Number(a.orderInDay) || 0) - (Number(b.orderInDay) || 0))
+            .forEach((todo, order) => { todo.orderInDay = order; });
+        }
+      }
+      const previous = [...todos];
+      todos.splice(0, todos.length, ...nextTodos);
+      try {
+        saveTodos(todos, { undoBoundary: true });
+      } catch (error) {
+        todos.splice(0, todos.length, ...previous);
+        return failure("schedule_save_failed", "保存失败，调整未应用，请检查本地存储后重试。");
+      }
+      if (options.render !== false) render();
+      return { feasible: true, applied: appliedIds.length, created: createdIds.length, invalid: 0, missing: 0, appliedIds, createdIds, updatedIds };
+    }
 
-      normalizeTodoOrderForDate(todo.dueDate);
-      reflowTodoDayByMovePolicy(todo.dueDate, {
-        markDirty: true,
-        timestampIso: nowIso,
-      });
-      saveTodos(todos);
-      render();
+    function applyTodoScheduleDraft(draft, options = {}) {
+      return applyTodoScheduleChanges(draft, { ...options, kind: "ai", render: false });
+    }
+
+    function moveTodoOrder(todoId, direction) {
+      const todo = getTodos().find((item) => String(item.id) === String(todoId));
+      if (!todo) return false;
+      const day = getIncompleteTodosByDate(todo.dueDate);
+      const index = day.findIndex((item) => String(item.id) === String(todoId));
+      const target = index + Number(direction);
+      if (!Number.isInteger(target) || target < 0 || target >= day.length) return false;
+      return moveTodoToOrder(todoId, target);
     }
 
     function moveTodoToOrder(todoId, nextOrderInDay) {
-      const id = String(todoId || "");
-      const requestedOrder = Number.parseInt(String(nextOrderInDay ?? ""), 10);
-      if (!id || !Number.isInteger(requestedOrder)) return false;
-
-      const todos = getTodos();
-      const todo = todos.find((item) => String(item.id) === id);
-      if (!todo || todo.completed || !isValidDateInput(todo.dueDate)) return false;
-
-      normalizeTodoOrderForDate(todo.dueDate);
-      const dayTodos = getIncompleteTodosByDate(todo.dueDate);
-      const currentIndex = dayTodos.findIndex((item) => String(item.id) === id);
-      if (currentIndex < 0) return false;
-
-      const targetIndex = Math.max(0, Math.min(dayTodos.length - 1, requestedOrder));
-      if (targetIndex === currentIndex) return false;
-
-      const reordered = [...dayTodos];
-      const [movedTodo] = reordered.splice(currentIndex, 1);
-      reordered.splice(targetIndex, 0, movedTodo);
-
-      const nowIso = new Date().toISOString();
-      reordered.forEach((item, index) => {
-        const currentOrder = Number.isFinite(Number(item.orderInDay)) ? Number(item.orderInDay) : null;
-        if (currentOrder === index) return;
-        item.orderInDay = index;
-        markTodoPlanningDirty(item, nowIso);
-      });
-
-      reflowTodoDayByMovePolicy(todo.dueDate, {
-        markDirty: true,
-        timestampIso: nowIso,
-      });
-      saveTodos(todos);
-      render();
-      return true;
-    }
-
-    function assignTodoOrderInDay(items, timestampIso) {
-      let changed = false;
-      items.forEach((item, index) => {
-        const currentOrder = Number.isFinite(Number(item.orderInDay)) ? Number(item.orderInDay) : null;
-        if (currentOrder === index) return;
-        item.orderInDay = index;
-        markTodoPlanningDirty(item, timestampIso);
-        changed = true;
-      });
-      return changed;
+      const todo = getTodos().find((item) => String(item.id) === String(todoId));
+      if (!todo) return false;
+      return moveTodosToDateOrder([todoId], todo.dueDate, nextOrderInDay);
     }
 
     function moveTodosToDateOrder(todoIds, nextDueDate, nextOrderInDay) {
-      const ids = normalizeTodoIdList(todoIds);
-      const targetDate = String(nextDueDate || "").trim();
-      const requestedOrder = Number.parseInt(String(nextOrderInDay ?? ""), 10);
-      if (!ids.length || !isValidDateInput(targetDate) || !Number.isInteger(requestedOrder)) return false;
-
-      const todos = getTodos();
-      const todoById = new Map(
-        todos
-          .filter((item) => item && item.id)
-          .map((item) => [String(item.id), item]),
-      );
-      const movingTodos = ids
-        .map((id) => todoById.get(id))
-        .filter((todo) => todo && !todo.completed && isValidDateInput(todo.dueDate));
-      if (!movingTodos.length) return false;
-
-      const movingTodoIds = new Set(movingTodos.map((todo) => String(todo.id)));
-      const sourceDates = new Set(
-        movingTodos
-          .map((todo) => String(todo.dueDate || "").trim())
-          .filter((date) => isValidDateInput(date)),
-      );
-      for (const sourceDate of sourceDates) {
-        normalizeTodoOrderForDate(sourceDate);
-      }
-      normalizeTodoOrderForDate(targetDate);
-
-      const targetDayTodos = getIncompleteTodosByDate(targetDate)
-        .filter((item) => !movingTodoIds.has(String(item.id)));
-      const targetIndex = Math.max(0, Math.min(targetDayTodos.length, requestedOrder));
-      const nowIso = new Date().toISOString();
-      let changed = false;
-
-      for (const sourceDate of sourceDates) {
-        if (sourceDate === targetDate) continue;
-        const sourceDayTodos = getIncompleteTodosByDate(sourceDate)
-          .filter((item) => !movingTodoIds.has(String(item.id)));
-        changed = assignTodoOrderInDay(sourceDayTodos, nowIso) || changed;
-      }
-
-      for (const todo of movingTodos) {
-        if (String(todo.dueDate || "") === targetDate) continue;
-        todo.dueDate = targetDate;
-        markTodoPlanningDirty(todo, nowIso);
-        changed = true;
-      }
-
-      const reorderedTarget = [...targetDayTodos];
-      reorderedTarget.splice(targetIndex, 0, ...movingTodos);
-      changed = assignTodoOrderInDay(reorderedTarget, nowIso) || changed;
-
-      sourceDates.add(targetDate);
-      for (const affectedDate of sourceDates) {
-        changed = reflowTodoDayByMovePolicy(affectedDate, {
-          markDirty: true,
-          timestampIso: nowIso,
-        }) || changed;
-      }
-
-      if (!changed) return false;
-      saveTodos(todos);
-      render();
-      return true;
+      const preview = previewTodoMove(todoIds, nextDueDate, nextOrderInDay);
+      const result = applyTodoScheduleChanges(preview);
+      if (!result.feasible && typeof deps.onScheduleConflict === "function") deps.onScheduleConflict(result.message);
+      return result.applied > 0;
     }
 
     function moveTodoToDateOrder(todoId, nextDueDate, nextOrderInDay) {
@@ -852,7 +755,6 @@
       getNextTodoOrderForDate,
       markTodoPlanningDirty,
       reflowTodoDayFromStart,
-      reflowTodoDayByMovePolicy,
       reflowTodoDayAfterAnchor,
       reflowTodoDayFromIndex,
       assignScheduleForNewTodo,
@@ -862,6 +764,9 @@
       getPendingTodoCalendarEntries,
       mergeCalendarEntriesWithTodoPlans,
       findOverlappingCalendarItem,
+      previewTodoMove,
+      applyTodoScheduleChanges,
+      applyTodoScheduleDraft,
       moveTodoOrder,
       moveTodoToOrder,
       moveTodosToDateOrder,

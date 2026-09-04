@@ -35,6 +35,7 @@
     const renderCalendar = requireFunction(deps, "renderCalendar");
     const renderTodos = requireFunction(deps, "renderTodos");
     const renderReview = requireFunction(deps, "renderReview");
+    const renderLiuyao = typeof deps.renderLiuyao === "function" ? deps.renderLiuyao : () => {};
     const renderSettingsTabs = typeof deps.renderSettingsTabs === "function" ? deps.renderSettingsTabs : () => {};
     const renderCategoryManager = requireFunction(deps, "renderCategoryManager");
     const renderSyncSettingsControls = requireFunction(deps, "renderSyncSettingsControls");
@@ -67,6 +68,7 @@
       renderCalendar(entries);
       renderTodos();
       renderReview();
+      renderLiuyao();
       renderSettingsTabs();
       renderCategoryManager();
       renderSyncSettingsControls();
@@ -109,6 +111,10 @@
         requestAnimationFrameFn(() => {
           syncTodoLayout();
         });
+      }
+
+      if (target === "liuyao") {
+        renderLiuyao();
       }
 
       if (target === "settings") {

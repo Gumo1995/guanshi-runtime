@@ -43,6 +43,7 @@
     SIDEBAR_WIDTH_STORAGE_KEY: "time_quality_sidebar_width_v1",
     SIDEBAR_COLLAPSED_STORAGE_KEY: "time_quality_sidebar_collapsed_v1",
     TODO_DETAIL_WIDTH_STORAGE_KEY: "time_quality_todo_detail_width_v1",
+    POMODORO_FLOAT_LAYOUT_STORAGE_KEY: "time_quality_pomodoro_float_layout_v1",
     SIDEBAR_TAXONOMY_RANGE_STORAGE_KEY: "time_quality_sidebar_taxonomy_range_v1",
     SIDEBAR_PROJECT_COLLAPSE_STORAGE_KEY: "time_quality_sidebar_project_collapsed_v1",
     TODO_PROJECT_TREE_COLLAPSE_STORAGE_KEY: "time_quality_todo_project_collapsed_v1",

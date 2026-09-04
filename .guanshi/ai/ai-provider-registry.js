@@ -13,6 +13,9 @@ const PROVIDER_TYPES = {
     requiresApiKey: true,
     supportsStreaming: true,
     supportsJsonMode: true,
+    outputLimitField: "max_tokens",
+    jsonModeFormat: "openai",
+    supportsStreamFinishReason: true,
     defaultContextWindowTokens: 128000,
     defaultPreferredInputBudgetTokens: 96000,
     envKeyNames: ["OPENAI_API_KEY"],
@@ -27,6 +30,9 @@ const PROVIDER_TYPES = {
     requiresApiKey: true,
     supportsStreaming: true,
     supportsJsonMode: false,
+    outputLimitField: "max_tokens",
+    jsonModeFormat: "none",
+    supportsStreamFinishReason: true,
     defaultContextWindowTokens: 200000,
     defaultPreferredInputBudgetTokens: 150000,
     envKeyNames: ["ANTHROPIC_API_KEY"],
@@ -41,6 +47,9 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: false,
+    outputLimitField: null,
+    jsonModeFormat: "none",
+    supportsStreamFinishReason: false,
     defaultContextWindowTokens: 128000,
     defaultPreferredInputBudgetTokens: 96000,
     envKeyNames: [],
@@ -55,6 +64,9 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: true,
+    outputLimitField: "max_tokens",
+    jsonModeFormat: "openai",
+    supportsStreamFinishReason: true,
     defaultContextWindowTokens: 32768,
     defaultPreferredInputBudgetTokens: 24000,
     envKeyNames: [],
@@ -69,6 +81,9 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: true,
+    outputLimitField: "max_tokens",
+    jsonModeFormat: "openai",
+    supportsStreamFinishReason: true,
     defaultContextWindowTokens: 32768,
     defaultPreferredInputBudgetTokens: 24000,
     envKeyNames: [],
@@ -83,6 +98,9 @@ const PROVIDER_TYPES = {
     requiresApiKey: false,
     supportsStreaming: true,
     supportsJsonMode: false,
+    outputLimitField: null,
+    jsonModeFormat: "none",
+    supportsStreamFinishReason: false,
     defaultContextWindowTokens: 128000,
     defaultPreferredInputBudgetTokens: 96000,
     envKeyNames: [],
@@ -111,6 +129,31 @@ function getProviderType(providerType) {
     throw createProviderError("AI_PROVIDER_TYPE_UNSUPPORTED", "AI provider type is not supported.", 400, { type });
   }
   return definition;
+}
+
+function getProviderHostname(provider) {
+  try {
+    return new URL(String(provider?.baseUrl || "")).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function resolveProviderCapabilities(provider) {
+  const definition = getProviderType(provider?.type || "custom");
+  const hostname = getProviderHostname(provider);
+  const isDeepSeek = hostname === "api.deepseek.com" || hostname.endsWith(".deepseek.com");
+  const isOfficialOpenAi = hostname === "api.openai.com";
+  return {
+    providerFamily: isDeepSeek ? "deepseek" : isOfficialOpenAi ? "openai" : definition.type,
+    outputLimitField: definition.outputLimitField || null,
+    supportsJsonMode: Boolean(definition.supportsJsonMode),
+    jsonModeFormat: definition.jsonModeFormat || "none",
+    supportsThinkingControl: isDeepSeek,
+    supportsReasoningEffort: isDeepSeek,
+    supportsStreamFinishReason: Boolean(definition.supportsStreamFinishReason),
+    requiresFinishReason: isDeepSeek || isOfficialOpenAi,
+  };
 }
 
 function normalizeProviderId(value) {
@@ -410,6 +453,7 @@ module.exports = {
   normalizeBaseUrl,
   normalizeProviderConfig,
   normalizeProviderId,
+  resolveProviderCapabilities,
   resolveProviderApiKey,
   sanitizeProviderConfig,
   testProviderConnection,

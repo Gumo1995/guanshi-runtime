@@ -4,6 +4,7 @@ const { createDomainModuleRegistry } = require("./ai-domain-module-registry");
 const { normalizeRuleMatcherValues } = require("./ai-memory-rule-registry");
 const { normalizeMatch } = require("./ai-memory-selector");
 const { deriveSubjectKey, validateMemoryCandidate } = require("./ai-memory-policy");
+const liuyaoEngine = require("../../client/app-liuyao-engine");
 
 const AI_ACTION_REQUEST_SCHEMA = "guanshi-ai-action-request-v1";
 const AI_COMPOSED_CONTEXT_SCHEMA = "guanshi-ai-composed-context-v1";
@@ -15,6 +16,7 @@ const PRINCIPLE_MEMORY_PROPOSAL_SCHEMA = "guanshi-principle-memory-proposal-v1";
 const PLAN_INTENT_SCHEMA = "guanshi-plan-intent-v1";
 const REFLOW_SUGGESTION_SCHEMA = "guanshi-reflow-suggestion-v1";
 const REVIEW_INSIGHT_SCHEMA = "guanshi-review-insight-v1";
+const LIUYAO_READING_DRAFT_SCHEMA = "guanshi-liuyao-reading-draft-v1";
 
 const ACTIONS = new Set([
   "explore_principles",
@@ -26,6 +28,8 @@ const ACTIONS = new Set([
   "plan_week",
   "reflow_unfinished",
   "review_day",
+  "create_hexagram",
+  "interpret_hexagram",
 ]);
 
 const ACTION_MEMORY_TYPES = new Set(["profile", "principle", "habit", "boundary", "preference", "rule", "playbook", "review"]);
@@ -1446,6 +1450,7 @@ function buildSchedulerInput(request, context, dateRange, action, strategy = "ba
     timezone: request.timezone,
     dateRange,
     todos: Array.isArray(request.input.todos) ? request.input.todos : [],
+    fixedTodos: Array.isArray(request.input.fixedTodos) ? request.input.fixedTodos : [],
     busyBlocks: Array.isArray(request.input.busyBlocks) ? request.input.busyBlocks : [],
     memoryProjections: context.memory,
     progressSummary: request.input.progressSummary || null,
@@ -1454,33 +1459,27 @@ function buildSchedulerInput(request, context, dateRange, action, strategy = "ba
   };
 }
 
-function buildReflowSuggestion(request, dateRange, schedulerInput = null) {
-  const todos = Array.isArray(request.input.todos) ? request.input.todos : [];
-  const notBefore = normalizeObject(schedulerInput?.options?.notBefore);
-  const suggestedStartTime = notBefore.date === dateRange.start && notBefore.time
-    ? normalizeClock(notBefore.time)
-    : "09:30";
-  const suggestions = todos
-    .filter((todo) => !todo.planLocked)
-    .slice(0, 12)
-    .map((todo) => ({
-      todoId: normalizeText(todo.id, 120),
+function buildReflowSuggestion(request, dateRange, schedulerInput = null, draft = null) {
+  const strategy = schedulerInput?.options?.strategy || "minimal_change";
+  const suggestions = (Array.isArray(draft?.changes) ? draft.changes : [])
+    .map((change) => ({
+      todoId: normalizeText(change.todoId, 120),
       from: {
-        date: normalizeText(todo.dueDate, 20),
-        startTime: normalizeText(todo.startTime, 8),
+        date: normalizeText(change.before?.dueDate, 20),
+        startTime: normalizeText(change.before?.startTime, 8),
       },
       to: {
-        date: dateRange.start,
-        startTime: suggestedStartTime,
+        date: normalizeText(change.after?.dueDate, 20),
+        startTime: normalizeText(change.after?.startTime, 8),
       },
-      reason: "按最小变更策略移动到最近可用时间。",
+      reason: change.reason || (strategy === "minimal_change" ? "保留原顺序，仅调整无法保留的时间。" : "按指定策略重新安排。"),
       risk: "medium",
     }))
     .filter((item) => item.todoId);
   return {
     schema: REFLOW_SUGGESTION_SCHEMA,
     sourceRequestId: request.requestId,
-    strategy: "minimal_change",
+    strategy,
     suggestions,
     requiresScheduleDraft: true,
   };
@@ -1566,8 +1565,79 @@ function buildExploration(request) {
 
 function getRegistryActionByLegacyAction(action) {
   if (!REGISTRY_PIPELINE_ACTIONS.has(action)) return null;
-  const registry = DOMAIN_MODULES.getActionRegistry("time");
-  return registry.action_registry.find((item) => item.legacy_action === action || item.action_id === `time.${action}`) || null;
+  for (const registry of DOMAIN_MODULES.listActionRegistries().registries) {
+    const match = registry.action_registry.find((item) => item.legacy_action === action || item.action_id === action);
+    if (match) return match;
+  }
+  return null;
+}
+
+function normalizeLiuyaoQuestion(request) {
+  return normalizeText(
+    request.input.question
+      || request.input.userQuery
+      || request.input.text
+      || "请解读当前所问之事",
+    500,
+  );
+}
+
+function resolveLiuyaoDateTime(request, nowIso) {
+  const candidate = normalizeObject(request.input.liuyaoDateTime);
+  if (candidate.year && candidate.month && candidate.day) return candidate;
+  const date = new Date(nowIso);
+  if (Number.isFinite(date.getTime())) return date;
+  return new Date();
+}
+
+function normalizeSelectedLiuyaoReading(request) {
+  const selectedObjects = normalizeObject(request.input.selectedObjects);
+  const candidate = normalizeObject(request.input.reading || request.input.selectedReading || selectedObjects.reading);
+  if (!Object.keys(candidate).length) {
+    throw createWorkflowError(
+      "AI_LIUYAO_SELECTED_READING_REQUIRED",
+      "请先在六爻页面选择一条卦例，再继续解卦。",
+      400,
+      { action: request.action },
+    );
+  }
+  try {
+    const rebuilt = liuyaoEngine.buildReading({
+      id: normalizeText(candidate.id, 160),
+      question: normalizeText(candidate.question, 500),
+      category: normalizeText(candidate.category || "其他", 80),
+      focus: normalizeText(request.input.focus || candidate.focus, 80),
+      dateTime: normalizeObject(candidate.time).input,
+      dateTimeText: normalizeText(candidate.dateTime, 160),
+      timezone: normalizeText(candidate.timezone || request.timezone, 80),
+      createdAt: normalizeText(candidate.createdAt, 80),
+      lineValues: candidate.lineValues,
+      tosses: Array.isArray(candidate.tosses) ? candidate.tosses : [],
+    });
+    return {
+      ...rebuilt,
+      interpretations: Array.isArray(candidate.interpretations) ? candidate.interpretations : [],
+    };
+  } catch (error) {
+    throw createWorkflowError(
+      "AI_LIUYAO_SELECTED_READING_INVALID",
+      "当前卦例数据不完整，无法继续解卦。",
+      400,
+      { action: request.action, reason: normalizeText(error?.message, 300) },
+    );
+  }
+}
+
+function buildLiuyaoWorkflowResult(request, reading, mode) {
+  return {
+    schema: LIUYAO_READING_DRAFT_SCHEMA,
+    mode,
+    reading,
+    userQuery: normalizeLiuyaoQuestion(request),
+    focus: normalizeText(request.input.focus || request.input.followUp || reading.focus, 300),
+    requiresConfirmation: false,
+    persisted: false,
+  };
 }
 
 function createStepTrace(stepId, status, output = null, extra = {}) {
@@ -1847,9 +1917,7 @@ const REGISTRY_STEP_HANDLERS = {
 
   "time.step.scheduler.build_input"(state) {
     state.dateRange = state.dateRange || resolveWorkflowDateRange(state.request, state.currentDate);
-    const strategy = state.request.action === "reflow_unfinished"
-      ? "minimal_change"
-      : state.request.input.strategy || "balanced";
+    const strategy = state.request.input.strategy || (state.request.action === "reflow_unfinished" ? "minimal_change" : "balanced");
     state.schedulerInput = buildSchedulerInput(state.request, state.context, state.dateRange, state.request.action, strategy, {
       nowIso: state.nowIso,
     });
@@ -1865,6 +1933,7 @@ const REGISTRY_STEP_HANDLERS = {
         dateRange: state.schedulerInput.dateRange,
         todosCount: state.schedulerInput.todos.length,
         busyBlocksCount: state.schedulerInput.busyBlocks.length,
+        fixedTodosCount: state.schedulerInput.fixedTodos.length,
         strategy: state.schedulerInput.options.strategy,
         notBefore: state.schedulerInput.options.notBefore || null,
       },
@@ -1906,10 +1975,13 @@ const REGISTRY_STEP_HANDLERS = {
       state.context,
       state.dateRange || resolveWorkflowDateRange(state.request, state.currentDate),
       state.request.action,
-      state.request.action === "reflow_unfinished" ? "minimal_change" : (state.request.input.strategy || "balanced"),
+      state.request.input.strategy || (state.request.action === "reflow_unfinished" ? "minimal_change" : "balanced"),
       { nowIso: state.nowIso },
     );
     const draft = state.stores.draftStore ? state.stores.draftStore.createDraft(schedulerInput) : null;
+    if (state.request.action === "reflow_unfinished") {
+      state.result = buildReflowSuggestion(state.request, state.dateRange, schedulerInput, draft);
+    }
     const actionable = Boolean(draft && Array.isArray(draft.changes) && draft.changes.length);
     if (actionable) {
       state.artifacts.push({ kind: "schedule_draft", draft });
@@ -1923,7 +1995,7 @@ const REGISTRY_STEP_HANDLERS = {
             code: "no_actionable_schedule_changes",
             message: draft?.conflicts?.length
               ? "当前约束下没有可执行的排程变更，请先处理冲突或调整范围。"
-              : "当前范围没有可重排的任务，因此未创建待确认草稿。",
+              : "当前安排无需调整，或范围内没有可移动的任务，因此未创建待确认草稿。",
           },
         ],
       };
@@ -1994,6 +2066,78 @@ const REGISTRY_STEP_HANDLERS = {
         resultSchema: state.result?.schema || "",
       },
       summary: "交给 Writer 组织最终回复",
+    };
+  },
+
+  "liuyao.step.context.collect"(state) {
+    return {
+      output: {
+        schema: "guanshi-liuyao-action-context-v1",
+        requestId: state.request.requestId,
+        question: normalizeLiuyaoQuestion(state.request),
+        focus: normalizeText(state.request.input.focus, 80),
+        hasSelectedReading: Boolean(
+          state.request.input.reading
+            || state.request.input.selectedReading
+            || normalizeObject(state.request.input.selectedObjects).reading,
+        ),
+      },
+      summary: `问卦主题：${normalizeLiuyaoQuestion(state.request)}`,
+    };
+  },
+
+  "liuyao.step.cast.secure_three_coin"(state) {
+    state.liuyaoCast = liuyaoEngine.tossHexagram();
+    return {
+      output: {
+        schema: "guanshi-liuyao-coin-cast-v1",
+        lineValues: state.liuyaoCast.lineValues,
+        tosses: state.liuyaoCast.tosses,
+      },
+      summary: `完成六次三钱投掷：${state.liuyaoCast.lineValues.join("、")}`,
+    };
+  },
+
+  "liuyao.step.chart.compute"(state) {
+    if (!state.liuyaoCast) {
+      throw createWorkflowError("AI_LIUYAO_CAST_MISSING", "起卦结果缺失，无法排盘。", 500);
+    }
+    const reading = liuyaoEngine.buildReading({
+      question: normalizeLiuyaoQuestion(state.request),
+      category: normalizeText(state.request.input.category || "其他", 80),
+      focus: normalizeText(state.request.input.focus, 80),
+      dateTime: resolveLiuyaoDateTime(state.request, state.nowIso),
+      dateTimeText: normalizeText(state.request.input.liuyaoDateTime?.dateTimeText || state.nowIso, 160),
+      timezone: normalizeText(state.request.input.liuyaoDateTime?.timezone || state.request.timezone, 80),
+      createdAt: state.nowIso,
+      lineValues: state.liuyaoCast.lineValues,
+      tosses: state.liuyaoCast.tosses,
+    });
+    state.result = buildLiuyaoWorkflowResult(state.request, reading, "created");
+    return {
+      output: state.result,
+      summary: `${reading.primary.name}${reading.changed ? ` 之 ${reading.changed.name}` : "（无变卦）"}`,
+    };
+  },
+
+  "liuyao.step.chart.resolve_selected"(state) {
+    const reading = normalizeSelectedLiuyaoReading(state.request);
+    state.result = buildLiuyaoWorkflowResult(state.request, reading, "follow_up");
+    return {
+      output: state.result,
+      summary: `沿用 ${reading.primary.name}${reading.changed ? ` 之 ${reading.changed.name}` : ""}`,
+    };
+  },
+
+  "liuyao.step.writer.interpret"(state) {
+    return {
+      output: {
+        schema: "guanshi-workflow-writer-boundary-v1",
+        note: "Writer must interpret the deterministic reading without recalculating it.",
+        readingId: state.result?.reading?.id || "",
+        resultSchema: state.result?.schema || "",
+      },
+      summary: "交给 Writer 基于卦盘事实解读",
     };
   },
 };
@@ -2110,11 +2254,11 @@ function executeAiWorkflow(rawRequest, stores = {}, options = {}) {
   if (request.action === "reflow_unfinished") {
     const start = normalizeText(request.input.targetDate || request.input.date, 20) || addDays(currentDate, 1);
     const dateRange = { start, end: start };
-    const schedulerInput = buildSchedulerInput(request, context, dateRange, "reflow_unfinished", "minimal_change", {
+    const schedulerInput = buildSchedulerInput(request, context, dateRange, "reflow_unfinished", request.input.strategy || "minimal_change", {
       nowIso,
     });
-    const suggestion = buildReflowSuggestion(request, dateRange, schedulerInput);
     const draft = stores.draftStore ? stores.draftStore.createDraft(schedulerInput) : null;
+    const suggestion = buildReflowSuggestion(request, dateRange, schedulerInput, draft);
     const actionable = Boolean(draft && Array.isArray(draft.changes) && draft.changes.length);
     if (!actionable) {
       suggestion.requiresScheduleDraft = false;

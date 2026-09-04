@@ -17,6 +17,7 @@
       calendarEventEditEnd = null,
       calendarEventEditQuality = null,
       calendarEventEditHappiness = null,
+      calendarEventScoreTrigger = null,
       calendarEventEditNote = null,
       pomodoroCategory = null,
       alertFn = globalScope.alert ? globalScope.alert.bind(globalScope) : () => {},
@@ -279,13 +280,13 @@
 
       if (!skipScoreForFutureEntry && (!Number.isInteger(quality) || quality < 1 || quality > 10)) {
         alertFn("质量评分需为 1 到 10 的整数。");
-        calendarEventEditQuality.focus();
+        (calendarEventScoreTrigger || calendarEventEditQuality).focus();
         return;
       }
 
       if (!skipScoreForFutureEntry && (!Number.isInteger(happiness) || happiness < 1 || happiness > 10)) {
         alertFn("幸福感评分需为 1 到 10 的整数。");
-        calendarEventEditHappiness.focus();
+        (calendarEventScoreTrigger || calendarEventEditHappiness).focus();
         return;
       }
 

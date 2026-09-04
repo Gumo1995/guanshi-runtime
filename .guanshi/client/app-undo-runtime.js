@@ -52,6 +52,7 @@
     let undoHistory = [];
     let undoHistoryIndex = -1;
     let undoLastCommitAt = 0;
+    let undoLastCommitWasSeparate = false;
     let isApplyingUndo = false;
 
     function refreshDataRefs() {
@@ -89,10 +90,11 @@
       undoHistory = [snapshot];
       undoHistoryIndex = 0;
       undoLastCommitAt = Date.now();
+      undoLastCommitWasSeparate = false;
       undoHistoryReady = true;
     }
 
-    function commitUndoSnapshot() {
+    function commitUndoSnapshot(options = {}) {
       if (!undoHistoryReady || isApplyingUndo) return;
       const nextSnapshot = buildUndoSnapshot();
       const currentSnapshot = undoHistory[undoHistoryIndex];
@@ -100,6 +102,7 @@
 
       const now = Date.now();
       const canMerge = undoHistoryIndex > 0
+        && !options.separate && !undoLastCommitWasSeparate
         && undoHistoryIndex === undoHistory.length - 1
         && now - undoLastCommitAt <= UNDO_MERGE_WINDOW_MS;
       if (canMerge) {
@@ -117,6 +120,7 @@
       }
       undoHistoryIndex = undoHistory.length - 1;
       undoLastCommitAt = now;
+      undoLastCommitWasSeparate = Boolean(options.separate);
     }
 
     function isNativeUndoEditableTarget(target) {

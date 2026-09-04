@@ -2,7 +2,7 @@
 
 观时是一个本地运行的时间记录、待办规划与复盘工具。
 
-当前版本：1.6.12
+当前版本：1.6.13
 
 ## 第一次启动
 
@@ -48,11 +48,11 @@ http://127.0.0.1:8080/
 
 ## AI 与外部 Agent
 
-v1.6.12 包含本地 AI 基础能力：Provider / BYOK 服务端配置、Domain Module Runtime 注册表、AI memory proposal、确定性排程草稿、AI action workflows、Guanshi MCP 外部 Agent 接入和隐私脱敏 guard。默认不会自动调用模型或自动改动待办、日历、提醒。
+v1.6.13 包含本地 AI 基础能力：Provider / BYOK 服务端配置、Time 与 Liuyao Domain Module Runtime、AI memory proposal、确定性排程草稿、AI action workflows、Guanshi MCP 外部 Agent 接入和隐私脱敏 guard。默认不会自动调用模型或自动改动待办、日历、提醒或卦例。
 
 本版本新增“完成待办并记录实际时间”AI Action。模型可以根据用户明确提供的信息生成实际日期、起止时间、评分和待办字段修改草稿；未提供时间时会说明本地默认推导，未提供评分时不会自动填写。只有用户确认后，观时才会标记待办完成并生成对应的日历实际记录。
 
-当前默认只启用时间管理模块。后续日记、记账、六爻等模块会通过独立 module manifest、记忆命名空间、工具权限和草稿确认规则接入，避免互相污染数据或越权写入。
+当前启用时间管理和六爻模块。六爻排盘由本地确定性引擎完成，AI 只解释已生成的事实；两个模块通过独立 manifest、上下文契约、工具权限和确认规则隔离，避免互相污染数据或越权写入。
 
 AI 对话路由会优先使用模块工具 ID，例如 `time.parse_task`。未注册模块的工具不会被执行。
 

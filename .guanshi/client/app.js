@@ -38,7 +38,8 @@ const {
   CALENDAR_NOW_LINE_REFRESH_MS, GLOBAL_SEARCH_RESULT_LIMIT, GLOBAL_SEARCH_TARGET_HIGHLIGHT_MS,
   REVIEW_VISUAL_LOOKBACK_DAYS, AUTO_BIDIRECTIONAL_SYNC_ENABLED, AUTO_BIDIRECTIONAL_SYNC_DEBOUNCE_MS,
   AUTO_BIDIRECTIONAL_SYNC_PULL_INTERVAL_MS, AUTO_BIDIRECTIONAL_SYNC_START_DELAY_MS, SIDEBAR_WIDTH_STORAGE_KEY,
-  SIDEBAR_COLLAPSED_STORAGE_KEY, TODO_DETAIL_WIDTH_STORAGE_KEY, SIDEBAR_TAXONOMY_RANGE_STORAGE_KEY,
+  SIDEBAR_COLLAPSED_STORAGE_KEY, TODO_DETAIL_WIDTH_STORAGE_KEY, POMODORO_FLOAT_LAYOUT_STORAGE_KEY,
+  SIDEBAR_TAXONOMY_RANGE_STORAGE_KEY,
   SIDEBAR_PROJECT_COLLAPSE_STORAGE_KEY, TODO_PROJECT_TREE_COLLAPSE_STORAGE_KEY,
   SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, TODO_DETAIL_MIN_WIDTH, TODO_DETAIL_MAX_WIDTH, TODO_LIST_MIN_WIDTH,
   UNDO_HISTORY_LIMIT, UNDO_MERGE_WINDOW_MS,
@@ -239,6 +240,32 @@ if (typeof createReviewModule !== "function") {
   );
 }
 
+const liuyaoEngineModule = (typeof window !== "undefined" && window.TimeQualityLiuyaoEngineModule) || {};
+
+if (typeof liuyaoEngineModule.buildReading !== "function") {
+  throw new Error(
+    "TimeQualityLiuyaoEngineModule is missing buildReading. Ensure app-liuyao-engine.js is loaded before app.js.",
+  );
+}
+
+const liuyaoModelModuleSource = (typeof window !== "undefined" && window.TimeQualityLiuyaoModelModule) || {};
+const { createLiuyaoModelModule } = liuyaoModelModuleSource;
+
+if (typeof createLiuyaoModelModule !== "function") {
+  throw new Error(
+    "TimeQualityLiuyaoModelModule is missing createLiuyaoModelModule. Ensure app-liuyao-model.js is loaded before app.js.",
+  );
+}
+
+const liuyaoModuleSource = (typeof window !== "undefined" && window.TimeQualityLiuyaoModule) || {};
+const { createLiuyaoModule } = liuyaoModuleSource;
+
+if (typeof createLiuyaoModule !== "function") {
+  throw new Error(
+    "TimeQualityLiuyaoModule is missing createLiuyaoModule. Ensure app-liuyao.js is loaded before app.js.",
+  );
+}
+
 const searchModuleSource = (typeof window !== "undefined" && window.TimeQualitySearchModule) || {};
 const { createSearchModule } = searchModuleSource;
 
@@ -263,6 +290,16 @@ const { createPomodoroModule } = pomodoroModuleSource;
 if (typeof createPomodoroModule !== "function") {
   throw new Error(
     "TimeQualityPomodoroModule is missing createPomodoroModule. Ensure app-pomodoro.js is loaded before app.js.",
+  );
+}
+
+const pomodoroFloatingModuleSource =
+  (typeof window !== "undefined" && window.TimeQualityPomodoroFloatingModule) || {};
+const { createPomodoroFloatingModule } = pomodoroFloatingModuleSource;
+
+if (typeof createPomodoroFloatingModule !== "function") {
+  throw new Error(
+    "TimeQualityPomodoroFloatingModule is missing createPomodoroFloatingModule. Ensure app-pomodoro-floating.js is loaded before app.js.",
   );
 }
 
@@ -421,12 +458,13 @@ const {
   calendarUnratedJumpBtn, calendarUnratedCount, calendarPrevWeekBtn, calendarTodayBtn, calendarNextWeekBtn,
   calendarSyncStatus, calendarEventModal, calendarEventTitle, calendarEventForm, calendarEventEditCategory,
   calendarEventEditDate, calendarEventEditStart, calendarEventEditEnd, calendarEventEditQuality,
-  calendarEventEditHappiness, calendarEventEditNote, scoreWheelPopover, scoreWheelTrack, barsWrap,
+  calendarEventEditHappiness, calendarEventScoreTrigger, calendarEventEditNote, scoreWheelPopover, scoreWheelTrack, barsWrap,
   scatterWrap, insight, heroQuote, overviewJudgment, firstScreenPanels, metricHours, metricQuality, metricHappiness,
-  metricGolden, qualityIndex, pomodoroMinutesInput, pomodoroCategory, pomodoroDial, pomodoroDisplay,
+  metricGolden, qualityIndex, pomodoroFloatingPanel, pomodoroFloatingHandle, pomodoroFloatingCollapseBtn,
+  pomodoroFloatingSummary, pomodoroMinutesInput, pomodoroCategory, pomodoroDial, pomodoroDisplay,
   pomodoroRange, pomodoroMinusFiveBtn, pomodoroPlusFiveBtn, pomodoroStartBtn, pomodoroPauseBtn,
   pomodoroResetBtn, pomodoroScoreModal, pomodoroScoreTitle, pomodoroScoreDescription,
-  pomodoroQualityScoreSlider, pomodoroHappinessScoreSlider, pomodoroScoreConfirmBtn,
+  pomodoroQualityScoreSlider, pomodoroHappinessScoreSlider, pomodoroScoreTrigger, pomodoroScoreConfirmBtn,
   pomodoroScoreIncompleteBtn, pomodoroScoreCancelBtn, globalSearchWrap, globalSearchInput,
   globalSearchResultsPanel, globalSearchResultsList, globalSearchResultsEmpty, sidebarToggleBtn, topSyncRefreshBtn, topSyncHub,
   sidebar, sidebarResizer, sidebarProjectList, sidebarTagList, sidebarTaxonomyRangeControl,
@@ -659,6 +697,7 @@ const layoutShellModule = createLayoutShellModule({
   TODO_DETAIL_MAX_WIDTH,
   TODO_LIST_MIN_WIDTH,
 });
+let liuyaoModule = null;
 const aiUiReactionsModule = createAiUiReactionsModule({
   getViewContext: getAiViewContext,
   setActiveView: (view) => setActiveView(view),
@@ -668,6 +707,7 @@ const aiUiReactionsModule = createAiUiReactionsModule({
   render,
 });
 const aiSidebarModule = createAiSidebarModule({
+  applyTodoScheduleDraft: (draft, options) => todoPlanModule.applyTodoScheduleDraft(draft, options),
   documentRef: document,
   windowRef: window,
   sidebar,
@@ -684,6 +724,10 @@ const aiSidebarModule = createAiSidebarModule({
   },
   getEntries: () => entries,
   getSelectedTodo,
+  getLiuyaoCurrentReading: () => liuyaoModule?.getCurrentReading?.() || null,
+  getLiuyaoReadings: () => liuyaoModule?.getAllReadings?.() || [],
+  selectLiuyaoLatestReading: () => liuyaoModule?.selectLatestReading?.({ source: "ai_follow_up" }) || null,
+  applyLiuyaoAiResult: (workflow, meta) => liuyaoModule?.applyAiResult?.(workflow, meta),
   getViewContext: getAiViewContext,
   setSettingsTab: (tab, options) => settingsModule.setActiveSettingsTab(tab, options),
   setSelectedTodoId,
@@ -820,6 +864,8 @@ const syncModule = createSyncModule({
 });
 
 const todoPlanModule = createTodoPlanModule({
+  scheduleConstraints: window.TimeQualityScheduleConstraints,
+  onScheduleConflict: (message) => todoListModule.showScheduleNotice(message, true),
   TODO_PLAN_ENTRY_ID_PREFIX,
   TODO_PLAN_DAY_FIRST_START_MINUTES,
   TODO_PLAN_DAY_FIRST_DURATION_MINUTES,
@@ -986,6 +1032,19 @@ const reviewModule = createReviewModule({
   getRangeEntries,
   setReviewLegacyVisible,
   getReviewLegacyVisible: () => reviewLegacyVisible,
+});
+
+const liuyaoModel = createLiuyaoModelModule({
+  localStorageRef: typeof window !== "undefined" && window.localStorage ? window.localStorage : null,
+  onChange: () => localDataBackupModule.scheduleBackup("liuyao"),
+});
+
+liuyaoModule = createLiuyaoModule({
+  engine: liuyaoEngineModule,
+  model: liuyaoModel,
+  documentRef: document,
+  windowRef: window,
+  onSelectionChange: () => aiSidebarModule.syncLiuyaoContext?.(),
 });
 
 let undoRuntimeModule = null;
@@ -1172,6 +1231,8 @@ const todoListModule = createTodoListModule({
   moveTodoToOrder,
   moveTodoToDateOrder,
   moveTodosToDateOrder,
+  previewTodoMove: (...args) => todoPlanModule.previewTodoMove(...args),
+  applyTodoScheduleChanges: (...args) => todoPlanModule.applyTodoScheduleChanges(...args),
   restoreHistoryItemToTodo,
   openTodoHistoryRecord,
   toggleTodoCompleted,
@@ -1257,6 +1318,17 @@ const pomodoroModule = createPomodoroModule({
   ),
   completeLinkedTodoSession: completeLinkedTodoByPomodoroSession,
   recordLinkedTodoSession: recordLinkedTodoPomodoroSession,
+});
+const pomodoroFloatingModule = createPomodoroFloatingModule({
+  documentRef: document,
+  windowRef: window,
+  localStorageRef: localStorage,
+  storageKey: POMODORO_FLOAT_LAYOUT_STORAGE_KEY,
+  panel: pomodoroFloatingPanel,
+  handle: pomodoroFloatingHandle,
+  collapseButton: pomodoroFloatingCollapseBtn,
+  summary: pomodoroFloatingSummary,
+  pomodoroDisplay,
 });
 
 const calendarUiModule = createCalendarUiModule({
@@ -1360,6 +1432,7 @@ const calendarActionsModule = createCalendarActionsModule({
   calendarEventEditEnd,
   calendarEventEditQuality,
   calendarEventEditHappiness,
+  calendarEventScoreTrigger,
   calendarEventEditNote,
   pomodoroCategory,
   alertFn: window.alert.bind(window),
@@ -1421,6 +1494,7 @@ const todoActionsModule = createTodoActionsModule({
   DEFAULT_POMODORO_MINUTES,
   todoTitleInput,
   pomodoroModule,
+  revealPomodoro: () => pomodoroFloatingModule.reveal(),
   todoDetailModule,
   getTodos: () => todos,
   getEntries: () => entries,
@@ -1611,6 +1685,7 @@ const renderCoordinatorModule = createRenderCoordinatorModule({
   renderCalendar,
   renderTodos,
   renderReview,
+  renderLiuyao: () => liuyaoModule.render(),
   renderSettingsTabs: () => settingsModule.renderSettingsTabs(),
   renderCategoryManager: () => settingsModule.renderCategoryManager(),
   renderSyncSettingsControls: () => syncSettingsModule.renderControls(),
@@ -1638,7 +1713,8 @@ createStartupModule([
   () => settingsModule.initSettingsTabs(), () => settingsModule.initCategoryConfiguration(), () => settingsModule.initRuntimePortConfiguration(),
   () => localDataBackupModule.initRecoveryControls(),
   () => aiSettingsModule.init(),
-  () => pomodoroModule.init(), initCalendar, initMacCalendarSync,
+  () => liuyaoModule.init(),
+  () => pomodoroModule.init(), () => pomodoroFloatingModule.init(), initCalendar, initMacCalendarSync,
   initTodo, initAutoBidirectionalSync, initLayoutState, () => installGuideModule.init(),
   () => internalUpdateModule.init(), bindEvents, render,
   () => setActiveView(activeView), initializeUndoHistory, () => localDataBackupModule.scheduleBackup("startup"),
@@ -1736,6 +1812,7 @@ function bindEvents() {
 
   searchModule.bindEvents();
   pomodoroModule.bindEvents();
+  pomodoroFloatingModule.bindEvents();
   todoDetailModule.bindEvents();
 
   if (reviewLegacyToggleBtn) {
@@ -1877,13 +1954,17 @@ function bindEvents() {
   }
 
   scoreWheelModule.bindGlobalEvents();
-  scoreWheelModule.registerRatingInputs([
-    pomodoroQualityScoreSlider,
-    pomodoroHappinessScoreSlider,
-    calendarEventEditQuality,
-    calendarEventEditHappiness,
-    todoQualityInput,
-    todoHappinessInput,
+  scoreWheelModule.registerRatingPairs([
+    {
+      qualityInput: pomodoroQualityScoreSlider,
+      happinessInput: pomodoroHappinessScoreSlider,
+      trigger: pomodoroScoreTrigger,
+    },
+    {
+      qualityInput: calendarEventEditQuality,
+      happinessInput: calendarEventEditHappiness,
+      trigger: calendarEventScoreTrigger,
+    },
   ]);
 
   todoListModule.bindEvents();
@@ -1912,6 +1993,7 @@ function render() {
 
 function setActiveView(view) {
   renderCoordinatorModule.setActiveView(view);
+  aiSidebarModule.syncLiuyaoContext?.();
 }
 
 function syncTodoFilterBarButtons() {
@@ -2720,7 +2802,11 @@ function getAiViewContext() {
     surface = "settings";
   } else if (activeView === "overview") {
     surface = "overview";
+  } else if (activeView === "liuyao") {
+    surface = "liuyao.reading";
   }
+
+  const currentLiuyaoReading = activeView === "liuyao" ? liuyaoModule?.getCurrentReading?.() : null;
 
   return {
     schema: "guanshi-ai-view-context-v1",
@@ -2734,11 +2820,13 @@ function getAiViewContext() {
       showHistory: showTodoHistoryInMainList,
       showRecurringOnly: showRecurringReminderOnlyInMainList,
       todoSelection: getSelectedTodoIds().length > 1 ? "selected_multiple" : selectedTodo ? "selected" : "none",
+      liuyaoPanel: activeView === "liuyao" ? liuyaoModule?.getActiveLocalPanel?.() || "cast" : "",
     },
     selection: {
-      todoIds: getSelectedTodoIds(),
+      todoIds: activeView === "todo" ? getSelectedTodoIds() : [],
       entryIds: selectedEntryId ? [selectedEntryId] : [],
       journalIds: [],
+      readingIds: currentLiuyaoReading?.id ? [currentLiuyaoReading.id] : [],
     },
   };
 }

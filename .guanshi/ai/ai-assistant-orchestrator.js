@@ -2,8 +2,12 @@
 
 const { createDomainModuleRegistry } = require("./ai-domain-module-registry");
 const { executeAiWorkflow } = require("./ai-workflows");
-const { fetchProviderChat } = require("./ai-provider-client");
+const { fetchProviderChatCompletion } = require("./ai-provider-client");
 const { createProviderError } = require("./ai-provider-registry");
+const {
+  getProviderStageAttemptPolicy,
+  shouldRetryProviderError,
+} = require("./ai-provider-runtime-policy");
 const { redactSensitiveValue } = require("./ai-redaction");
 const {
   AI_ACTION_REVIEW_SCHEMA,
@@ -38,6 +42,7 @@ const AI_MODEL_INPUT_TRACE_SCHEMA = "guanshi-ai-model-input-trace-v2";
 const AI_MODEL_OUTPUT_TRACE_SCHEMA = "guanshi-ai-model-output-trace-v1";
 const AI_TURN_TRACE_SCHEMA = "guanshi-ai-turn-trace-v1";
 const AI_PLANNER_PROMPT_SCHEMA = "guanshi-ai-planner-prompt-v2";
+const GUANSHI_PERSONA_PROMPT_SCHEMA = "guanshi-ai-persona-prompt-v1";
 const AI_SEMANTIC_ACTION_SCHEMA = "guanshi-ai-semantic-action-v1";
 const AI_SEMANTIC_FEEDBACK_SCHEMA = "guanshi-ai-semantic-feedback-v1";
 const AI_WRITER_PROMPT_SCHEMA = "guanshi-ai-writer-prompt-v2";
@@ -50,6 +55,23 @@ const AI_PAGE_WORK_CONTEXT_SCHEMA = "guanshi-ai-page-work-context-v1";
 const AI_GLOBAL_BACKGROUND_CONTEXT_SCHEMA = "guanshi-ai-global-background-context-v1";
 const AI_TURN_CONTEXT_SCHEMA = "guanshi-ai-turn-context-v1";
 const AI_CONTEXT_CANDIDATES_SCHEMA = "guanshi-ai-context-candidates-v1";
+const LIUYAO_INTERPRETATION_SCHEMA = "guanshi-liuyao-interpretation-v1";
+
+const GUANSHI_PERSONA_PROMPT = [
+  `persona_schema: ${GUANSHI_PERSONA_PROMPT_SCHEMA}`,
+  "产品身份：你属于观时，是面向 CEO 的 Personal Chief of Staff（个人幕僚型 AI 助手），不是单纯的日历、待办或聊天工具。",
+  "核心职责：围绕用户的真实目标与当前上下文，帮助识别战略重点、必须亲自处理的事项、可委派事项、承诺、依赖和风险；只能在当前已注册能力范围内提供提醒、建议、洞察或待确认草稿。",
+  "判断原则：事实优先，明确区分已知事实、合理推断、建议和未知；不迎合、不夸大、不制造焦虑。信息足够时直接推进，只有缺失信息会实质改变结果时才追问。",
+  "能力诚实：身份代表工作方式，不代表所有能力或外部数据源已经接入。只能使用本轮已授权上下文和已注册工具，不得声称读取了未提供的飞书、微信、会议或其他数据。",
+  "行动边界：未经用户在观时 UI 确认，不得修改正式业务数据、发送外部消息或代表用户作出承诺；只读洞察和传统文化参考也不得伪装成确定事实。",
+].join("\n");
+
+const GUANSHI_WRITER_VOICE_PROMPT = [
+  "表达人格：保持清醒、克制、坦诚、可靠；不用讨好式措辞，不堆叠空泛鼓励，也不以夸张语气制造紧迫感。",
+  "回应方式：对于需要判断的问题，优先给出明确判断，再说明依据、限制和可执行的下一步；简单问候或事实问答自然直接，不机械套用固定结构。",
+  "协作姿态：像长期幕僚一样指出关键取舍、风险和不一致，但尊重用户拥有最终决定权；没有依据时明确说不知道或需要什么信息。",
+  "身份回答：用户询问你是谁或能做什么时，以观时 Personal Chief of Staff 的产品身份回答，并如实说明当前仅能使用已注册工具和本轮已授权数据；不要暴露 Planner、Writer 等内部岗位。",
+].join("\n");
 
 const LEGACY_TOOL_DEFINITIONS = {
   answer: {
@@ -92,6 +114,14 @@ const LEGACY_TOOL_DEFINITIONS = {
     label: "复盘/风险洞察",
     description: "用于分析进展、风险、延期和复盘洞察，不直接修改数据。",
   },
+  create_hexagram: {
+    label: "起一卦并解读",
+    description: "用户明确要求问卦，或在六爻页没有当前卦时直接输入具体所问事项，以本地安全三钱法生成卦盘并解读。",
+  },
+  interpret_hexagram: {
+    label: "解读当前卦",
+    description: "围绕六爻页面当前选中的卦继续追问或解读，不重新起卦。",
+  },
 };
 
 const TOOL_DEFINITIONS = LEGACY_TOOL_DEFINITIONS;
@@ -117,6 +147,69 @@ function addStageToError(error, stage, fallbackCode, fallbackMessage, fallbackSt
     return error;
   }
   return createAssistantError(fallbackCode, fallbackMessage, fallbackStatus, { stage });
+}
+
+function createProviderCompletionError(stage, completionMeta = {}, message = "AI provider output is incomplete.") {
+  const finishReason = String(completionMeta?.finishReason || "unknown");
+  const code = finishReason === "insufficient_system_resource"
+    ? "AI_PROVIDER_INSUFFICIENT_SYSTEM_RESOURCE"
+    : finishReason === "length"
+      ? "AI_PROVIDER_OUTPUT_TRUNCATED"
+      : "AI_PROVIDER_OUTPUT_INCOMPLETE";
+  return createAssistantError(code, message, 502, {
+    stage,
+    finishReason,
+    completion: completionMeta,
+    retryable: ["length", "insufficient_system_resource", "unknown"].includes(finishReason),
+  });
+}
+
+function assertProviderCompletion(stage, providerResult, message, httpCode = "AI_PROVIDER_HTTP_STATUS") {
+  if (!providerResult?.response?.ok) {
+    throw createAssistantError(httpCode, message || "AI provider request failed.", 502, {
+      stage,
+      httpStatus: Number(providerResult?.response?.status || 0),
+      body: redactSensitiveValue(providerResult?.payload, { maxStringLength: 2000 }),
+    });
+  }
+  if (providerResult?.completionMeta?.complete !== true) {
+    throw createProviderCompletionError(stage, providerResult?.completionMeta, message);
+  }
+}
+
+function canRetryAssistantStage(error, attempt, maxRetries) {
+  if (attempt > maxRetries) return false;
+  return error?.details?.retryable === true || shouldRetryProviderError(error);
+}
+
+async function fetchAssistantStageCompletion(provider, messages, stage, attempt, options = {}) {
+  const policy = getProviderStageAttemptPolicy(stage, attempt, options.stagePolicy);
+  if (attempt > 1) {
+    emitAssistantEvent(options, {
+      type: "status",
+      stage,
+      label: stage === "liuyao_writer" ? "解读未完整，正在恢复" : "模型输出未完整，正在重试",
+      requestId: options.requestId || "",
+      retryCount: attempt - 1,
+    });
+  }
+  const result = await fetchProviderChatCompletion(provider, {
+    messages,
+    allowExternalRequest: true,
+    temperature: policy.temperature,
+    maxTokens: policy.maxTokens,
+    thinking: policy.thinking,
+    reasoningEffort: policy.reasoningEffort,
+    responseFormat: policy.responseFormat,
+  }, {
+    env: options.env || process.env,
+    fetchImpl: options.fetchImpl,
+    allowExternalRequest: true,
+    signal: options.signal,
+    timeoutMs: policy.timeoutMs,
+    retryCount: attempt - 1,
+  });
+  return { ...result, stagePolicy: policy };
 }
 
 function normalizeText(value, maxLength = 4000) {
@@ -368,6 +461,7 @@ function normalizeContextIncludeList(value) {
     "memory",
     "progress",
     "selectedTodo",
+    "selectedReading",
     "selectedObjects",
     "pageWorkContext",
     "globalBackgroundContext",
@@ -388,6 +482,7 @@ function normalizeContextIncludeList(value) {
       if (item === "tag_todos") return "tagTodos";
       if (item === "status_todos") return "statusTodos";
       if (item === "calendar_busy_blocks") return "calendarBusyBlocks";
+      if (item === "selected_reading") return "selectedReading";
       return item;
     })
     .filter((item) => allowed.has(item));
@@ -399,7 +494,7 @@ function normalizeContextCapabilities(value) {
     if (["pageWorkContext", "projectTodos", "tagTodos", "statusTodos"].includes(item)) return "todos";
     if (item === "calendarBusyBlocks") return "busyBlocks";
     return item;
-  }).filter((item) => ["selectedTodo", "todos", "entries", "busyBlocks"].includes(item))));
+  }).filter((item) => ["selectedTodo", "selectedReading", "todos", "entries", "busyBlocks"].includes(item))));
 }
 
 function normalizePlannerContextAssessment(value) {
@@ -556,6 +651,7 @@ function normalizeContextAccessPolicy(value) {
         "tagTodos",
         "statusTodos",
         "calendarBusyBlocks",
+        "selectedReading",
       ].includes(item)),
     maxAutoReruns: Math.max(0, Math.min(2, Number.parseInt(String(source.maxAutoReruns || 2), 10) || 2)),
   };
@@ -591,6 +687,7 @@ function normalizeToolRecord(tool) {
     label: normalizeText(source.label || source.tool_id || source.toolId, 100),
     mode: normalizeText(source.mode || "draft", 40),
     requiresUserConfirmation: source.requiresUserConfirmation === true,
+    artifactPersistence: normalizeText(source.artifactPersistence || source.artifact_persistence || "pending", 40),
     scopes: Array.isArray(source.scopes) ? source.scopes.map((item) => normalizeText(item, 80)).filter(Boolean) : [],
     draft_schema: Array.isArray(source.draft_schema || source.draftSchema)
       ? (source.draft_schema || source.draftSchema).map((item) => normalizeText(item, 80)).filter(Boolean)
@@ -598,6 +695,7 @@ function normalizeToolRecord(tool) {
     module_id: normalizeText(source.module_id || source.moduleId, 80),
     memory_namespace: normalizeText(source.memory_namespace || source.memoryNamespace, 100),
     apply_policy: normalizeObject(source.apply_policy || source.applyPolicy),
+    context_contract: normalizeObject(source.context_contract || source.contextContract),
   };
 }
 
@@ -639,9 +737,11 @@ function createToolDecision(tool, parsed = {}, parseStatus = "json_tool", reques
     moduleId: tool.module_id,
     toolMode: tool.mode,
     requiresUserConfirmation: tool.requiresUserConfirmation,
+    artifactPersistence: tool.artifactPersistence,
     memoryNamespace: tool.memory_namespace,
     draftSchema: tool.draft_schema,
     applyPolicy: tool.apply_policy,
+    contextContract: tool.context_contract,
     arguments: normalizeObject(source.arguments),
     semanticAction: normalizeObject(source.semanticAction || source.semantic || source.actionPlan),
     contextAssessment: normalizePlannerContextAssessment(source.contextAssessment || source.context_assessment),
@@ -764,7 +864,14 @@ function normalizeMessages(value) {
     .map((message) => {
       const role = message?.role === "assistant" ? "assistant" : "user";
       const content = normalizeText(message?.content || message?.text, 1600);
-      return content ? { role, content } : null;
+      return content ? {
+        role,
+        content,
+        moduleId: normalizeText(message?.moduleId || message?.module_id, 80),
+        actionId: normalizeText(message?.actionId || message?.action_id, 120),
+        readingId: normalizeText(message?.readingId || message?.reading_id, 160),
+        castSessionId: normalizeText(message?.castSessionId || message?.cast_session_id, 160),
+      } : null;
     })
     .filter(Boolean);
 }
@@ -857,6 +964,169 @@ function summarizeEntry(entry) {
     category: normalizeText(entry?.category, 80),
     project: normalizeText(entry?.project, 80),
     todoId: normalizeText(entry?.todoId || entry?.sourceTodoId, 80),
+  };
+}
+
+function summarizeLiuyaoLine(line) {
+  const source = normalizeObject(line);
+  const changed = normalizeObject(source.changedLine);
+  return {
+    position: Number(source.position || 0) || undefined,
+    label: normalizeText(source.label, 20),
+    yinYang: normalizeText(source.yinYang, 10),
+    value: Number(source.value || 0) || undefined,
+    movingType: normalizeText(source.movingType, 20),
+    relation: normalizeText(source.relation, 20),
+    najia: normalizeText(source.najia, 20),
+    wuxing: normalizeText(source.wuxing, 10),
+    spirit: normalizeText(source.spirit, 20),
+    shiYing: normalizeText(source.shiYing, 10),
+    isVoid: source.isVoid === true,
+    isMonthBreak: source.isMonthBreak === true,
+    isDayClash: source.isDayClash === true,
+    isMonthCombined: source.isMonthCombined === true,
+    isDayCombined: source.isDayCombined === true,
+    isDarkMovingCandidate: source.isDarkMovingCandidate === true,
+    strength: {
+      monthState: normalizeText(source.strength?.monthState, 10),
+      monthRelation: normalizeText(source.strength?.monthRelation, 20),
+      dayRelation: normalizeText(source.strength?.dayRelation, 20),
+      supportedByMonth: source.strength?.supportedByMonth === true,
+      supportedByDay: source.strength?.supportedByDay === true,
+    },
+    transformation: source.transformation ? {
+      changedNajia: normalizeText(source.transformation.changedNajia, 20),
+      changedWuxing: normalizeText(source.transformation.changedWuxing, 10),
+      relation: normalizeText(source.transformation.relation, 20),
+      isOpposite: source.transformation.isOpposite === true,
+      isSameBranch: source.transformation.isSameBranch === true,
+    } : null,
+    hiddenSpirits: Array.isArray(source.hiddenSpirits)
+      ? source.hiddenSpirits.slice(0, 3).map((item) => ({
+        relation: normalizeText(item?.relation, 20),
+        najia: normalizeText(item?.najia, 20),
+        wuxing: normalizeText(item?.wuxing, 10),
+        flyingRelation: normalizeText(item?.flyingRelation, 20),
+        monthState: normalizeText(item?.strength?.monthState, 10),
+      }))
+      : [],
+    changedLine: Object.keys(changed).length ? {
+      yinYang: normalizeText(changed.yinYang, 10),
+      relation: normalizeText(changed.relation, 20),
+      najia: normalizeText(changed.najia, 20),
+      wuxing: normalizeText(changed.wuxing, 10),
+      shiYing: normalizeText(changed.shiYing, 10),
+    } : null,
+  };
+}
+
+function summarizeLiuyaoChart(chart) {
+  const source = normalizeObject(chart);
+  if (!Object.keys(source).length) return null;
+  return {
+    bits: normalizeText(source.bits, 12),
+    name: normalizeText(source.name, 40),
+    image: normalizeText(source.image, 300),
+    lowerTrigram: normalizeText(source.lowerTrigram, 20),
+    upperTrigram: normalizeText(source.upperTrigram, 20),
+    palace: normalizeText(source.palace, 20),
+    palaceWuxing: normalizeText(source.palaceWuxing, 10),
+    type: normalizeText(source.type, 20),
+    shiPosition: Number(source.shiPosition || 0) || undefined,
+    yingPosition: Number(source.yingPosition || 0) || undefined,
+    interpretationBasis: Object.keys(normalizeObject(source.interpretationBasis)).length ? {
+      palace: normalizeText(source.interpretationBasis.palace, 20),
+      palaceWuxing: normalizeText(source.interpretationBasis.palaceWuxing, 10),
+      shiPosition: Number(source.interpretationBasis.shiPosition || 0) || undefined,
+      yingPosition: Number(source.interpretationBasis.yingPosition || 0) || undefined,
+      note: normalizeText(source.interpretationBasis.note, 100),
+    } : null,
+    lines: Array.isArray(source.lines) ? source.lines.slice(0, 6).map(summarizeLiuyaoLine) : [],
+  };
+}
+
+function summarizeLiuyaoAnalysis(analysis) {
+  const source = normalizeObject(analysis);
+  if (!Object.keys(source).length) return null;
+  const useSpirit = normalizeObject(source.useSpirit);
+  const supporting = normalizeObject(source.supportingRelations);
+  const candidates = Array.isArray(useSpirit.candidates) ? useSpirit.candidates.slice(0, 6) : [];
+  return {
+    schema: normalizeText(source.schema, 80),
+    focus: normalizeText(source.focus, 80),
+    focusLabel: normalizeText(source.focusLabel, 120),
+    useSpirit: {
+      resolved: useSpirit.resolved === true,
+      mode: normalizeText(useSpirit.mode, 20),
+      target: normalizeText(useSpirit.target, 20),
+      basis: normalizeText(useSpirit.basis, 120),
+      multiple: useSpirit.multiple === true,
+      hidden: useSpirit.hidden === true,
+      requiresComparison: useSpirit.requiresComparison === true,
+      candidates: candidates.map((item) => ({
+        position: Number(item?.position || 0) || null,
+        hostPosition: Number(item?.hostPosition || 0) || null,
+        label: normalizeText(item?.label, 40),
+        shiYing: normalizeText(item?.shiYing, 10),
+        relation: normalizeText(item?.relation, 20),
+        najia: normalizeText(item?.najia, 20),
+        wuxing: normalizeText(item?.wuxing, 10),
+        hidden: item?.hidden === true,
+        monthState: normalizeText(item?.strength?.monthState, 10),
+        dayRelation: normalizeText(item?.strength?.dayRelation, 20),
+        flyingRelation: normalizeText(item?.flyingRelation, 20),
+      })),
+    },
+    supportingRelations: Object.keys(supporting).length ? {
+      originalSpirit: normalizeText(supporting.originalSpirit?.relation, 20),
+      opposingSpirit: normalizeText(supporting.opposingSpirit?.relation, 20),
+      enemySpirit: normalizeText(supporting.enemySpirit?.relation, 20),
+    } : null,
+    hexagramRelations: normalizeObject(source.hexagramRelations),
+    warnings: normalizeStringList(source.warnings, 8, 240),
+    ruleNotes: normalizeStringList(source.ruleNotes, 8, 160),
+    factCatalog: Array.isArray(source.factCatalog) ? source.factCatalog.slice(0, 24).map((item) => ({
+      id: normalizeText(item?.id, 80),
+      value: normalizeText(item?.value, 1000),
+    })).filter((item) => item.id && item.value) : [],
+  };
+}
+
+function summarizeLiuyaoReading(reading) {
+  const source = normalizeObject(reading);
+  if (!Object.keys(source).length) return null;
+  const time = normalizeObject(source.time);
+  return {
+    schema: normalizeText(source.schema, 80),
+    id: normalizeText(source.id, 160),
+    question: normalizeText(source.question, 500),
+    category: normalizeText(source.category, 80),
+    focus: normalizeText(source.focus, 80),
+    dateTime: normalizeText(source.dateTime, 160),
+    timezone: normalizeText(source.timezone, 80),
+    method: normalizeText(source.method, 40),
+    school: normalizeText(source.school, 80),
+    lineValues: Array.isArray(source.lineValues) ? source.lineValues.slice(0, 6).map(Number) : [],
+    time: {
+      year: normalizeText(time.year?.text, 20),
+      month: normalizeText(time.month?.text, 20),
+      day: normalizeText(time.day?.text, 20),
+      hour: normalizeText(time.hour?.text, 20),
+      voidBranches: Array.isArray(time.voidBranches) ? time.voidBranches.slice(0, 2).map((item) => normalizeText(item, 10)) : [],
+      dayBoundary: normalizeText(time.dayBoundary, 40),
+      calendarWarnings: normalizeStringList(time.calendarWarnings, 4, 240),
+    },
+    movingPositions: Array.isArray(source.movingPositions) ? source.movingPositions.slice(0, 6).map(Number) : [],
+    primary: summarizeLiuyaoChart(source.primary),
+    changed: summarizeLiuyaoChart(source.changed),
+    analysis: summarizeLiuyaoAnalysis(source.analysis),
+    interpretations: Array.isArray(source.interpretations)
+      ? source.interpretations.slice(-2).map((item) => ({
+        interpretationId: normalizeText(item?.interpretationId || item?.id, 160),
+        summary: normalizeText(item?.summary || item?.answer, 800),
+        createdAt: normalizeText(item?.createdAt, 80),
+      }))
+      : [],
   };
 }
 
@@ -1007,16 +1277,24 @@ function normalizeSelectedObjectsContext(value, fallback = {}) {
     source.selectedTodoIds || source.todoIds || source.selection?.todoIds || todos.map((todo) => todo.id),
     10,
   );
+  const reading = summarizeLiuyaoReading(source.reading || source.selectedReading || fallback.selectedReading);
+  const selectedReadingIds = normalizeIdList(
+    source.selectedReadingIds || source.readingIds || source.selection?.readingIds || reading?.id,
+    5,
+  );
   return {
     schema: normalizeText(source.schema || AI_SELECTED_OBJECTS_CONTEXT_SCHEMA, 80),
     surface: normalizeText(source.surface || fallback.viewContext?.surface || "unknown", 80),
     selectedTodoIds,
     todos,
+    selectedReadingIds,
+    reading,
     caps: {
       maxSelectedTodos: 5,
+      maxSelectedReadings: 1,
       noteMaxChars: 1500,
     },
-    emptyReason: todos.length ? "" : normalizeText(source.emptyReason || "none_selected", 80),
+    emptyReason: todos.length || reading ? "" : normalizeText(source.emptyReason || "none_selected", 80),
   };
 }
 
@@ -1167,6 +1445,7 @@ function normalizeViewContext(value) {
       todoIds: normalizeIdList(selection.todoIds || selection.todoId),
       entryIds: normalizeIdList(selection.entryIds || selection.entryId),
       journalIds: normalizeIdList(selection.journalIds || selection.journalId),
+      readingIds: normalizeIdList(selection.readingIds || selection.readingId),
     },
   };
 }
@@ -1187,6 +1466,7 @@ function normalizeReferenceScope(input) {
     viewContext: normalizeViewContext(scope.viewContext || input.viewContext),
     includes: {
       selectedTodo: includes.selectedTodo === true,
+      selectedReading: includes.selectedReading === true,
       todos: includes.todos === true,
       busyBlocks: includes.busyBlocks === true,
       entries: includes.entries === true,
@@ -1275,6 +1555,142 @@ function buildProgressContext(input, request, hintedTool) {
   };
 }
 
+function resolvePrePlannerActionContext(request, toolCatalog, viewContext, selectedObjects) {
+  const hintedTool = resolveAssistantTool(toolCatalog, request.intentHint);
+  if (hintedTool) {
+    return {
+      source: "intent_hint",
+      moduleId: hintedTool.module_id,
+      actionId: hintedTool.tool_id,
+      legacyAction: hintedTool.legacy_action,
+      contextContract: normalizeObject(hintedTool.context_contract),
+    };
+  }
+  let modules = [];
+  try {
+    modules = toolCatalog?.registry?.listModules?.().modules || [];
+  } catch {
+    modules = [];
+  }
+  const userText = normalizeText(request.text, 1600).toLowerCase();
+  const activeSurface = normalizeText(viewContext?.surface || viewContext?.activeView, 80);
+  const hasSelectedReading = Boolean(
+    normalizeText(selectedObjects?.reading?.id, 160)
+    || (Array.isArray(selectedObjects?.selectedReadingIds) && selectedObjects.selectedReadingIds.length),
+  );
+  const candidates = [];
+  for (const moduleInfo of modules) {
+    const uiItems = Array.isArray(moduleInfo?.registry?.ui_registry) ? moduleInfo.registry.ui_registry : [];
+    const surfaceMatch = uiItems.some((item) => {
+      const surface = normalizeObject(item?.context_surface || item?.contextSurface);
+      return normalizeText(surface.view, 80) === activeSurface
+        || (Array.isArray(surface.surface_ids) && surface.surface_ids.some((id) => normalizeText(id, 80) === activeSurface));
+    });
+    const actions = Array.isArray(moduleInfo?.registry?.action_registry) ? moduleInfo.registry.action_registry : [];
+    for (const action of actions) {
+      const resolver = normalizeObject(action?.resolver);
+      const terms = Array.isArray(resolver.intent_terms || resolver.intentTerms)
+        ? (resolver.intent_terms || resolver.intentTerms).map((item) => normalizeText(item, 80).toLowerCase()).filter(Boolean)
+        : [];
+      const matchedTerm = terms.filter((term) => userText.includes(term)).sort((left, right) => right.length - left.length)[0] || "";
+      const defaultWhen = normalizeText(resolver.default_when || resolver.defaultWhen, 80);
+      const defaultMatch = surfaceMatch && (
+        (defaultWhen === "selectedReading_present" && hasSelectedReading)
+        || (defaultWhen === "selectedReading_absent" && !hasSelectedReading)
+        || defaultWhen === "always"
+      );
+      if (!matchedTerm && !defaultMatch) continue;
+      candidates.push({
+        source: matchedTerm ? "registry_intent_term" : "view_default",
+        moduleId: normalizeText(moduleInfo.module_id, 80),
+        actionId: normalizeText(action.action_id, 120),
+        legacyAction: normalizeText(action.legacy_action, 80),
+        contextContract: normalizeObject(action.context_contract || action.contextContract),
+        score: (matchedTerm ? 1000 + matchedTerm.length : 0) + (surfaceMatch ? 100 : 0),
+      });
+    }
+  }
+  candidates.sort((left, right) => right.score - left.score);
+  return candidates[0] || {
+    source: "none",
+    moduleId: "",
+    actionId: "",
+    legacyAction: "",
+    contextContract: {},
+  };
+}
+
+function filterMessagesForActionContext(messages, actionContext, selectedObjects) {
+  const source = Array.isArray(messages) ? messages : [];
+  const contract = normalizeObject(actionContext?.contextContract);
+  const history = normalizeObject(contract.history);
+  const mode = normalizeText(history.mode || "recent", 40);
+  if (mode === "current_turn_only") return [];
+  if (mode !== "same_reading") return source.map((message) => ({ role: message.role, content: message.content }));
+  const readingId = normalizeText(
+    selectedObjects?.reading?.id
+      || selectedObjects?.selectedReadingIds?.[0],
+    160,
+  );
+  if (!readingId) return [];
+  const maxTurns = Math.max(1, Math.min(20, Number.parseInt(String(history.maxTurns || 6), 10) || 6));
+  return source
+    .filter((message) => normalizeText(message.readingId || message.castSessionId, 160) === readingId)
+    .slice(-(maxTurns * 2))
+    .map((message) => ({ role: message.role, content: message.content }));
+}
+
+function applyActionContextContract(contextParts, actionContext, referenceScope) {
+  const contract = normalizeObject(actionContext?.contextContract);
+  const denied = new Set(Array.isArray(contract.denied) ? contract.denied : []);
+  const explicitOnly = new Set(Array.isArray(contract.explicit_reference_only) ? contract.explicit_reference_only : []);
+  if (!Object.keys(contract).length) return contextParts;
+  const selectedObjects = {
+    ...contextParts.selectedObjects,
+    selectedTodoIds: [...(contextParts.selectedObjects?.selectedTodoIds || [])],
+    todos: [...(contextParts.selectedObjects?.todos || [])],
+    selectedReadingIds: [...(contextParts.selectedObjects?.selectedReadingIds || [])],
+    reading: contextParts.selectedObjects?.reading || null,
+  };
+  const allowSelectedTodo = !denied.has("selectedTodo")
+    && (!explicitOnly.has("selectedTodo") || referenceScope?.includes?.selectedTodo === true);
+  const allowSelectedReading = !denied.has("selectedReading")
+    && (!explicitOnly.has("selectedReading") || referenceScope?.includes?.selectedReading === true);
+  if (!allowSelectedTodo) {
+    selectedObjects.selectedTodoIds = [];
+    selectedObjects.todos = [];
+  }
+  if (!allowSelectedReading) {
+    selectedObjects.selectedReadingIds = [];
+    selectedObjects.reading = null;
+  }
+  const pageWorkContext = {
+    ...contextParts.pageWorkContext,
+    businessDataIncluded: !["todos", "entries", "busyBlocks"].some((key) => denied.has(key)),
+    todos: denied.has("todos") ? [] : contextParts.pageWorkContext.todos,
+    entries: denied.has("entries") ? [] : contextParts.pageWorkContext.entries,
+    busyBlocks: denied.has("busyBlocks") ? [] : contextParts.pageWorkContext.busyBlocks,
+    stats: denied.has("todos") ? {} : contextParts.pageWorkContext.stats,
+    projectDistribution: denied.has("todos") ? [] : contextParts.pageWorkContext.projectDistribution,
+    tagDistribution: denied.has("todos") ? [] : contextParts.pageWorkContext.tagDistribution,
+  };
+  const globalBackgroundContext = denied.has("globalBackgroundContext") ? {
+    ...contextParts.globalBackgroundContext,
+    businessDataIncluded: false,
+    timeWindowSummary: [],
+    pendingState: { pendingDraftCount: 0, latestScheduleDraft: null },
+  } : contextParts.globalBackgroundContext;
+  return {
+    selectedObjects,
+    selectedTodo: allowSelectedTodo ? selectedObjects.todos[0] || null : null,
+    pageWorkContext,
+    globalBackgroundContext,
+    todos: denied.has("todos") ? [] : contextParts.todos,
+    entries: denied.has("entries") ? [] : contextParts.entries,
+    busyBlocks: denied.has("busyBlocks") ? [] : contextParts.busyBlocks,
+  };
+}
+
 function buildContextBundleForModel(request, toolCatalog, options = {}) {
   const input = normalizeObject(request.input);
   const contextCandidates = normalizeObject(input.contextCandidates);
@@ -1291,6 +1707,7 @@ function buildContextBundleForModel(request, toolCatalog, options = {}) {
   const globalBackgroundContextSource = contextCandidates.globalBackgroundContext || input.globalBackgroundContext;
   const selectedObjects = normalizeSelectedObjectsContext(selectedObjectsSource, {
     selectedTodo: input.todo,
+    selectedReading: input.reading || input.selectedReading,
     viewContext,
   });
   const selectedTodo = input.todo ? summarizeTodo(input.todo) : selectedObjects.todos[0] || null;
@@ -1312,6 +1729,16 @@ function buildContextBundleForModel(request, toolCatalog, options = {}) {
   globalBackgroundContext.pendingState.latestScheduleDraft = Object.keys(latestScheduleDraft).length
     ? latestScheduleDraft
     : null;
+  const actionContext = resolvePrePlannerActionContext(request, toolCatalog, viewContext, selectedObjects);
+  const isolatedContext = applyActionContextContract({
+    selectedObjects,
+    selectedTodo,
+    pageWorkContext,
+    globalBackgroundContext,
+    todos,
+    entries,
+    busyBlocks,
+  }, actionContext, referenceScope);
   const executionTodosSource = Array.isArray(executionCandidates.todos)
     ? executionCandidates.todos
     : [
@@ -1334,15 +1761,21 @@ function buildContextBundleForModel(request, toolCatalog, options = {}) {
     defaultWindow: buildDefaultContextWindow(normalizeText(input.currentDate, 20)),
   });
   const progress = buildProgressContext(input, request, hintedTool);
-  const contextAction = normalizeText(hintedTool?.legacy_action || request.intentHint || progress.contextAction || "assistant", 80);
+  const contextAction = normalizeText(
+    actionContext.legacyAction || hintedTool?.legacy_action || request.intentHint || progress.contextAction || "assistant",
+    80,
+  );
+  const memoryMode = normalizeText(actionContext.contextContract?.memory?.mode, 40);
   const memoryContext = buildModelMemoryContext({
     memoryStore: options.memoryStore,
     request,
-    contextPolicy: request.contextPolicy,
+    contextPolicy: memoryMode === "none"
+      ? { ...request.contextPolicy, includeMemory: "none" }
+      : request.contextPolicy,
     action: contextAction,
-    selectedObjects,
-    pageWorkContext,
-    globalBackgroundContext,
+    selectedObjects: isolatedContext.selectedObjects,
+    pageWorkContext: isolatedContext.pageWorkContext,
+    globalBackgroundContext: isolatedContext.globalBackgroundContext,
   });
   const context = {
     schema: AI_CONTEXT_ENVELOPE_SCHEMA,
@@ -1360,13 +1793,21 @@ function buildContextBundleForModel(request, toolCatalog, options = {}) {
       ...progress,
       contextAction,
     },
-    selectedObjects,
-    pageWorkContext,
-    globalBackgroundContext,
-    selectedTodo,
-    todos,
-    entries,
-    busyBlocks,
+    actionContext: {
+      source: actionContext.source,
+      moduleId: actionContext.moduleId,
+      actionId: actionContext.actionId,
+      historyMode: normalizeText(actionContext.contextContract?.history?.mode || "recent", 40),
+      memoryMode: memoryMode || "active_index_only",
+      crossModule: normalizeText(actionContext.contextContract?.cross_module || "allow", 40),
+    },
+    selectedObjects: isolatedContext.selectedObjects,
+    pageWorkContext: isolatedContext.pageWorkContext,
+    globalBackgroundContext: isolatedContext.globalBackgroundContext,
+    selectedTodo: isolatedContext.selectedTodo,
+    todos: isolatedContext.todos,
+    entries: isolatedContext.entries,
+    busyBlocks: isolatedContext.busyBlocks,
     materials,
     constraints: {
       calendarTitles: "masked",
@@ -1384,6 +1825,10 @@ function buildContextBundleForModel(request, toolCatalog, options = {}) {
       source: Array.isArray(executionCandidates.todos) ? "context_candidates.execution" : "normalized_context_fallback",
     },
     materials,
+    actionContext: {
+      ...actionContext,
+      historyCount: filterMessagesForActionContext(request.messages, actionContext, isolatedContext.selectedObjects).length,
+    },
   };
   return {
     context,
@@ -1523,14 +1968,23 @@ function normalizeMinimumContext(value) {
   };
 }
 
-function getDecisionMinimumContext(decision, toolCatalog) {
-  if (decision?.type !== "tool" || !toolCatalog?.registry) return normalizeMinimumContext(null);
+function getDecisionRegistryAction(decision, toolCatalog) {
+  if (decision?.type !== "tool" || !toolCatalog?.registry) return null;
   const moduleId = normalizeText(decision.moduleId || decision.tool?.split?.(".")?.[0], 80);
-  if (!moduleId) return normalizeMinimumContext(null);
+  if (!moduleId) return null;
   try {
     const bundle = toolCatalog.registry.getActionRegistry(moduleId);
     const actions = Array.isArray(bundle?.action_registry) ? bundle.action_registry : [];
-    const action = actions.find((item) => item?.action_id === decision.tool || item?.legacy_action === decision.legacyAction);
+    return actions.find((item) => item?.action_id === decision.tool || item?.legacy_action === decision.legacyAction) || null;
+  } catch {
+    return null;
+  }
+}
+
+function getDecisionMinimumContext(decision, toolCatalog) {
+  const action = getDecisionRegistryAction(decision, toolCatalog);
+  if (!action) return normalizeMinimumContext(null);
+  try {
     const minimum = normalizeMinimumContext(action?.minimum_context);
     const argumentsSource = normalizeObject(decision?.arguments);
     const explicitTodoRefs = normalizeIdList(
@@ -1552,6 +2006,104 @@ function getDecisionMinimumContext(decision, toolCatalog) {
   }
 }
 
+function getDecisionContextContract(decision, toolCatalog) {
+  const action = getDecisionRegistryAction(decision, toolCatalog);
+  return normalizeObject(action?.context_contract || decision?.contextContract);
+}
+
+function getExplicitlyReferencedContextCapabilities(request, decision) {
+  const input = normalizeObject(request?.input);
+  const referenceScope = normalizeReferenceScope(input);
+  const argumentsSource = normalizeObject(decision?.arguments);
+  const selectedObjects = normalizeObject(input.selectedObjects || input.contextCandidates?.selectedObjects);
+  const explicit = [];
+  if (
+    referenceScope.includes.selectedTodo === true
+    || normalizeIdList(
+      argumentsSource.contextRefs
+        || argumentsSource.todoRefs
+        || argumentsSource.todoIds
+        || argumentsSource.sourceTodoId,
+      20,
+    ).length
+  ) explicit.push("selectedTodo");
+  if (
+    referenceScope.includes.selectedReading === true
+    || normalizeText(argumentsSource.readingId || argumentsSource.selectedReadingId, 160)
+    || normalizeIdList(selectedObjects.selectedReadingIds, 5).length
+  ) explicit.push("selectedReading");
+  return new Set(explicit);
+}
+
+function applyDecisionContextContract(request, decision, toolCatalog, assessment, minimum, contextRequest) {
+  const contract = getDecisionContextContract(decision, toolCatalog);
+  if (!Object.keys(contract).length) {
+    return {
+      assessment,
+      contextRequest,
+      requiredCapabilities: Array.from(new Set([
+        ...assessment.requiredCapabilities,
+        ...minimum.requiredCapabilities,
+        ...normalizeContextCapabilities(contextRequest?.include),
+      ])),
+      filter: {
+        schema: "guanshi-ai-context-contract-filter-v1",
+        applied: false,
+        ignoredCapabilities: [],
+        blocksHistoricalExpansion: false,
+      },
+    };
+  }
+
+  const required = new Set(normalizeContextCapabilities(contract.required));
+  minimum.requiredCapabilities.forEach((capability) => required.add(capability));
+  const optional = new Set(normalizeContextCapabilities(contract.optional));
+  const explicitOnly = new Set(normalizeContextCapabilities(contract.explicit_reference_only));
+  const denied = new Set(normalizeContextCapabilities(contract.denied));
+  const explicitlyReferenced = getExplicitlyReferencedContextCapabilities(request, decision);
+  const plannerCapabilities = Array.from(new Set([
+    ...assessment.requiredCapabilities,
+    ...normalizeContextCapabilities(contextRequest?.include),
+  ]));
+  const allowedPlannerCapabilities = plannerCapabilities.filter((capability) => (
+    !denied.has(capability)
+    && (required.has(capability) || optional.has(capability) || explicitOnly.has(capability))
+    && (!explicitOnly.has(capability) || explicitlyReferenced.has(capability))
+  ));
+  const ignoredCapabilities = plannerCapabilities.filter((capability) => !allowedPlannerCapabilities.includes(capability));
+  const requiredCapabilities = Array.from(new Set([...required, ...allowedPlannerCapabilities]));
+  const assessmentCapabilities = assessment.requiredCapabilities.filter((capability) => requiredCapabilities.includes(capability));
+  const effectiveAssessment = {
+    ...assessment,
+    sufficient: assessment.sufficient || assessmentCapabilities.length === 0,
+    requiredCapabilities: assessmentCapabilities,
+  };
+  const allowedContextIncludes = normalizeContextIncludeList(contextRequest?.include)
+    .filter((item) => {
+      const [capability] = normalizeContextCapabilities([item]);
+      return capability && allowedPlannerCapabilities.includes(capability);
+    });
+  const effectiveContextRequest = contextRequest && allowedContextIncludes.length
+    ? normalizeContextRequest({ ...contextRequest, include: allowedContextIncludes })
+    : null;
+  const deniedRaw = new Set(Array.isArray(contract.denied) ? contract.denied : []);
+  return {
+    assessment: effectiveAssessment,
+    contextRequest: effectiveContextRequest,
+    requiredCapabilities,
+    filter: {
+      schema: "guanshi-ai-context-contract-filter-v1",
+      applied: true,
+      contractSchema: normalizeText(contract.schema, 80),
+      allowedCapabilities: Array.from(new Set([...required, ...optional, ...explicitOnly])).filter((capability) => !denied.has(capability)),
+      requiredCapabilities,
+      ignoredCapabilities,
+      blocksHistoricalExpansion: ["todos", "entries", "busyBlocks"].every((capability) => deniedRaw.has(capability)),
+      reason: ignoredCapabilities.length ? "action_context_contract_authoritative" : "planner_context_matches_action_contract",
+    },
+  };
+}
+
 function getCurrentContextCapabilities(request) {
   const input = normalizeObject(request?.input);
   const referenceScope = normalizeReferenceScope(input);
@@ -1560,6 +2112,7 @@ function getCurrentContextCapabilities(request) {
   const selectedSource = input.selectedObjects || input.contextCandidates?.selectedObjects;
   const selectedObjects = normalizeSelectedObjectsContext(selectedSource, {
     selectedTodo: input.todo,
+    selectedReading: input.reading || input.selectedReading,
     viewContext: referenceScope.viewContext,
   });
   const available = [];
@@ -1569,6 +2122,7 @@ function getCurrentContextCapabilities(request) {
     if (referenceScope.includes.busyBlocks) available.push("busyBlocks");
   }
   if (referenceScope.includes.selectedTodo && selectedObjects.todos.length) available.push("selectedTodo");
+  if (referenceScope.includes.selectedReading && selectedObjects.reading) available.push("selectedReading");
   return {
     capabilities: Array.from(new Set(available)),
     referenceScope,
@@ -1634,6 +2188,7 @@ function listContextSurfaceEntries(toolCatalog) {
 
 function resolveContextSurface(toolCatalog, requiredCapabilities, scopeMode, decision, currentContext) {
   if (requiredCapabilities.includes("selectedTodo") && !currentContext.selectedObjects.todos.length) return null;
+  if (requiredCapabilities.includes("selectedReading") && !currentContext.selectedObjects.reading) return null;
   const actionRefs = new Set([decision?.tool, decision?.legacyAction].map((item) => normalizeText(item, 120)).filter(Boolean));
   return listContextSurfaceEntries(toolCatalog)
     .filter((entry) => requiredCapabilities.every((capability) => entry.provides.includes(capability)))
@@ -1649,20 +2204,18 @@ function buildContextRequirement(request, decision, toolCatalog) {
   const assessment = normalizePlannerContextAssessment(decision?.contextAssessment);
   const minimum = getDecisionMinimumContext(decision, toolCatalog);
   const contextRequest = normalizeContextRequest(decision?.contextRequest);
-  const requiredCapabilities = Array.from(new Set([
-    ...assessment.requiredCapabilities,
-    ...minimum.requiredCapabilities,
-    ...normalizeContextCapabilities(contextRequest?.include),
-  ]));
-  const scopeMode = assessment.scopeMode || minimum.scopeMode || normalizeReferenceScope(normalizeObject(request?.input)).resolvedMode;
-  const range = contextRequest?.range?.start ? contextRequest.range : assessment.range;
+  const governed = applyDecisionContextContract(request, decision, toolCatalog, assessment, minimum, contextRequest);
+  const scopeMode = governed.assessment.scopeMode || minimum.scopeMode || normalizeReferenceScope(normalizeObject(request?.input)).resolvedMode;
+  const range = governed.contextRequest?.range?.start ? governed.contextRequest.range : governed.assessment.range;
   return {
-    assessment,
-    requiredCapabilities,
+    assessment: governed.assessment,
+    requiredCapabilities: governed.requiredCapabilities,
     scopeMode,
     range,
-    detailLevel: contextRequest?.detailLevel || assessment.detailLevel,
-    reason: assessment.reason || contextRequest?.reason || "当前上下文不足以完成本轮任务。",
+    detailLevel: governed.contextRequest?.detailLevel || governed.assessment.detailLevel,
+    reason: governed.assessment.reason || governed.contextRequest?.reason || "当前上下文不足以完成本轮任务。",
+    contextRequest: governed.contextRequest,
+    contextContractFilter: governed.filter,
   };
 }
 
@@ -1686,7 +2239,11 @@ function createContextResolution(status, requirement, details = {}) {
 }
 
 function createAuthorizationDecision(request, previousDecision, requirement, reason) {
-  const existing = normalizeContextRequest(previousDecision?.contextRequest);
+  const existing = normalizeContextRequest(
+    Object.prototype.hasOwnProperty.call(normalizeObject(requirement), "contextRequest")
+      ? requirement.contextRequest
+      : previousDecision?.contextRequest,
+  );
   const range = getRequirementRange(request, requirement);
   const contextRequest = existing || {
     schema: AI_CONTEXT_REQUEST_SCHEMA,
@@ -1736,7 +2293,9 @@ function enforceContextSufficiencyGuard(request, decision, toolCatalog) {
   const requirement = buildContextRequirement(request, decision, toolCatalog);
   const currentContext = getCurrentContextCapabilities(request);
   const continuation = normalizeContextContinuation(request?.contextContinuation);
-  const range = resolveOutOfDefaultContextRequest(request);
+  const range = requirement.contextContractFilter?.blocksHistoricalExpansion
+    ? null
+    : resolveOutOfDefaultContextRequest(request);
   if (range && decision?.type !== "need_more_context") {
     const contextRequest = {
       schema: AI_CONTEXT_REQUEST_SCHEMA,
@@ -1792,6 +2351,7 @@ function enforceContextSufficiencyGuard(request, decision, toolCatalog) {
         dateReferenceResolution: range,
         contextRequest,
         contextResolution,
+        contextContractFilter: requirement.contextContractFilter,
       },
       contextResolution,
     };
@@ -1815,6 +2375,7 @@ function enforceContextSufficiencyGuard(request, decision, toolCatalog) {
         applied: false,
         reason: contextResolution.reason,
         contextResolution,
+        contextContractFilter: requirement.contextContractFilter,
       },
       contextResolution,
     };
@@ -1866,6 +2427,7 @@ function enforceContextSufficiencyGuard(request, decision, toolCatalog) {
         reason: "registered_surface_can_supply_missing_context",
         previousDecision: redactSensitiveValue(decision, { maxStringLength: 2000 }),
         contextResolution,
+        contextContractFilter: requirement.contextContractFilter,
       },
       contextResolution,
     };
@@ -1897,6 +2459,7 @@ function enforceContextSufficiencyGuard(request, decision, toolCatalog) {
       previousDecision: redactSensitiveValue(decision, { maxStringLength: 2000 }),
       contextRequest: authorizationDecision.contextRequest,
       contextResolution,
+      contextContractFilter: requirement.contextContractFilter,
     },
     contextResolution,
   };
@@ -1908,8 +2471,11 @@ function buildSystemPrompt(toolCatalog) {
     .join("\n");
   return [
     `prompt_schema: ${AI_PLANNER_PROMPT_SCHEMA}`,
+    GUANSHI_PERSONA_PROMPT,
     "角色：你是观时的 Planner，负责把用户输入路由为 answer 或受控工具。",
     "任务边界：只做路线决策和工具参数提取；不要写最终给用户看的自然语言长回答。",
+    "幕僚职责落实：路由前先识别用户真正想解决的问题；只有上下文能够支持时，才提取优先事项、承诺、委派、依赖和风险，不得为了体现身份而虚构业务事实。",
+    "身份回答规则：用户询问你是谁或能做什么时，writerTask 必须以观时 Personal Chief of Staff 的产品身份说明工作方式，同时只介绍工具目录和当前上下文中真实可用的能力；不得把内部 Planner/Writer 岗位写给用户。",
     "输出要求：必须只输出一个 JSON 对象；不要输出 Markdown；不要输出解释性前后缀。",
     "路由优先级：",
     "1. 写入、录入、排程、保存记忆、拆解任务、重排任务：选择工具。工具只创建草稿或提案，最终写入必须由用户在观时 UI 确认。",
@@ -1921,6 +2487,7 @@ function buildSystemPrompt(toolCatalog) {
 	    "语义字段规则：选择工具时，在 arguments 里尽量给 workflow 可校验字段；包括 sourceText、normalizedGoal、memoryRefs、contextRefs、assumptions、missingFields、warnings、confidence，以及该工具需要的 task/memory/schedule 等候选对象。",
 	    "语义字段边界：这些字段只是候选工单；不要声称已经应用。缺字段就写 missingFields，靠上下文或记忆补全时写 assumptions 和 memoryRefs。",
 	    "执行引用规则：排程和重排时优先输出 todoRefs/contextRefs 或 todoIds，不要复制整批 todos/tasks。Workflow 会从服务端 TurnContext 补齐真实待办；模型生成的 tasks/todos 不是执行数据源。",
+      "重排策略规则：time.reflow_unfinished 默认 strategy=minimal_change，尊重手动顺序和仍有效的时间；只有用户明确要求整体优化、按优先级或截止日期重新排序时才选择 balanced 或 deadline_first。锁定任务不能移动，选择部分任务也不能忽略范围内其他任务的占用。",
 	    "估时字段规则：选择 time.parse_task 时，如果用户没有明确时长，也要结合任务语义、上下文和已确认记忆输出 task.estimatedMinutes、task.taskType、task.minimumBlockMinutes，并在 assumptions 或 warnings 里说明估时依据或不确定性。",
 	    "拆解估时规则：选择 time.breakdown_task 时，尽量输出 parentTask 或 contextRefs；父任务已有 dueDate/startTime/endTime 时要带给 workflow。如果能拆出步骤，输出 subtasks 数组，每项包含 title、estimatedMinutes、taskType；子任务时间要按步骤成本分配，不要机械平分。",
 	    "拆解命名规则：拆解出的子待办 title 尽量使用“总事项 - 子事项”格式；总事项代表父任务的核心目标，子事项代表当前步骤，两段都要精简，例如“回复客户 - 整理要点”。",
@@ -1928,6 +2495,11 @@ function buildSystemPrompt(toolCatalog) {
 	    "完成信息字段：选择 time.complete_task 时，在 arguments.completion 中只填写用户明确提供或能从本轮语义可靠换算的 actualDate、actualStartTime、actualEndTime、actualDurationMinutes、qualityScore、happinessScore；需要修改标题、项目、分类、标签或备注时放在 completion.updates。评分范围为 1-10。",
 	    "完成信息缺省：实际时间和评分都不是选择完成 Action 的前提；用户没提供实际时间时不要追问，Workflow 会按当前完成时刻和原任务估时生成实际时间块。不要为了填满字段虚构评分或业务信息。",
 	    "完成确认边界：time.complete_task 只生成待确认完成草稿；不要声称待办已经完成或日历块已经写入。用户确认后，本地完成链路才会更新待办并生成 todo-completed 实际记录。",
+	    "六爻起卦规则：用户明确说问卦、起卦、摇一卦、六爻占问时，选择 liuyao.create_hexagram；如果当前 ViewContext 位于六爻页、当前没有选中卦，用户直接输入一个具体所问事项，即使没有重复‘问卦/起卦’字样，也选择 liuyao.create_hexagram。arguments 只填写 question、category、background、focus 等语义信息，绝不能生成 lineValues、铜钱结果或自行排盘。category 应从事业、财运、感情、健康、出行、寻物、其他中选择最贴近的一类；focus 只允许 self、other_party、career、wealth、documents、children、peers、male_partner、female_partner。应根据问题中的核心对象主动识别 focus，例如合作对象用 other_party、职位发展用 career、合同文书用 documents；只有问题确实无法判断对象时才留空，并在 warnings 说明。",
+	    "六爻起卦上下文规则：liuyao.create_hexagram 是新卦，contextAssessment.requiredCapabilities 必须为空；不得要求 selectedReading，也不得因为问题提到今天、下个月等时间词而要求待办、日历或时间记录。",
+	    "六爻追问规则：用户围绕当前选中卦说这卦、此卦、当前卦或继续追问时，选择 liuyao.interpret_hexagram，contextAssessment.requiredCapabilities 包含 selectedReading，scopeMode 使用 view_liuyao_reading；不要重新起卦。",
+	    "六爻意图边界：普通求建议、解释或情绪表达，如果没有明确要求占问，不要擅自起卦；选 answer 或只追问一个澄清问题。",
+	    "六爻执行边界：卦盘由本地确定性内核生成，模型不得改写卦名、爻值、世应、六亲、纳甲、旬空或月破日冲；解读不得声称确定预言，也不得替代医疗、法律或财务判断。",
 	    "记忆化估时规则：如果用户表达“以后/一般/通常/默认/按某类任务估多少分钟”，选择 time.save_memory_proposal，生成 rule.kind=task_duration_estimate 的记忆提案，并让 appliesTo 覆盖 assistant、parse_task、breakdown_task。",
 	    "记忆分流规则：只有用户特有、跨会话有用、相对稳定且会影响未来协作的偏好、原则、习惯或边界，才能选择 time.save_memory_proposal；一次性要求、当前任务事实、通用建议和模型自己的建议不能保存为记忆。自由输入的语义分流由你在本轮完成一次，本地 Workflow 只校验结构、权限和确认边界，不会再用关键词替你重判意图。",
 	    "记忆不确定规则：如果无法判断用户说的是本次临时要求还是长期规则，选择 answer/clarify 并只追问这一点；不要猜测，也不要先生成记忆提案。",
@@ -1938,7 +2510,7 @@ function buildSystemPrompt(toolCatalog) {
 	    "记忆字段类型：modelReadable 和 engineReadable 必须是 JSON boolean，不得写说明文字或对象；evidence 必须是对象，优先包含 source、quote、date；日期字段为空时用 null，有值时用 YYYY-MM-DD。",
 	    "记忆执行边界：用户说‘只给 AI/模型参考’、‘不要让本地排程器或规则引擎执行’时，proposal.modelReadable 必须为 true，proposal.engineReadable 必须为 false。",
 	    "记忆规则结构：task_duration_estimate 使用 {kind, matcher 或 taskType, estimatedMinutes}；no_work_after 使用 {kind, time}；fixed_break 使用 {kind, start, end}；workflow_playbook 使用 {kind, trigger, steps}。不要自造这些规则的字段名。",
-    "上下文充分性规则：contextAssessment.sufficient=false 时，requiredCapabilities 只能使用 selectedTodo、todos、entries、busyBlocks，并写明 scopeMode、可选 range 和 reason；不要输出页面名称。",
+    "上下文充分性规则：contextAssessment.sufficient=false 时，requiredCapabilities 只能使用 selectedTodo、selectedReading、todos、entries、busyBlocks，并写明 scopeMode、可选 range 和 reason；不要输出页面名称。",
     "页面可满足规则：如果只是当前页面没有所需数据，但今天/本周等用户已表达范围可由其他应用页面提供，仍输出原本的 answer/tool，同时把 contextAssessment.sufficient 设为 false；本地 Resolver 会决定是否切页重组。",
 	    "扩围规则：只有需要超出当前允许范围的日期、项目、标签、状态、待办详情或日历范围时才输出 need_more_context；contextRequest 必须写明 reason、requestType、range、include。requestType 只能使用 time_window_expand、todo_detail_expand、project_expand、tag_expand、status_expand、calendar_expand。",
     "扩围字段规则：按时间扩展写 range.start/end；展开待办详情写 todoIds 和 detailLevel；按项目/分类/标签/状态扩展写 project/category/tag/status；日历扩展默认只能请求 busyBlocks 或 calendarBusyBlocks，不能请求标题。",
@@ -1955,7 +2527,7 @@ function buildSystemPrompt(toolCatalog) {
     "可选工具目录：",
     tools,
     "answer 输出格式：",
-    `{"type":"answer","intent":"explain_memory|explore_principles|clarify|unsupported_tool|explain_plan|review|general_answer","contextAssessment":{"schema":"${AI_CONTEXT_ASSESSMENT_SCHEMA}","sufficient":true,"requiredCapabilities":[],"scopeMode":"today|week|selected_todo|none","range":{"start":"","end":""},"reason":"资料为什么足够或缺什么"},"writerTask":{"schema":"${AI_WRITER_TASK_SCHEMA}","goal":"给 Writer 的写作目标，不要写成最终正文","responseShape":"例如：一句承接后追问一个关键问题","mustMention":[],"mustAvoid":["不要声称已经写入待办、日历、提醒或记忆。"],"tone":"简洁、准确、顺着用户当前意图"},"needsFollowUp":false,"boundary":"不能越过的边界","referenceKeys":["memory","todos","busyBlocks"],"reason":"简短原因"}`,
+    `{"type":"answer","intent":"explain_memory|explore_principles|clarify|unsupported_tool|explain_plan|review|general_answer","contextAssessment":{"schema":"${AI_CONTEXT_ASSESSMENT_SCHEMA}","sufficient":true,"requiredCapabilities":[],"scopeMode":"today|week|selected_todo|view_liuyao_reading|none","range":{"start":"","end":""},"reason":"资料为什么足够或缺什么"},"writerTask":{"schema":"${AI_WRITER_TASK_SCHEMA}","goal":"给 Writer 的写作目标，不要写成最终正文","responseShape":"例如：一句承接后追问一个关键问题","mustMention":[],"mustAvoid":["不要声称已经写入待办、日历、提醒或记忆。"],"tone":"简洁、准确、顺着用户当前意图"},"needsFollowUp":false,"boundary":"不能越过的边界","referenceKeys":["memory","todos","busyBlocks"],"reason":"简短原因"}`,
     "或：",
 	    `{"type":"tool","tool":"<必须来自可选工具的完整 tool_id>","contextAssessment":{"schema":"${AI_CONTEXT_ASSESSMENT_SCHEMA}","sufficient":false,"requiredCapabilities":["todos","busyBlocks"],"scopeMode":"today","reason":"当前页面缺少今日待办和忙闲块"},"arguments":{"text":"用户原文或工具所需文本","sourceText":"用户原文","normalizedGoal":"还原后的用户目标","memoryRefs":[],"contextRefs":[],"assumptions":[],"missingFields":[],"warnings":[],"confidence":0.8,"task":{"title":"待办标题","estimatedMinutes":30,"taskType":"communication"},"subtasks":[{"title":"子任务标题","estimatedMinutes":15,"taskType":"communication"}]},"reason":"简短原因"}`,
     "或：",
@@ -1978,6 +2550,7 @@ function buildModelFacingContext(context) {
     contextContinuation: source.contextContinuation,
     contextAccessPolicy: source.contextAccessPolicy,
     progress: source.progress,
+    actionContext: source.actionContext,
     selectedObjects: source.selectedObjects,
     pageWorkContext: source.pageWorkContext,
     globalBackgroundContext: source.globalBackgroundContext,
@@ -1991,16 +2564,18 @@ function buildPlannerMessageBundle(request, toolCatalog, options = {}) {
   const context = contextBundle.context;
   const modelFacingContext = buildModelFacingContext(context);
   const semanticFeedback = normalizeSemanticFeedback(request.semanticFeedback);
-  const history = request.messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-  }));
+  const history = filterMessagesForActionContext(
+    request.messages,
+    contextBundle.turnContext?.actionContext,
+    modelFacingContext.selectedObjects,
+  );
   const contextSummary = JSON.stringify({
     schema: modelFacingContext.schema,
     currentDate: modelFacingContext.currentDate,
     runtimeClock: modelFacingContext.runtimeClock,
     referenceScope: modelFacingContext.referenceScope,
     progress: modelFacingContext.progress,
+    actionContext: modelFacingContext.actionContext,
     selectedTodoIds: modelFacingContext.selectedObjects?.selectedTodoIds || [],
     pageCounts: {
       todos: Array.isArray(modelFacingContext.pageWorkContext?.todos) ? modelFacingContext.pageWorkContext.todos.length : 0,
@@ -2011,7 +2586,7 @@ function buildPlannerMessageBundle(request, toolCatalog, options = {}) {
   const composed = composeModelInput({
     stage: "planner",
     provider: options.provider,
-    maxOutputTokens: 1000,
+    maxOutputTokens: getProviderStageAttemptPolicy("planner", 1).maxTokens,
     systemPrompt: buildSystemPrompt(toolCatalog),
     history,
     sections: [
@@ -2408,10 +2983,16 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
   }
   if (action === "reflow_unfinished") {
     input.targetDate = normalizeText(input.targetDate || currentDate, 20);
+    input.strategy = ["minimal_change", "balanced", "deadline_first"].includes(mergedArgs.strategy)
+      ? mergedArgs.strategy : "minimal_change";
   }
   if (["plan_today", "plan_week", "reflow_unfinished"].includes(action)) {
     const resolution = resolveWorkflowScheduleTodos(request, mergedArgs, turnContext);
     input.todos = resolution.todos;
+    // Selecting movable targets must not remove the rest of the authorized scope's occupancy.
+    const targetIds = new Set(resolution.todos.map((todo) => todo.id));
+    input.fixedTodos = normalizeWorkflowTodoCandidates(turnContext?.execution?.todos, 200)
+      .filter((todo) => !targetIds.has(todo.id));
     input.busyBlocks = Array.isArray(turnContext?.execution?.busyBlocks) && turnContext.execution.busyBlocks.length
       ? turnContext.execution.busyBlocks
       : Array.isArray(requestInput.busyBlocks)
@@ -2428,6 +3009,68 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
   }
   if (action === "review_day" && !input.period) {
     input.period = { start: currentDate, end: currentDate };
+  }
+
+  if (["create_hexagram", "interpret_hexagram"].includes(action)) {
+    const selectedObjects = normalizeObject(requestInput.selectedObjects || requestInput.contextCandidates?.selectedObjects);
+    const referenceScope = normalizeReferenceScope(requestInput);
+    const selectedTodo = referenceScope.includes.selectedTodo === true
+      ? normalizeWorkflowTodoCandidate(selectedObjects.todos?.[0] || requestInput.todo)
+      : null;
+    const selectedReading = normalizeObject(
+      selectedObjects.reading
+        || selectedObjects.selectedReading
+        || requestInput.reading
+        || requestInput.selectedReading,
+    );
+    input.question = normalizeText(
+      mergedArgs.question
+        || mergedArgs.text
+        || semanticAction.normalizedGoal
+        || request.text,
+      500,
+    );
+    input.category = normalizeText(mergedArgs.category || "其他", 80);
+    input.focus = normalizeText(mergedArgs.focus || mergedArgs.followUp, 300);
+    input.liuyaoDateTime = normalizeObject(requestInput.liuyaoDateTime);
+    input.reading = action === "interpret_hexagram" && Object.keys(selectedReading).length ? selectedReading : null;
+    input.todo = action === "create_hexagram" ? selectedTodo : null;
+    input.selectedObjects = action === "interpret_hexagram" ? {
+      schema: AI_SELECTED_OBJECTS_CONTEXT_SCHEMA,
+      surface: "liuyao",
+      selectedTodoIds: [],
+      todos: [],
+      selectedReadingIds: normalizeIdList(selectedReading.id, 1),
+      reading: Object.keys(selectedReading).length ? selectedReading : null,
+    } : {
+      schema: AI_SELECTED_OBJECTS_CONTEXT_SCHEMA,
+      surface: normalizeText(requestInput.viewContext?.surface || requestInput.viewContext?.activeView, 80),
+      selectedTodoIds: selectedTodo?.id ? [selectedTodo.id] : [],
+      todos: selectedTodo ? [selectedTodo] : [],
+      selectedReadingIds: [],
+      reading: null,
+    };
+    input.viewContext = {
+      ...normalizeViewContext(requestInput.viewContext),
+      selection: {
+        todoIds: selectedTodo?.id ? [selectedTodo.id] : [],
+        entryIds: [],
+        journalIds: [],
+        readingIds: action === "interpret_hexagram" ? normalizeIdList(selectedReading.id, 1) : [],
+      },
+    };
+    delete input.contextCandidates;
+    delete input.executionContext;
+    delete input.pageWorkContext;
+    delete input.globalBackgroundContext;
+    delete input.todos;
+    delete input.tasks;
+    delete input.entries;
+    delete input.busyBlocks;
+    delete input.fixedTodos;
+    delete input.progressSummary;
+    delete input.lineValues;
+    delete input.tosses;
   }
 
   return input;
@@ -2454,6 +3097,8 @@ function buildWorkflowRequest(request, decision, turnContext = {}) {
       toolId: normalizeText(decision.tool, 100),
       memoryNamespace: normalizeText(decision.memoryNamespace, 100),
       draftSchema: Array.isArray(decision.draftSchema) ? decision.draftSchema.slice(0, 8) : [],
+      artifactPersistence: normalizeText(decision.artifactPersistence || "pending", 40),
+      contextContract: normalizeObject(decision.contextContract),
     },
   };
 }
@@ -2520,64 +3165,63 @@ async function planAssistantTurn(input, options = {}) {
 
   let chatRequest;
   let requestTrace;
-  let response;
+  let providerPayload;
+  let providerRawText = "";
+  let providerResponseTrace = null;
+  let providerCompletion = null;
+  let normalizedPlannerOutput = null;
   const plannerMessageBundle = buildPlannerMessageBundle(request, toolCatalog, {
     memoryStore: options.memoryStore,
     draftStore: options.draftStore,
     provider,
     now: options.now,
   });
-  try {
-    emitAssistantEvent(options, {
-      type: "status",
-      stage: "provider_request",
-      label: "等待模型判断",
-      requestId: request.requestId,
-    });
-    const providerResult = await fetchProviderChat(provider, {
-      messages: plannerMessageBundle.messages,
-      allowExternalRequest: true,
-      temperature: 0.1,
-      maxTokens: 1000,
-    }, {
-      env: options.env || process.env,
-      fetchImpl: options.fetchImpl,
-      allowExternalRequest: true,
-      stream: false,
-    });
-    chatRequest = providerResult.chatRequest;
-    requestTrace = providerResult.requestTrace;
-    response = providerResult.response;
-    emitAssistantEvent(options, {
-      type: "status",
-      stage: "provider_response",
-      label: "模型响应已返回",
-      requestId: request.requestId,
-    });
-  } catch (error) {
-    throw addStageToError(error, "provider_request", "AI_ASSISTANT_PROVIDER_REQUEST_FAILED", "AI provider request failed.", 502);
+  emitAssistantEvent(options, {
+    type: "status",
+    stage: "provider_request",
+    label: "等待模型判断",
+    requestId: request.requestId,
+  });
+  const plannerPolicy = getProviderStageAttemptPolicy("planner", 1, options.stagePolicy);
+  for (let attempt = 1; attempt <= plannerPolicy.maxRetries + 1; attempt += 1) {
+    try {
+      const providerResult = await fetchAssistantStageCompletion(
+        provider,
+        plannerMessageBundle.messages,
+        "planner",
+        attempt,
+        { ...options, requestId: request.requestId },
+      );
+      assertProviderCompletion("provider_response", providerResult, "AI Planner 输出未完整。", "AI_ASSISTANT_PROVIDER_HTTP_STATUS");
+      const candidate = normalizePlannerDecisionWithFallback(providerResult.payload, toolCatalog);
+      if (candidate.plannerDecision?.parseStatus === "plain_text_fallback") {
+        throw createAssistantError("AI_ASSISTANT_PLANNER_OUTPUT_INVALID", "AI Planner 没有返回完整的结构化判断。", 502, {
+          stage: "provider_response",
+          retryable: true,
+          completion: providerResult.completionMeta,
+        });
+      }
+      chatRequest = providerResult.chatRequest;
+      requestTrace = providerResult.requestTrace;
+      providerPayload = providerResult.payload;
+      providerRawText = providerResult.rawText;
+      providerResponseTrace = providerResult.responseTrace;
+      providerCompletion = providerResult.completionMeta;
+      normalizedPlannerOutput = candidate;
+      break;
+    } catch (error) {
+      if (canRetryAssistantStage(error, attempt, plannerPolicy.maxRetries)) continue;
+      throw addStageToError(error, error?.details?.stage || "provider_request", "AI_ASSISTANT_PROVIDER_REQUEST_FAILED", "AI provider request failed.", 502);
+    }
   }
+  emitAssistantEvent(options, {
+    type: "status",
+    stage: "provider_response",
+    label: "模型响应已返回",
+    requestId: request.requestId,
+    completion: providerCompletion,
+  });
 
-  let providerPayload;
-  let providerRawText = "";
-  let providerResponseTrace = null;
-  try {
-    const providerTrace = await readProviderPayloadWithTrace(response);
-    providerPayload = providerTrace.payload;
-    providerRawText = providerTrace.rawText;
-    providerResponseTrace = providerTrace.responseTrace;
-  } catch (error) {
-    throw addStageToError(error, "provider_response", "AI_ASSISTANT_PROVIDER_RESPONSE_READ_FAILED", "AI provider response could not be read.", 502);
-  }
-  if (!response.ok) {
-    throw createAssistantError("AI_ASSISTANT_PROVIDER_HTTP_STATUS", "AI assistant provider request failed.", 502, {
-      stage: "provider_response",
-      httpStatus: response.status,
-      body: redactSensitiveValue(providerPayload, { maxStringLength: 2000 }),
-    });
-  }
-
-  const normalizedPlannerOutput = normalizePlannerDecisionWithFallback(providerPayload, toolCatalog);
   const providerText = normalizedPlannerOutput.providerText;
   const plannerDecision = stabilizeDecision(request, normalizedPlannerOutput.plannerDecision, toolCatalog);
   const plannerOutputSource = normalizedPlannerOutput.plannerOutputSource;
@@ -2623,6 +3267,7 @@ async function planAssistantTurn(input, options = {}) {
     providerPayload,
     providerRawText,
     providerResponseTrace,
+    providerCompletion,
     plannerOutputSource,
     reasoningFallback,
     plannerDecision,
@@ -2658,6 +3303,8 @@ function executeAssistantToolDecision(plannerResult, stores = {}, options = {}) 
         stage: "workflow",
         requestId: request.requestId,
         action: workflow?.request?.action || "",
+        phase: ["create_hexagram", "interpret_hexagram"].includes(workflow?.request?.action) ? "chart_ready" : "workflow_complete",
+        workflow: ["create_hexagram", "interpret_hexagram"].includes(workflow?.request?.action) ? workflow : undefined,
       });
     } catch (error) {
       throw addStageToError(error, "workflow", "AI_ASSISTANT_WORKFLOW_FAILED", "AI assistant tool workflow failed.", 400);
@@ -2708,6 +3355,7 @@ function buildAssistantTurnTrace(plannerResult, workflow = null, options = {}) {
       { stage: "workflow", source: "local workflow execution", rawField: "workflowRequestRaw/workflowResultRaw" },
       { stage: "writer_request", source: "provider request body", rawField: "writerRequestRaw" },
       { stage: "writer_response", source: "provider response body or stream chunks", rawField: "writerResponseRaw" },
+      { stage: "provider_completion", source: "normalized provider finish reason and usage", rawField: "providerCompletionRaw" },
     ],
     userInputRaw: {
       text: request.text || "",
@@ -2769,6 +3417,10 @@ function buildAssistantTurnTrace(plannerResult, workflow = null, options = {}) {
       : null,
     writerRequestRaw,
     writerResponseRaw,
+    providerCompletionRaw: {
+      planner: plannerResult.providerCompletion || null,
+      writer: options.providerCompletion || null,
+    },
   }, { maxStringLength: 60000 });
 }
 
@@ -2786,6 +3438,13 @@ function buildAssistantResultFromPlan(plannerResult, workflow = null, options = 
   const chatRequest = plannerResult.chatRequest || {};
   const modelContext = normalizeObject(plannerResult.modelContext);
   const memoryContext = normalizeObject(plannerResult.memoryContext);
+  const providerCompletion = {
+    schema: "guanshi-ai-turn-provider-completion-v1",
+    planner: plannerResult.providerCompletion || null,
+    writer: options.providerCompletion || null,
+    complete: (!plannerResult.providerCompletion || plannerResult.providerCompletion.complete === true)
+      && (!options.providerCompletion || options.providerCompletion.complete === true),
+  };
   const modelInputTurns = [
     {
       stage: "planner",
@@ -2836,6 +3495,7 @@ function buildAssistantResultFromPlan(plannerResult, workflow = null, options = 
     promptContracts: {
       planner: AI_PLANNER_PROMPT_SCHEMA,
       writer: Array.isArray(options.writerMessages) ? AI_WRITER_PROMPT_SCHEMA : "",
+      persona: GUANSHI_PERSONA_PROMPT_SCHEMA,
       contextEnvelope: AI_CONTEXT_ENVELOPE_SCHEMA,
       turnContext: AI_TURN_CONTEXT_SCHEMA,
       selectedObjectsContext: AI_SELECTED_OBJECTS_CONTEXT_SCHEMA,
@@ -2851,6 +3511,7 @@ function buildAssistantResultFromPlan(plannerResult, workflow = null, options = 
     provider: {
       providerType: chatRequest.providerType,
       stream: options.stream === true,
+      completion: providerCompletion,
     },
     plannerOutput: {
       source: plannerResult.plannerOutputSource || "message_content",
@@ -2987,6 +3648,8 @@ function buildAssistantResultFromPlan(plannerResult, workflow = null, options = 
       providerType: chatRequest.providerType,
       stream: options.stream === true,
     },
+    providerCompletion,
+    incomplete: providerCompletion.complete !== true,
     contextSnapshot,
     semanticAction,
     actionReview,
@@ -3019,6 +3682,8 @@ function buildAnswerWriterMessageBundle(request, decision = {}, toolCatalog = cr
   }));
   const systemPrompt = [
     `prompt_schema: ${AI_WRITER_PROMPT_SCHEMA}`,
+    GUANSHI_PERSONA_PROMPT,
+    GUANSHI_WRITER_VOICE_PROMPT,
     "角色：你是观时的 Writer，负责把 Planner 的 writerTask 写成用户可见的中文正文。",
     "任务边界：只执行 writerTask；不重新选择工具；不创建草稿；不声称已经写入待办、日历、提醒或记忆。answer 模式没有本轮 Workflow 产物，因此不得声称已创建、已生成、已保存或已更新待确认卡片、草稿、提案，也不得承诺稍后自动生成。",
     "写作规则：遵守 responseShape、mustMention、mustAvoid、tone 和 boundary；如果要求追问，只追问一个关键问题。",
@@ -3046,7 +3711,7 @@ function buildAnswerWriterMessageBundle(request, decision = {}, toolCatalog = cr
   return composeModelInput({
     stage: "writer",
     provider: options.provider,
-    maxOutputTokens: 1400,
+    maxOutputTokens: getProviderStageAttemptPolicy("answer_writer", 1).maxTokens,
     systemPrompt,
     history,
     sections: [
@@ -3113,8 +3778,7 @@ async function runAnswerWriterTurn(plannerResult, options = {}) {
     provider: plannerResult.provider,
   });
   const writerMessages = writerMessageBundle.messages;
-  let response;
-  let writerRequestTrace = null;
+  let providerResult;
   try {
     emitAssistantEvent(options, {
       type: "status",
@@ -3122,51 +3786,255 @@ async function runAnswerWriterTurn(plannerResult, options = {}) {
       label: "生成回答",
       requestId: plannerResult.request.requestId,
     });
-    const providerResult = await fetchProviderChat(plannerResult.provider, {
-      messages: writerMessages,
-      allowExternalRequest: true,
-      temperature: 0.4,
-      maxTokens: 1400,
-    }, {
-      env: options.env || process.env,
-      fetchImpl: options.fetchImpl,
-      allowExternalRequest: true,
-      stream: false,
-    });
-    response = providerResult.response;
-    writerRequestTrace = providerResult.requestTrace;
+    providerResult = await fetchAssistantStageCompletion(
+      plannerResult.provider,
+      writerMessages,
+      "answer_writer",
+      1,
+      { ...options, requestId: plannerResult.request.requestId },
+    );
+    assertProviderCompletion("answer_writer", providerResult, "AI 回答生成未完整。", "AI_ASSISTANT_WRITER_HTTP_STATUS");
   } catch (error) {
     throw addStageToError(error, "answer_writer", "AI_ASSISTANT_WRITER_REQUEST_FAILED", "AI answer writer request failed.", 502);
   }
-
-  let providerPayload;
-  let providerRawText = "";
-  let writerResponseTrace = null;
-  try {
-    const providerTrace = await readProviderPayloadWithTrace(response);
-    providerPayload = providerTrace.payload;
-    providerRawText = providerTrace.rawText;
-    writerResponseTrace = providerTrace.responseTrace;
-  } catch (error) {
-    throw addStageToError(error, "answer_writer", "AI_ASSISTANT_WRITER_RESPONSE_READ_FAILED", "AI answer writer response could not be read.", 502);
-  }
-  if (!response.ok) {
-    throw createAssistantError("AI_ASSISTANT_WRITER_HTTP_STATUS", "AI answer writer request failed.", 502, {
-      stage: "answer_writer",
-      httpStatus: response.status,
-      body: redactSensitiveValue(providerPayload, { maxStringLength: 2000 }),
-    });
-  }
-  const writerOutput = sanitizeAssistantAnswerText(extractProviderText(providerPayload));
+  const writerOutput = sanitizeAssistantAnswerText(extractProviderText(providerResult.payload));
   return {
     answer: writerOutput || plannerResult.decision.handoff || plannerResult.providerText,
     writerMessages,
     writerBudgetReport: writerMessageBundle.report,
     writerOutput,
-    providerPayload,
-    providerRawText,
-    writerRequestTrace,
-    writerResponseTrace,
+    providerPayload: providerResult.payload,
+    providerRawText: providerResult.rawText,
+    writerRequestTrace: providerResult.requestTrace,
+    writerResponseTrace: providerResult.responseTrace,
+    providerCompletion: providerResult.completionMeta,
+  };
+}
+
+function parseJsonObjectFromModelText(value) {
+  const text = normalizeText(value, 30000);
+  if (!text) return null;
+  const candidates = [
+    text,
+    text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""),
+  ];
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(text.slice(firstBrace, lastBrace + 1));
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // Try the next representation.
+    }
+  }
+  return null;
+}
+
+function getLiuyaoFactRefAllowlist(workflow) {
+  const catalog = workflow?.result?.reading?.analysis?.factCatalog;
+  return new Set(
+    (Array.isArray(catalog) ? catalog : [])
+      .map((item) => normalizeText(item?.id, 80))
+      .filter(Boolean),
+  );
+}
+
+function buildLiuyaoOpeningJudgment(workflow, action) {
+  if (normalizeText(action, 80) !== "create_hexagram") return "";
+  const reading = normalizeObject(workflow?.result?.reading);
+  const category = normalizeText(reading.category || "其他", 80);
+  const categoryLabel = category.endsWith("类") ? category : `${category}类`;
+  const focusLabel = normalizeText(reading.analysis?.focusLabel, 120);
+  if (focusLabel && focusLabel !== "未指定判断重点") {
+    return `本次所问判断为【${categoryLabel}】，解卦重点按【${focusLabel}】处理。`;
+  }
+  return `本次所问判断为【${categoryLabel}】，但所问对象还不够明确，本轮先按综合情况分析。`;
+}
+
+function normalizeLiuyaoInterpretationPayload(payload, workflow, plannerResult, fallbackText, nowIso) {
+  const source = normalizeObject(payload);
+  const sourceInterpretation = normalizeObject(source.interpretation);
+  const reading = normalizeObject(workflow?.result?.reading);
+  const action = normalizeText(workflow?.request?.action || plannerResult?.decision?.legacyAction, 80);
+  const modelAnswer = sanitizeAssistantAnswerText(source.answer || fallbackText) || "卦盘已经生成，但本次解读没有返回有效正文。";
+  const openingJudgment = buildLiuyaoOpeningJudgment(workflow, action);
+  const answer = openingJudgment ? `${openingJudgment}\n\n${modelAnswer}` : modelAnswer;
+  const allowedFactRefs = getLiuyaoFactRefAllowlist(workflow);
+  const rawSections = Array.isArray(sourceInterpretation.sections)
+    ? sourceInterpretation.sections
+    : Array.isArray(source.sections)
+      ? source.sections
+      : [];
+  const sections = rawSections.slice(0, 8).map((item, index) => {
+    const entry = normalizeObject(item);
+    const content = sanitizeAssistantAnswerText(entry.content || entry.text);
+    if (!content) return null;
+    return {
+      id: normalizeText(entry.id || `section_${index + 1}`, 80),
+      title: normalizeText(entry.title || ["总体判断", "用神与世应", "动爻与变化", "时机与风险"][index] || "补充解读", 80),
+      content,
+      factRefs: normalizeStringList(entry.factRefs || entry.fact_refs, 12, 120)
+        .filter((factRef) => allowedFactRefs.has(factRef)),
+    };
+  }).filter(Boolean);
+  const normalizedSections = sections.length ? sections : [{
+    id: "overall",
+    title: "总体判断",
+    content: answer,
+    factRefs: [],
+  }];
+  return {
+    answer,
+    interpretation: {
+      schema: LIUYAO_INTERPRETATION_SCHEMA,
+      interpretationId: normalizeText(
+        sourceInterpretation.interpretationId
+          || sourceInterpretation.id
+          || `liuyao-interpretation-${plannerResult.request.requestId}`,
+        160,
+      ),
+      readingId: normalizeText(reading.id, 160),
+      turnId: normalizeText(plannerResult.request.requestId, 120),
+      sourceAction: action,
+      summary: sanitizeAssistantAnswerText(sourceInterpretation.summary || source.summary || answer).slice(0, 800),
+      sections: normalizedSections,
+      uncertainties: normalizeStringList(
+        sourceInterpretation.uncertainties || source.uncertainties,
+        8,
+        300,
+      ),
+      createdAt: nowIso,
+    },
+  };
+}
+
+function buildLiuyaoWriterMessageBundle(plannerResult, workflow, options = {}) {
+  const reading = summarizeLiuyaoReading(workflow?.result?.reading);
+  const action = normalizeText(workflow?.request?.action || plannerResult?.decision?.legacyAction, 80);
+  const systemPrompt = [
+    `prompt_schema: ${AI_WRITER_PROMPT_SCHEMA}`,
+    GUANSHI_PERSONA_PROMPT,
+    GUANSHI_WRITER_VOICE_PROMPT,
+    "角色：你是观时的六爻解读 Writer。你只基于给定的确定性卦盘事实，用自然、审慎的中文回应用户。",
+    "领域优先：六爻事实边界高于通用幕僚建议；不得把卦象包装成现实事实，不替用户作出现实决定，也不为了给出行动建议而超出事实目录。",
+    "事实边界：不得重算或改写卦名、爻值、世应、六亲、纳甲、六神、旬空、月破、日冲、用神、旺衰与动变关系；不得虚构未给出的卦盘事实。变卦六亲和世应只按 interpretationBasis 所声明的本卦口径解释。",
+    "取用边界：analysis.useSpirit 未解析时必须明确说明判断重点不足，不得自行选择用神；用神两现时必须比较全部 candidates，不得擅自舍弃其中一爻。暗动候选只能称为候选。",
+    "引用边界：factRefs 只允许引用 analysis.factCatalog 中真实存在的 id；每个事实判断至少引用一个最直接的 id，不得编造神煞或不存在的字段。",
+    "表达边界：解读是帮助用户梳理处境的传统文化参考，不使用宿命式确定语气，不替代医疗、法律或财务判断。",
+    "追问边界：interpret_hexagram 必须沿用当前卦，不得暗示重新起卦。可以结合本轮追问收窄重点，并说明证据来自哪些卦盘字段。",
+	    "起卦开场边界：create_hexagram 的用户可见回复会由本地流程固定添加第一句类型判断，格式为‘本次所问判断为【事项分类】，解卦重点按【判断重点】处理。’；answer 正文直接继续解卦，不要重复这句分类判断。interpret_hexagram 追问不重复该开场。",
+    `输出要求：只输出 JSON 对象，结构为 {"answer":"左侧对话显示的完整自然回复","interpretation":{"summary":"右侧摘要","sections":[{"id":"overall","title":"总体判断","content":"...","factRefs":["本卦.卦名"]},{"id":"relations","title":"用神与世应","content":"...","factRefs":["取用.用神候选"]},{"id":"movement","title":"动爻与变化","content":"...","factRefs":["关系.动变"]},{"id":"timing","title":"时机与风险","content":"...","factRefs":["旺衰.逐爻"]}],"uncertainties":[]}}。`,
+    "answer 应当本身完整可读；右侧 sections 是同一解读的结构化展开，不要放按钮、行动号召或内部流程说明。",
+  ].join("\n\n");
+  const history = filterMessagesForActionContext(
+    plannerResult.request.messages,
+    { contextContract: plannerResult?.decision?.contextContract },
+    { reading, selectedReadingIds: reading?.id ? [reading.id] : [] },
+  );
+  return composeModelInput({
+    stage: "liuyao_writer",
+    provider: options.provider || plannerResult.provider,
+    maxOutputTokens: getProviderStageAttemptPolicy("liuyao_writer", 1).maxTokens,
+    systemPrompt,
+    history,
+    sections: [
+      {
+        key: "liuyao_reading",
+        label: "确定性卦盘事实",
+        order: 0,
+        priority: 100,
+        required: true,
+        content: [
+          `动作：${action}`,
+          "以下 JSON 是本地排盘内核输出的只读事实：",
+          JSON.stringify(reading, null, 2),
+          "只允许引用事实目录 analysis.factCatalog 中列出的 id。",
+        ].join("\n"),
+      },
+      {
+        key: "current_user_input",
+        label: "本轮问题",
+        order: 1,
+        priority: 100,
+        required: true,
+        content: [
+          `本轮用户输入：${plannerResult.request.text}`,
+          `问卦主题：${normalizeText(workflow?.result?.userQuery || reading?.question, 500)}`,
+          `本轮关注：${normalizeText(workflow?.result?.focus, 300) || "综合解读"}`,
+          "请按指定 JSON 结构输出，并保持 answer 与 interpretation 含义一致。",
+        ].join("\n"),
+      },
+    ],
+  });
+}
+
+async function runLiuyaoWriterTurn(plannerResult, workflow, options = {}) {
+  const writerMessageBundle = buildLiuyaoWriterMessageBundle(plannerResult, workflow, {
+    provider: plannerResult.provider,
+  });
+  emitAssistantEvent(options, {
+    type: "status",
+    stage: "liuyao_writer",
+    label: "解读卦象",
+    requestId: plannerResult.request.requestId,
+  });
+  const writerPolicy = getProviderStageAttemptPolicy("liuyao_writer", 1, options.stagePolicy);
+  let providerResult = null;
+  let providerText = "";
+  let parsed = null;
+  for (let attempt = 1; attempt <= writerPolicy.maxRetries + 1; attempt += 1) {
+    try {
+      const candidateResult = await fetchAssistantStageCompletion(
+        plannerResult.provider,
+        writerMessageBundle.messages,
+        "liuyao_writer",
+        attempt,
+        { ...options, requestId: plannerResult.request.requestId },
+      );
+      assertProviderCompletion("liuyao_writer", candidateResult, "六爻解读输出未完整。", "AI_LIUYAO_WRITER_HTTP_STATUS");
+      const candidateText = extractProviderText(candidateResult.payload);
+      const candidatePayload = parseJsonObjectFromModelText(candidateText);
+      const hasStructuredContent = Boolean(
+        normalizeText(candidatePayload?.answer, 12000)
+        || Object.keys(normalizeObject(candidatePayload?.interpretation)).length,
+      );
+      if (!candidatePayload || !hasStructuredContent) {
+        throw createAssistantError("AI_LIUYAO_WRITER_JSON_INVALID", "六爻解读没有返回完整的结构化结果。", 502, {
+          stage: "liuyao_writer",
+          retryable: true,
+          completion: candidateResult.completionMeta,
+        });
+      }
+      providerResult = candidateResult;
+      providerText = candidateText;
+      parsed = candidatePayload;
+      break;
+    } catch (error) {
+      if (canRetryAssistantStage(error, attempt, writerPolicy.maxRetries)) continue;
+      throw addStageToError(error, "liuyao_writer", "AI_LIUYAO_WRITER_REQUEST_FAILED", "六爻解读请求失败。", 502);
+    }
+  }
+  const nowIso = resolveNowDate(options.now).toISOString();
+  const normalized = normalizeLiuyaoInterpretationPayload(parsed, workflow, plannerResult, providerText, nowIso);
+  const enrichedWorkflow = {
+    ...workflow,
+    result: {
+      ...workflow.result,
+      answer: normalized.answer,
+      interpretation: normalized.interpretation,
+    },
+  };
+  return {
+    answer: normalized.answer,
+    workflow: enrichedWorkflow,
+    writerMessages: writerMessageBundle.messages,
+    writerBudgetReport: writerMessageBundle.report,
+    writerOutput: providerText,
+    writerRequestTrace: providerResult.requestTrace,
+    writerResponseTrace: providerResult.responseTrace,
+    providerCompletion: providerResult.completionMeta,
   };
 }
 
@@ -3192,10 +4060,26 @@ async function executeAiAssistantTurn(input, stores = {}, options = {}) {
       writerBudgetReport: writerResult.writerBudgetReport,
       writerRequestTrace: writerResult.writerRequestTrace,
       writerResponseTrace: writerResult.writerResponseTrace,
+      providerCompletion: writerResult.providerCompletion,
       now: options.now,
     });
   }
-  const workflow = executeAssistantToolDecision(plannerResult, stores, options);
+  let workflow = executeAssistantToolDecision(plannerResult, stores, options);
+  if (["create_hexagram", "interpret_hexagram"].includes(workflow?.request?.action)) {
+    const writerResult = await runLiuyaoWriterTurn(plannerResult, workflow, options);
+    workflow = writerResult.workflow;
+    return buildAssistantResultFromPlan(plannerResult, workflow, {
+      answer: writerResult.answer,
+      stream: false,
+      writerOutput: writerResult.writerOutput || writerResult.answer,
+      writerMessages: writerResult.writerMessages,
+      writerBudgetReport: writerResult.writerBudgetReport,
+      writerRequestTrace: writerResult.writerRequestTrace,
+      writerResponseTrace: writerResult.writerResponseTrace,
+      providerCompletion: writerResult.providerCompletion,
+      now: options.now,
+    });
+  }
   return buildAssistantResultFromPlan(plannerResult, workflow, { stream: false, now: options.now });
 }
 
@@ -3212,6 +4096,7 @@ module.exports = {
   AI_TURN_TRACE_SCHEMA,
   AI_ACTION_REVIEW_SCHEMA,
   AI_PLANNER_PROMPT_SCHEMA,
+  GUANSHI_PERSONA_PROMPT_SCHEMA,
   AI_RUNTIME_CLOCK_SCHEMA,
   AI_SEMANTIC_ACTION_SCHEMA,
   AI_SEMANTIC_FEEDBACK_SCHEMA,
@@ -3220,6 +4105,9 @@ module.exports = {
   TOOL_DEFINITIONS,
   buildAnswerWriterMessageBundle,
   buildAnswerWriterMessages,
+  buildPlannerMessageBundle,
+  buildWorkflowInput,
+  buildLiuyaoWriterMessageBundle,
   buildAssistantResultFromPlan,
   buildSemanticAction,
   createAssistantAnswerStreamFilter,
@@ -3229,6 +4117,7 @@ module.exports = {
   extractProviderText,
   normalizeDecision,
   planAssistantTurn,
+  runLiuyaoWriterTurn,
   sanitizeAssistantAnswerText,
   stabilizeDecision,
 };

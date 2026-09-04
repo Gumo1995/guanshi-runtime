@@ -199,6 +199,7 @@
 
       openModal();
       calendarEventEditCategory.focus();
+      syncScorePicker({ open: true });
     }
 
     function openEvent(entry) {
@@ -236,6 +237,7 @@
 
       openModal();
       calendarEventEditCategory.focus();
+      syncScorePicker({ open: true });
     }
 
     function close() {
@@ -322,6 +324,21 @@
     function closeScoreWheel() {
       if (scoreWheelModule && typeof scoreWheelModule.close === "function") {
         scoreWheelModule.close();
+      }
+    }
+
+    function syncScorePicker({ open = false } = {}) {
+      if (!calendarEventEditQuality || !calendarEventEditHappiness || !scoreWheelModule) return;
+      if (typeof scoreWheelModule.syncPair === "function") {
+        scoreWheelModule.syncPair(calendarEventEditQuality, calendarEventEditHappiness);
+      }
+      if (
+        open &&
+        !calendarEventEditQuality.disabled &&
+        !calendarEventEditHappiness.disabled &&
+        typeof scoreWheelModule.openForPair === "function"
+      ) {
+        scoreWheelModule.openForPair(calendarEventEditQuality, calendarEventEditHappiness);
       }
     }
 

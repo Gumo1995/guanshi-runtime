@@ -12,6 +12,7 @@ const {
   AI_CONTEXT_ENVELOPE_SCHEMA,
   AI_MODEL_INPUT_TRACE_SCHEMA,
   AI_PLANNER_PROMPT_SCHEMA,
+  GUANSHI_PERSONA_PROMPT_SCHEMA,
   AI_TURN_TRACE_SCHEMA,
   AI_WRITER_PROMPT_SCHEMA,
   AI_WRITER_TASK_SCHEMA,
@@ -21,10 +22,12 @@ const {
   executeAiAssistantTurn,
   executeAssistantToolDecision,
   planAssistantTurn,
+  runLiuyaoWriterTurn,
   sanitizeAssistantAnswerText,
 } = require("./ai-assistant-orchestrator");
 const { executeAiWorkflow } = require("./ai-workflows");
-const { fetchProviderChat, streamProviderChatText } = require("./ai-provider-client");
+const { fetchProviderChat, fetchProviderChatCompletion, streamProviderChatText } = require("./ai-provider-client");
+const { getProviderStagePolicy } = require("./ai-provider-runtime-policy");
 const { redactSensitiveValue } = require("./ai-redaction");
 const { reviewActionPolicy } = require("./ai-action-governance");
 const {
@@ -104,6 +107,25 @@ function writeSseEvent(res, event, payload) {
   res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
 }
 
+function createClientAbortBridge(req, res) {
+  const controller = new AbortController();
+  let completed = false;
+  const abort = () => {
+    if (completed || controller.signal.aborted) return;
+    controller.abort();
+  };
+  req?.once?.("aborted", abort);
+  res?.once?.("close", abort);
+  return {
+    signal: controller.signal,
+    complete() {
+      completed = true;
+      req?.removeListener?.("aborted", abort);
+      res?.removeListener?.("close", abort);
+    },
+  };
+}
+
 function splitTextDeltas(text, chunkSize = AI_ASSISTANT_STREAM_TEXT_CHUNK_SIZE) {
   const value = String(text || "");
   if (!value) return [];
@@ -146,6 +168,7 @@ function buildPromptAuditRecord(result, options = {}) {
     promptContracts: {
       planner: snapshot.promptContracts?.planner || AI_PLANNER_PROMPT_SCHEMA,
       writer: snapshot.promptContracts?.writer || "",
+      persona: snapshot.promptContracts?.persona || GUANSHI_PERSONA_PROMPT_SCHEMA,
       contextEnvelope: snapshot.promptContracts?.contextEnvelope || AI_CONTEXT_ENVELOPE_SCHEMA,
       writerTask: snapshot.promptContracts?.writerTask || (result?.decision?.writerTask ? AI_WRITER_TASK_SCHEMA : ""),
       modelInput: modelInput.schema || AI_MODEL_INPUT_TRACE_SCHEMA,
@@ -375,16 +398,9 @@ function createAiRoutes(options = {}) {
       : AI_ASSISTANT_STREAM_TEXT_DELAY_MS;
     const answer = String(result?.answer || "").trim();
     const chunks = splitTextDeltas(answer);
-    for (const chunk of chunks) {
-      writeSseEvent(res, "text_delta", {
-        schema: "guanshi-ai-run-event-v1",
-        type: "text_delta",
-        delta: chunk,
-        requestId: result?.requestId || "",
-      });
-      await delay(delayMs);
-    }
-    if (result?.workflow) {
+    const isLiuyao = ["create_hexagram", "interpret_hexagram"].includes(result?.workflow?.request?.action);
+    const emitWorkflow = () => {
+      if (!result?.workflow) return;
       writeSseEvent(res, "workflow_result", {
         schema: "guanshi-ai-run-event-v1",
         type: "workflow_result",
@@ -400,10 +416,21 @@ function createAiRoutes(options = {}) {
           pending,
         });
       }
+    };
+    if (isLiuyao) emitWorkflow();
+    for (const chunk of chunks) {
+      writeSseEvent(res, "text_delta", {
+        schema: "guanshi-ai-run-event-v1",
+        type: "text_delta",
+        delta: chunk,
+        requestId: result?.requestId || "",
+      });
+      await delay(delayMs);
     }
+    if (!isLiuyao) emitWorkflow();
   }
 
-  async function emitAssistantAnswerWriterStream(res, plannerResult, runId) {
+  async function emitAssistantAnswerWriterStream(res, plannerResult, runId, streamOptions = {}) {
     writeSseEvent(res, "status", {
       schema: "guanshi-ai-run-event-v1",
       type: "status",
@@ -419,6 +446,7 @@ function createAiRoutes(options = {}) {
       provider: plannerResult.provider,
     });
     const writerMessages = writerMessageBundle.messages;
+    const writerPolicy = getProviderStagePolicy("answer_writer");
     const visibleStream = createAssistantAnswerStreamFilter((delta) => {
       writeSseEvent(res, "text_delta", {
         schema: "guanshi-ai-run-event-v1",
@@ -431,12 +459,18 @@ function createAiRoutes(options = {}) {
     const writerResult = await streamProviderChatText(plannerResult.provider, {
       messages: writerMessages,
       allowExternalRequest: true,
-      temperature: 0.4,
-      maxTokens: 1400,
+      temperature: writerPolicy.temperature,
+      maxTokens: writerPolicy.maxTokens,
+      thinking: writerPolicy.thinking,
+      reasoningEffort: writerPolicy.reasoningEffort,
+      responseFormat: writerPolicy.responseFormat,
     }, {
       env: options.env || process.env,
       fetchImpl: options.fetchImpl,
       allowExternalRequest: true,
+      signal: streamOptions.signal,
+      timeoutMs: writerPolicy.timeoutMs,
+      idleTimeoutMs: writerPolicy.idleTimeoutMs,
       onDelta(delta) {
         visibleStream.push(delta);
       },
@@ -463,6 +497,7 @@ function createAiRoutes(options = {}) {
       writerOutput: writerAnswer || answer,
       writerRequestTrace: writerResult.requestTrace,
       writerResponseTrace: writerResult.responseTrace,
+      providerCompletion: writerResult.completionMeta,
       now: options.now,
     });
   }
@@ -674,10 +709,11 @@ function createAiRoutes(options = {}) {
 
     if (method === "POST" && pathname === "/api/ai/assistant/stream") {
       startSseResponse(res);
+      const clientAbort = createClientAbortBridge(req, res);
       const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const emitRouteAssistantEvent = (event) => {
         if (!event?.type) return;
-        if (event.type === "workflow_result") return;
+        if (event.type === "workflow_result" && !event.workflow) return;
         writeSseEvent(res, event.type, {
           schema: "guanshi-ai-run-event-v1",
           runId,
@@ -699,6 +735,7 @@ function createAiRoutes(options = {}) {
           memoryStore,
           draftStore,
           now: options.now,
+          signal: clientAbort.signal,
           onEvent: emitRouteAssistantEvent,
         });
         let result;
@@ -706,19 +743,52 @@ function createAiRoutes(options = {}) {
           result = buildAssistantResultFromPlan(plannerResult, null, { stream: false, now: options.now });
           await emitAssistantTurnResult(res, result);
         } else if (plannerResult.decision.type === "answer") {
-          result = await emitAssistantAnswerWriterStream(res, plannerResult, runId);
+          result = await emitAssistantAnswerWriterStream(res, plannerResult, runId, { signal: clientAbort.signal });
         } else {
-          const workflow = executeAssistantToolDecision(plannerResult, {
+          let workflow = executeAssistantToolDecision(plannerResult, {
             draftStore,
             memoryStore,
           }, {
             now: options.now,
             onEvent: emitRouteAssistantEvent,
           });
-          result = buildAssistantResultFromPlan(plannerResult, workflow, { stream: false, now: options.now });
+          if (["create_hexagram", "interpret_hexagram"].includes(workflow?.request?.action)) {
+            const writerResult = await runLiuyaoWriterTurn(plannerResult, workflow, {
+              env: options.env || process.env,
+              fetchImpl: options.fetchImpl,
+              now: options.now,
+              signal: clientAbort.signal,
+              onEvent: emitRouteAssistantEvent,
+            });
+            workflow = writerResult.workflow;
+            result = buildAssistantResultFromPlan(plannerResult, workflow, {
+              answer: writerResult.answer,
+              stream: false,
+              writerOutput: writerResult.writerOutput || writerResult.answer,
+              writerMessages: writerResult.writerMessages,
+              writerBudgetReport: writerResult.writerBudgetReport,
+              writerRequestTrace: writerResult.writerRequestTrace,
+              writerResponseTrace: writerResult.writerResponseTrace,
+              providerCompletion: writerResult.providerCompletion,
+              now: options.now,
+            });
+          } else {
+            result = buildAssistantResultFromPlan(plannerResult, workflow, { stream: false, now: options.now });
+          }
           await emitAssistantTurnResult(res, result);
         }
         attachPromptAudit(dataDir, result, { now: options.now });
+        if (result.incomplete === true) {
+          writeSseEvent(res, "status", {
+            schema: "guanshi-ai-run-event-v1",
+            type: "status",
+            runId,
+            requestId: result.requestId,
+            stage: "provider_output_incomplete",
+            label: "回答未完整结束",
+            completion: result.providerCompletion,
+          });
+        }
         writeSseEvent(res, "done", {
           schema: "guanshi-ai-run-event-v1",
           type: "done",
@@ -727,14 +797,21 @@ function createAiRoutes(options = {}) {
           result,
         });
       } catch (error) {
-        writeSseEvent(res, "error", {
-          schema: "guanshi-ai-run-event-v1",
-          type: "error",
-          runId,
-          ...serializeRouteError(error, "AI_ASSISTANT_STREAM_FAILED"),
-        });
+        if (!clientAbort.signal.aborted) {
+          writeSseEvent(res, "error", {
+            schema: "guanshi-ai-run-event-v1",
+            type: "error",
+            runId,
+            ...serializeRouteError(error, "AI_ASSISTANT_STREAM_FAILED"),
+          });
+        }
       } finally {
-        res.end();
+        clientAbort.complete();
+        try {
+          res.end();
+        } catch {
+          // Client cancellation may close the response before local cleanup completes.
+        }
       }
       return true;
     }
@@ -1145,24 +1222,25 @@ function createAiRoutes(options = {}) {
       try {
         const parsed = await readRequestJson(req);
         const provider = store.getProvider(parsed?.providerId);
-        const { chatRequest, response } = await fetchProviderChat(provider, parsed, {
+        const policy = getProviderStagePolicy("chat", { maxTokens: parsed?.maxTokens });
+        const providerResult = await fetchProviderChatCompletion(provider, {
+          ...parsed,
+          maxTokens: policy.maxTokens,
+          thinking: parsed?.thinking || policy.thinking,
+          reasoningEffort: parsed?.reasoningEffort || policy.reasoningEffort,
+          responseFormat: parsed?.responseFormat || policy.responseFormat,
+        }, {
           env: options.env || process.env,
           fetchImpl: options.fetchImpl,
           allowExternalRequest: parsed?.allowExternalRequest === true,
-          stream: false,
+          timeoutMs: policy.timeoutMs,
         });
-        const providerText = await response.text();
+        const { chatRequest, response, payload: providerPayload, rawText: providerText } = providerResult;
         if (!response.ok) {
           throw createProviderError("AI_PROVIDER_CHAT_HTTP_STATUS", "AI provider chat request failed.", 502, {
             httpStatus: response.status,
             body: providerText.slice(0, 2000),
           });
-        }
-        let providerPayload = providerText;
-        try {
-          providerPayload = JSON.parse(providerText);
-        } catch {
-          providerPayload = providerText.slice(0, 12000);
         }
         const safeProviderPayload = redactSensitiveValue(providerPayload, { maxStringLength: 12000 });
         sendJson(res, 200, {
@@ -1171,6 +1249,7 @@ function createAiRoutes(options = {}) {
           result: {
             providerType: chatRequest.providerType,
             stream: false,
+            completion: providerResult.completionMeta,
             providerPayload: safeProviderPayload,
           },
         });
@@ -1181,15 +1260,28 @@ function createAiRoutes(options = {}) {
     }
 
     if (method === "POST" && pathname === "/api/ai/chat/stream") {
+      const clientAbort = createClientAbortBridge(req, res);
+      let providerResult = null;
       try {
         const parsed = await readRequestJson(req);
         const provider = store.getProvider(parsed?.providerId);
-        const { response } = await fetchProviderChat(provider, parsed, {
+        const policy = getProviderStagePolicy("chat", { maxTokens: parsed?.maxTokens });
+        providerResult = await fetchProviderChat(provider, {
+          ...parsed,
+          maxTokens: policy.maxTokens,
+          thinking: parsed?.thinking || policy.thinking,
+          reasoningEffort: parsed?.reasoningEffort || policy.reasoningEffort,
+          responseFormat: parsed?.responseFormat || policy.responseFormat,
+        }, {
           env: options.env || process.env,
           fetchImpl: options.fetchImpl,
           allowExternalRequest: parsed?.allowExternalRequest === true,
           stream: true,
+          signal: clientAbort.signal,
+          timeoutMs: policy.timeoutMs,
+          holdSignalUntilConsumed: true,
         });
+        const { response } = providerResult;
         if (!response.ok) {
           const body = await readProviderErrorText(response);
           throw createProviderError("AI_PROVIDER_STREAM_HTTP_STATUS", "AI provider stream request failed.", 502, {
@@ -1208,6 +1300,9 @@ function createAiRoutes(options = {}) {
         } else {
           sendRouteError(sendJson, res, error, "AI_PROVIDER_STREAM_FAILED");
         }
+      } finally {
+        providerResult?.abortContext?.cleanup?.();
+        clientAbort.complete();
       }
       return true;
     }

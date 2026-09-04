@@ -73,7 +73,7 @@
       })));
     }
     const includes = normalizeObject(referenceScope?.includes);
-    return ["selectedTodo", "todos", "entries", "busyBlocks"].filter((key) => includes[key] === true);
+    return ["selectedTodo", "selectedReading", "todos", "entries", "busyBlocks"].filter((key) => includes[key] === true);
   }
 
   function countIntentMatches(text, terms) {
@@ -87,7 +87,7 @@
   function actionMatches(action, refs) {
     const legacy = normalizeText(action, 120);
     const actionId = normalizeActionId(legacy);
-    return refs.some((ref) => ref === legacy || ref === actionId);
+    return refs.some((ref) => ref === legacy || ref === actionId || (legacy && ref.endsWith(`.${legacy}`)));
   }
 
   function surfaceMatches(viewContext, entry) {
@@ -107,9 +107,10 @@
 
     function resolveSurfaceExpectation(options = {}) {
       const referenceScope = normalizeObject(options.referenceScope);
+      const resolvedMode = normalizeText(referenceScope.resolvedMode || referenceScope.requestedMode, 80);
       if (
-        normalizeText(referenceScope.resolvedMode || referenceScope.requestedMode, 80) === "none" ||
-        normalizeText(options.contextAccessMode, 80) === "no_reference"
+        resolvedMode === "none"
+        || (normalizeText(options.contextAccessMode, 80) === "no_reference" && resolvedMode !== "view_liuyao_reading")
       ) {
         return null;
       }

@@ -1,5 +1,7 @@
 "use strict";
 
+const scheduleConstraints = require("./schedule-constraints");
+
 const SCHEDULER_INPUT_SCHEMA = "guanshi-scheduler-input-v1";
 const SCHEDULE_DRAFT_SCHEMA = "guanshi-schedule-draft-v1";
 
@@ -108,6 +110,8 @@ function normalizeTodo(todo, index) {
     endTime: normalizeText(source.endTime, 8),
     estimatedMinutes,
     remainingMinutes,
+    hasEstimatedMinutes: source.estimatedMinutes !== null && source.estimatedMinutes !== undefined,
+    hasRemainingMinutes: source.remainingMinutes !== null && source.remainingMinutes !== undefined,
     priority: normalizeText(source.priority || "P2", 20),
     importance: Number.isFinite(Number(source.importance)) ? Number(source.importance) : 0,
     urgency: Number.isFinite(Number(source.urgency)) ? Number(source.urgency) : 0,
@@ -119,6 +123,7 @@ function normalizeTodo(todo, index) {
     planLocked: source.planLocked === true,
     repeat: normalizeText(source.repeat || "none", 40),
     orderInDay: normalizeInteger(source.orderInDay, index, 0, 100000),
+    hasOrderInDay: source.orderInDay !== null && source.orderInDay !== undefined,
     completed: source.completed === true,
   };
 }
@@ -252,6 +257,10 @@ function getPriorityRank(priority) {
 
 function sortTodos(todos, strategy) {
   return [...todos].sort((left, right) => {
+    if (strategy === "minimal_change") {
+      return String(left.dueDate || "9999-99-99").localeCompare(String(right.dueDate || "9999-99-99"))
+        || left.orderInDay - right.orderInDay;
+    }
     if (strategy === "deadline_first") {
       const dueCompare = String(left.dueDate || "9999-99-99").localeCompare(String(right.dueDate || "9999-99-99"));
       if (dueCompare !== 0) return dueCompare;
@@ -302,14 +311,17 @@ function reorderByDependencies(todos) {
   return { ordered, conflicts };
 }
 
-function findSlotForDuration(date, duration, windowsByDate, blockedByDate) {
+function findSlotForDuration(date, duration, windowsByDate, blockedByDate, limits = {}) {
+  if (limits.notBefore && date < limits.notBefore.date) return null;
   const windows = windowsByDate.get(date) || [];
   const blocked = mergeIntervals(blockedByDate.get(date) || []);
   for (const window of windows) {
     const slots = subtractBlocked(window, blocked);
     for (const slot of slots) {
-      if (slot.end - slot.start >= duration) {
-        return { date, start: slot.start, end: slot.start + duration };
+      const start = Math.max(slot.start, limits.notBefore?.date === date ? limits.notBefore.minutes : 0);
+      const end = Math.min(slot.end, limits.endBoundary ?? DEFAULT_DAY_END_MINUTES);
+      if (end - start >= duration) {
+        return { date, start, end: start + duration };
       }
     }
   }
@@ -338,6 +350,12 @@ function buildChange(todo, block, reason, blockIndex = 0, blockCount = 1) {
       dueDate: todo.dueDate || "",
       startTime: todo.startTime || "",
       endTime: todo.endTime || "",
+      planLocked: todo.planLocked,
+      completed: todo.completed,
+      ...(todo.hasOrderInDay ? { orderInDay: todo.orderInDay } : {}),
+      ...(todo.hasEstimatedMinutes ? { estimatedMinutes: todo.estimatedMinutes } : {}),
+      ...(todo.hasRemainingMinutes ? { remainingMinutes: todo.remainingMinutes } : {}),
+      dependencies: todo.dependencies,
     },
     after: {
       dueDate: block.date,
@@ -419,86 +437,134 @@ function createScheduleDraft(input = {}, options = {}) {
     .filter(Boolean);
   busyBlocks.push(...buildFixedBreakBlocks(memoryProjections, dates, usedMemoryIds));
 
-  const todos = (Array.isArray(request.todos) ? request.todos : [])
-    .map(normalizeTodo)
-    .filter((todo) => !todo.completed)
+  const allInputTodos = (Array.isArray(request.todos) ? request.todos : []).map(normalizeTodo);
+  const todos = allInputTodos.filter((todo) => !todo.completed)
     .filter((todo) => action === "reflow_unfinished" || !todo.dueDate || dates.includes(todo.dueDate));
-
+  const fixedTodos = (Array.isArray(request.fixedTodos) ? request.fixedTodos : []).map(normalizeTodo);
+  const movable = todos.filter((todo) => !todo.planLocked && (request.options?.allowMoveExistingUnlocked !== false || !getTodoRange(todo)));
+  const movableIds = new Set(movable.map((todo) => todo.id));
+  const knownTodos = new Map([...fixedTodos, ...allInputTodos].map((todo) => [todo.id, todo]));
+  const fixedBlocks = scheduleConstraints.buildFixedBlocks([...knownTodos.values()], busyBlocks, {
+    targetIds: [...movableIds], includeOtherTodos: true,
+  });
   const blockedByDate = new Map();
-  for (const block of busyBlocks) {
-    if (!block.isHard || !dates.includes(block.date)) continue;
-    addBlockedInterval(blockedByDate, block.date, block.start, block.end, defaultGapMinutes);
+  for (const block of fixedBlocks) {
+    if (dates.includes(block.date)) addBlockedInterval(blockedByDate, block.date, block.start, block.end, defaultGapMinutes);
   }
   const notBefore = normalizeNotBeforeConstraint(request.options?.notBefore);
   if (notBefore && dates.includes(notBefore.date) && notBefore.minutes > 0) {
     addBlockedInterval(blockedByDate, notBefore.date, 0, notBefore.minutes, 0);
   }
-  for (const todo of todos) {
-    if (!todo.planLocked) continue;
-    const range = getTodoRange(todo);
-    const date = todo.dueDate || dates[0];
-    if (!range || !dates.includes(date)) continue;
-    addBlockedInterval(blockedByDate, date, range.start, range.end, defaultGapMinutes);
-  }
-
   const boundaries = buildHardBoundaryMap(memoryProjections, usedMemoryIds);
-  const { ordered, conflicts: dependencyConflicts } = reorderByDependencies(sortTodos(todos.filter((todo) => !todo.planLocked), strategy));
+  const { ordered, conflicts: dependencyConflicts } = reorderByDependencies(sortTodos(movable, strategy));
   const changes = [];
   const conflicts = [...dependencyConflicts];
   const unscheduledTodos = [];
+  const completionById = new Map();
+  for (const todo of knownTodos.values()) {
+    const time = getTodoRange(todo);
+    if (!movableIds.has(todo.id) && time && todo.dueDate) completionById.set(todo.id, { date: todo.dueDate, minutes: time.end + defaultGapMinutes });
+  }
+  let orderCursor = null;
+  const later = (left, right) => !left ? right : !right ? left
+    : left.date > right.date || (left.date === right.date && left.minutes >= right.minutes) ? left : right;
+  const dependencyConflict = (todo) => ({
+    conflictId: `conflict_dependency_${todo.id}`, type: "dependency_unmet", severity: "hard",
+    message: `${todo.title} 的依赖尚无可用的完成时间。`, targets: [{ kind: "todo", id: todo.id }], suggestedResolution: "schedule_dependency_first",
+  });
 
   for (const todo of ordered) {
     let remaining = Math.max(MIN_BLOCK_MINUTES, todo.remainingMinutes || todo.estimatedMinutes || DEFAULT_TASK_MINUTES);
     const plannedBlocks = [];
+    const previousBlocks = new Map([...blockedByDate].map(([date, blocks]) => [date, blocks.map((block) => ({ ...block }))]));
     const taskBoundary = boundaries.noWorkAfter && isWorkLikeTodo(todo) ? boundaries.noWorkAfter : null;
     const minimumBlock = Math.max(MIN_BLOCK_MINUTES, Math.min(todo.minimumBlockMinutes, remaining));
+    let lowerBound = strategy === "minimal_change" ? orderCursor : null;
+    let dependencyMissing = dependencyConflicts.some((conflict) => conflict.targets.some((target) => target.id === todo.id));
+    for (const id of todo.dependencies) {
+      if (knownTodos.get(id)?.completed) continue;
+      const completedAt = completionById.get(id);
+      if (!completedAt) dependencyMissing = true;
+      else lowerBound = later(lowerBound, completedAt);
+    }
+    if (dependencyMissing) {
+      unscheduledTodos.push(todo.id);
+      conflicts.push(dependencyConflict(todo));
+      continue;
+    }
+    const limits = { notBefore: lowerBound, endBoundary: taskBoundary ?? 1439 };
+    const original = getTodoRange(todo);
+    // Preserve an existing valid slot before searching for a new one.
+    if (strategy === "minimal_change" && original && dates.includes(todo.dueDate) && original.end - original.start === remaining) {
+      const slot = findSlotForDuration(todo.dueDate, remaining, windowsByDate, blockedByDate, {
+        ...limits, notBefore: later(lowerBound, { date: todo.dueDate, minutes: original.start }),
+      });
+      if (slot && slot.start === original.start) {
+        plannedBlocks.push(slot);
+        addBlockedInterval(blockedByDate, slot.date, slot.start, slot.end, defaultGapMinutes);
+        remaining = 0;
+      }
+    }
     let attempts = 0;
-
     while (remaining >= MIN_BLOCK_MINUTES && attempts < 100) {
       attempts += 1;
-      let duration = remaining;
-      if (allowSplitLongTasks && todo.splittable && remaining > minimumBlock) {
-        duration = Math.max(minimumBlock, Math.min(remaining, 90));
-      }
+      const canSplit = allowSplitLongTasks && todo.splittable;
+      if (canSplit && remaining < minimumBlock) break;
+      let duration = canSplit ? Math.min(remaining, 90) : remaining;
+      if (canSplit && remaining > duration && remaining - duration < minimumBlock) duration = remaining - minimumBlock;
       let slot = null;
-      let slotDuration = duration;
-      while (!slot && slotDuration >= minimumBlock) {
+      while (!slot && duration >= minimumBlock) {
         for (const date of dates) {
-          slot = findSlotForDuration(date, slotDuration, windowsByDate, blockedByDate);
+          slot = findSlotForDuration(date, duration, windowsByDate, blockedByDate, limits);
           if (slot) break;
         }
-        if (!slot) slotDuration -= 15;
+        if (!canSplit) break;
+        if (!slot) {
+          if (duration === minimumBlock) break;
+          duration = Math.max(minimumBlock, duration - 15);
+        }
       }
       if (!slot) break;
-      if (taskBoundary !== null && slot.end > taskBoundary) {
-        addBlockedInterval(blockedByDate, slot.date, slot.start, slot.end, defaultGapMinutes);
-        conflicts.push(createBoundaryConflict(todo));
-        continue;
-      }
       plannedBlocks.push(slot);
       addBlockedInterval(blockedByDate, slot.date, slot.start, slot.end, defaultGapMinutes);
       remaining -= slot.end - slot.start;
-      if (!allowSplitLongTasks || !todo.splittable) break;
+      limits.notBefore = { date: slot.date, minutes: slot.end + defaultGapMinutes };
+      if (!canSplit) break;
     }
-
     if (!plannedBlocks.length) {
       unscheduledTodos.push(todo.id);
       conflicts.push(createMinBlockConflict(todo));
+      if (taskBoundary !== null && dates.some((date) => findSlotForDuration(date, remaining, windowsByDate, blockedByDate, { notBefore: lowerBound, endBoundary: 1439 }))) {
+        conflicts.push(createBoundaryConflict(todo));
+      }
       continue;
     }
-    if (remaining >= MIN_BLOCK_MINUTES) {
+    if (remaining > 0) {
       unscheduledTodos.push(todo.id);
       conflicts.push(createCapacityConflict(todo, remaining));
+      // Applying only part would replace the original Todo and lose its unallocated duration.
+      blockedByDate.clear();
+      for (const [date, blocks] of previousBlocks) blockedByDate.set(date, blocks);
+      if (original && todo.dueDate) addBlockedInterval(blockedByDate, todo.dueDate, original.start, original.end, defaultGapMinutes);
+      continue;
+    } else {
+      const last = plannedBlocks[plannedBlocks.length - 1];
+      completionById.set(todo.id, { date: last.date, minutes: last.end + defaultGapMinutes });
     }
+    const last = plannedBlocks[plannedBlocks.length - 1];
+    if (strategy === "minimal_change") orderCursor = { date: last.date, minutes: last.end + defaultGapMinutes };
     plannedBlocks.forEach((block, index) => {
-      changes.push(buildChange(
-        todo,
-        block,
-        plannedBlocks.length > 1 ? "长任务按最小时间块拆分安排。" : "按优先级、截止日期和可用时间安排。",
-        index,
-        plannedBlocks.length,
-      ));
+      if (plannedBlocks.length === 1 && todo.dueDate === block.date && original?.start === block.start && original?.end === block.end) return;
+      changes.push(buildChange(todo, block,
+        plannedBlocks.length > 1 ? "长任务按最小时间块拆分安排。" : strategy === "minimal_change" ? "保留原顺序，仅调整无法保留的时间。" : "按优先级、截止日期和可用时间安排。",
+        index, plannedBlocks.length));
     });
+  }
+  // Unscheduled targets remain at their old times. Do not emit a draft that collides with them.
+  const validation = scheduleConstraints.validateChanges([...knownTodos.values()], changes, { busyBlocks: fixedBlocks, gapMinutes: defaultGapMinutes });
+  if (!validation.feasible) {
+    conflicts.push({ conflictId: "conflict_final_validation", type: "schedule_constraint_violation", severity: "hard", message: validation.message, targets: [], suggestedResolution: "regenerate_schedule" });
+    changes.splice(0);
   }
 
   const changedTodoIds = Array.from(new Set(changes.map((change) => change.todoId)));
@@ -523,6 +589,7 @@ function createScheduleDraft(input = {}, options = {}) {
       ? `安排 ${changes.length} 个时间块，影响 ${changedTodoIds.length} 个任务。`
       : "没有生成可执行的排程变更。",
     changes,
+    validation: { fixedBlocks, gapMinutes: defaultGapMinutes },
     conflicts,
     impact: {
       todosChanged: changedTodoIds.length,

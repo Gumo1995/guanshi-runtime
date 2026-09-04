@@ -17,6 +17,7 @@
       DEFAULT_POMODORO_MINUTES = 25,
       todoTitleInput = null,
       pomodoroModule = {},
+      revealPomodoro = () => {},
       todoDetailModule = {},
       getTodos,
       getEntries,
@@ -325,13 +326,13 @@
       const sessionDurationMinutes = pomodoroModule.normalizeMinutes(getTodoDurationMinutes(todo, DEFAULT_POMODORO_MINUTES));
       const resolvedCategory = getTodoCategory(todo, categories[0] || "工作");
       const now = new Date();
-      setActiveView("overview");
-      pomodoroModule.beginLinkedSession({
+      const started = pomodoroModule.beginLinkedSession({
         todoId: todo.id,
         category: categories.includes(resolvedCategory) ? resolvedCategory : (categories[0] || "工作"),
         minutes: sessionDurationMinutes,
         startedAt: now,
       });
+      if (started) revealPomodoro();
     }
 
     function handleTodoDelete() {
@@ -812,12 +813,8 @@
         oldEndTime !== selected.endTime ||
         Number(oldEstimate) !== Number(selected.estimatedMinutes);
 
-      if (!selected.completed && lockStateChanged && isValidDateInput(selected.dueDate)) {
-        reflowTodoDayFromStart(selected.dueDate, {
-          markDirty: true,
-          timestampIso: nowIso,
-        });
-      } else if (!selected.completed && timeChanged && isValidDateInput(selected.dueDate)) {
+      // A lock toggle only changes protection; it must not reschedule the day.
+      if (!selected.completed && timeChanged && isValidDateInput(selected.dueDate)) {
         reflowTodoDayAfterAnchor(selected.dueDate, selected.id, { markDirty: true, timestampIso: nowIso });
       } else if (selected.completed && timeChanged && isValidDateInput(selected.dueDate)) {
         const completedEndMinutes = parseClockToMinutes(selected.endTime);

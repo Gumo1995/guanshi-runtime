@@ -52,7 +52,8 @@
 
           <form id="sidebar-ai-form" class="sidebar-ai-form">
             <div class="sidebar-ai-composer-shell" data-ai-composer-shell>
-              <textarea id="sidebar-ai-input" rows="3" autocomplete="off" placeholder="请观时规划今天、拆解任务、记录一个时间管理原则..."></textarea>
+              <div class="sidebar-ai-reading-context" data-ai-reading-context hidden></div>
+              <textarea id="sidebar-ai-input" rows="3" autocomplete="off" placeholder="和观时聊聊：梳理重点、规划时间、拆解任务，或分析一个具体问题..."></textarea>
               <div class="sidebar-ai-composer-bottom">
                 <button class="sidebar-ai-round-tool" type="button" data-ai-action="parse-task" aria-label="解析为待办">+</button>
                 <div class="sidebar-ai-submit-tools">
@@ -67,6 +68,11 @@
                     <img class="sidebar-ai-provider-logo" data-ai-provider-switch-logo src="./assets/ai-providers/generic.svg" alt="" aria-hidden="true" />
                     <svg class="sidebar-ai-provider-chevron" viewBox="0 0 24 24" aria-hidden="true">
                       <path d="m7 10 5 5 5-5" />
+                    </svg>
+                  </button>
+                  <button class="sidebar-ai-stop" type="button" data-ai-stop aria-label="停止生成" title="停止生成" hidden>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="7" y="7" width="10" height="10" rx="1.5" />
                     </svg>
                   </button>
                   <button class="sidebar-ai-send" type="submit" aria-label="发送">
@@ -148,6 +154,17 @@
               </span>
               <span class="nav-label">复盘</span>
             </button>
+            <button id="nav-liuyao" class="sidebar-nav-item" data-view="liuyao" type="button" aria-label="六爻" title="六爻">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 6h14" />
+                  <path d="M5 12h5" />
+                  <path d="M14 12h5" />
+                  <path d="M5 18h14" />
+                </svg>
+              </span>
+              <span class="nav-label">六爻</span>
+            </button>
             <button id="nav-settings" class="sidebar-nav-item" data-view="settings" type="button" aria-label="设置" title="设置">
               <span class="nav-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
@@ -213,62 +230,6 @@
                 </div>
               </div>
 
-              <section class="entry-hub" aria-label="番茄钟记录">
-                <div class="pomodoro pomodoro-hero" aria-label="番茄计时">
-                  <input id="pomodoro-minutes" type="hidden" value="25" />
-
-                  <div class="pomodoro-layout">
-                    <div class="pomodoro-visual">
-                      <div class="pomodoro-dial" id="pomodoro-dial" role="img" aria-label="番茄钟进度">
-                        <div class="pomodoro-dial-face" aria-hidden="true"></div>
-                        <div class="pomodoro-dial-hand" id="pomodoro-hand" aria-hidden="true"></div>
-                        <div class="pomodoro-dial-cap" aria-hidden="true"></div>
-                      </div>
-
-                      <div class="pomodoro-clock" id="pomodoro-display" aria-live="polite">25:00</div>
-
-                      <div class="pomodoro-time-meta">
-                        <button class="btn-secondary pomodoro-shift-btn" id="pomodoro-minus-five" type="button" aria-label="减少 5 分钟">-</button>
-                        <p class="pomodoro-range" id="pomodoro-range">--:-- → --:--</p>
-                        <button class="btn-secondary pomodoro-shift-btn" id="pomodoro-plus-five" type="button" aria-label="增加 5 分钟">+</button>
-                      </div>
-                    </div>
-
-                    <div class="pomodoro-side">
-                      <label class="pomodoro-category-wrap">
-                        <select id="pomodoro-category" aria-label="类别">
-                          <option value="工作">工作</option>
-                          <option value="学习">学习</option>
-                          <option value="运动">运动</option>
-                          <option value="休息">休息</option>
-                          <option value="社交">社交</option>
-                          <option value="兴趣">兴趣</option>
-                          <option value="家务">家务</option>
-                          <option value="通勤">通勤</option>
-                        </select>
-                      </label>
-
-                      <div class="pomodoro-actions pomodoro-actions-vertical">
-                        <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-start" type="button" aria-label="开始" title="开始">
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M8 5.5v13l10-6.5z" />
-                          </svg>
-                        </button>
-                        <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-pause" type="button" aria-label="暂停" title="暂停" disabled>
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M7.5 5h3.5v14H7.5zM13 5h3.5v14H13z" />
-                          </svg>
-                        </button>
-                        <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-reset" type="button" aria-label="重置" title="重置">
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M7 7h10v10H7z" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
             </div>
           </header>
 
@@ -630,6 +591,7 @@
                   <span id="calendar-unrated-count" class="calendar-unrated-count">0</span>
                 </button>
               </div>
+              <p id="calendar-range-label" class="calendar-range-label"></p>
               <div class="calendar-head-controls calendar-head-controls-right">
                 <div class="calendar-nav" role="group" aria-label="日历周切换">
                   <button class="btn-secondary calendar-nav-btn" id="calendar-prev-week" type="button" aria-label="上一周">←</button>
@@ -640,9 +602,6 @@
             </div>
 
             <div class="records-calendar" aria-label="按周查看记录">
-              <div class="calendar-meta-row">
-                <p id="calendar-range-label" class="calendar-range-label"></p>
-              </div>
               <div id="calendar-weekdays" class="calendar-weekdays" role="rowgroup" aria-label="周日期"></div>
 
               <div class="calendar-scroll-shell">
@@ -678,7 +637,7 @@
         <section id="view-review" class="app-view" data-view="review" hidden>
           <section class="panel review-panel">
             <div class="panel-head review-panel-head">
-              <div class="review-panel-head-main">
+              <div class="review-panel-head-main page-panel-head-main">
                 <h2>日志复盘</h2>
                 <p id="review-visual-summary" class="review-panel-head-summary">--</p>
               </div>
@@ -748,12 +707,149 @@
           </section>
         </section>
 
+        <section id="view-liuyao" class="app-view" data-view="liuyao" hidden>
+          <section class="panel liuyao-panel">
+            <header class="liuyao-page-head">
+              <div class="liuyao-page-title page-panel-head-main">
+                <h2>六爻卜算</h2>
+                <p>本地排盘 · AI 解卦</p>
+              </div>
+              <div class="liuyao-page-actions">
+                <span class="liuyao-rule-pill">京房八宫纳甲</span>
+                <button id="liuyao-save" class="liuyao-group-action liuyao-save-btn" type="button" disabled>保存</button>
+              </div>
+            </header>
+
+            <div class="liuyao-workspace">
+              <aside class="liuyao-local-card" aria-label="本地卦例与起卦台">
+                <div class="liuyao-local-tabs" role="tablist" aria-label="本地卦例与起卦台">
+                  <button id="liuyao-local-tab-history" class="liuyao-local-tab" type="button" role="tab" aria-selected="false" aria-controls="liuyao-local-panel-history" tabindex="-1">卦例 <b id="liuyao-history-count">0</b></button>
+                  <button id="liuyao-local-tab-cast" class="liuyao-local-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="liuyao-local-panel-cast">起卦台</button>
+                </div>
+
+                <div id="liuyao-local-panel-history" class="liuyao-local-panel" role="tabpanel" aria-labelledby="liuyao-local-tab-history" hidden>
+                  <div id="liuyao-history-list" class="liuyao-history-list"></div>
+                  <div class="liuyao-history-controls-source" hidden>
+                    <button id="liuyao-history-clear" class="liuyao-group-action is-danger" type="button" disabled>清空</button>
+                  </div>
+                  <p class="liuyao-history-note">未保存卦象仅在本次打开期间保留；保存后才会进入本地备份。</p>
+                </div>
+
+                <div id="liuyao-local-panel-cast" class="liuyao-local-panel" role="tabpanel" aria-labelledby="liuyao-local-tab-cast">
+                  <div class="liuyao-section-head is-local">
+                  <div>
+                    <strong>初爻 → 上爻</strong>
+                  </div>
+                  <button id="liuyao-reset" class="liuyao-text-btn" type="button">重新开始</button>
+                  </div>
+
+                <form id="liuyao-form" class="liuyao-form">
+                  <label class="liuyao-field" for="liuyao-question">
+                    <span>所问事项</span>
+                    <textarea id="liuyao-question" rows="3" maxlength="120" required placeholder="一次只问一件具体的事，例如：这次合作应重点留意什么？"></textarea>
+                  </label>
+
+                  <div class="liuyao-form-row">
+                    <label class="liuyao-field" for="liuyao-category">
+                      <span>事项分类</span>
+                      <select id="liuyao-category">
+                        <option value="事业">事业</option>
+                        <option value="财运">财运</option>
+                        <option value="感情">感情</option>
+                        <option value="健康">健康</option>
+                        <option value="出行">出行</option>
+                        <option value="寻物">寻物</option>
+                        <option value="其他" selected>其他</option>
+                      </select>
+                    </label>
+                    <label class="liuyao-field" for="liuyao-focus">
+                      <span>判断重点</span>
+                      <select id="liuyao-focus" required>
+                        <option value="" selected>请选择所问对象</option>
+                        <option value="self">自己 / 自身状态（世爻）</option>
+                        <option value="other_party">对方 / 合作关系（应爻）</option>
+                        <option value="career">事业职位 / 功名（官鬼）</option>
+                        <option value="wealth">收入 / 交易 / 财物（妻财）</option>
+                        <option value="documents">父母长辈 / 合同文书 / 房屋（父母）</option>
+                        <option value="children">子女晚辈 / 成果 / 医药（子孙）</option>
+                        <option value="peers">同辈朋友 / 竞争（兄弟）</option>
+                        <option value="male_partner">男性伴侣（官鬼）</option>
+                        <option value="female_partner">女性伴侣（妻财）</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label class="liuyao-field" for="liuyao-datetime">
+                    <span class="liuyao-field-label">起卦时间 <small>可补录真实起卦时刻</small></span>
+                    <input id="liuyao-datetime" type="datetime-local" min="1900-01-01T00:00" max="2100-12-31T23:59" required />
+                  </label>
+                  <p id="liuyao-timezone" class="liuyao-timezone" title="由设备时区自动识别，不代表实际定位">设备时区：自动识别</p>
+
+                  <fieldset class="liuyao-line-fieldset">
+                    <legend>六次结果</legend>
+                    <p>6 老阴 · 7 少阳 · 8 少阴 · 9 老阳</p>
+                    <div class="liuyao-line-inputs">
+                      <label><span>初爻</span><select data-liuyao-line-value="1"><option value="" selected>选择</option><option value="6">6 · 老阴</option><option value="7">7 · 少阳</option><option value="8">8 · 少阴</option><option value="9">9 · 老阳</option></select></label>
+                      <label><span>二爻</span><select data-liuyao-line-value="2"><option value="" selected>选择</option><option value="6">6 · 老阴</option><option value="7">7 · 少阳</option><option value="8">8 · 少阴</option><option value="9">9 · 老阳</option></select></label>
+                      <label><span>三爻</span><select data-liuyao-line-value="3"><option value="" selected>选择</option><option value="6">6 · 老阴</option><option value="7">7 · 少阳</option><option value="8">8 · 少阴</option><option value="9">9 · 老阳</option></select></label>
+                      <label><span>四爻</span><select data-liuyao-line-value="4"><option value="" selected>选择</option><option value="6">6 · 老阴</option><option value="7">7 · 少阳</option><option value="8">8 · 少阴</option><option value="9">9 · 老阳</option></select></label>
+                      <label><span>五爻</span><select data-liuyao-line-value="5"><option value="" selected>选择</option><option value="6">6 · 老阴</option><option value="7">7 · 少阳</option><option value="8">8 · 少阴</option><option value="9">9 · 老阳</option></select></label>
+                      <label><span>上爻</span><select data-liuyao-line-value="6"><option value="" selected>选择</option><option value="6">6 · 老阴</option><option value="7">7 · 少阳</option><option value="8">8 · 少阴</option><option value="9">9 · 老阳</option></select></label>
+                    </div>
+                  </fieldset>
+
+                  <div class="liuyao-cast-actions">
+                    <button id="liuyao-toss" class="btn-primary liuyao-toss-btn" type="button">
+                      <span aria-hidden="true">◎</span> 三钱起卦
+                    </button>
+                    <button class="btn-secondary" type="submit">按输入排盘</button>
+                  </div>
+                  <p id="liuyao-status" class="liuyao-status" data-tone="normal" aria-live="polite" hidden></p>
+                </form>
+                </div>
+              </aside>
+
+              <main class="liuyao-reading-card" aria-label="六爻卦盘">
+                <div class="liuyao-column-head">
+                  <h3 id="liuyao-reading-heading">卦象</h3>
+                  <p id="liuyao-reading-question" class="liuyao-column-question">所问事项</p>
+                </div>
+                <div id="liuyao-empty" class="liuyao-empty-state">
+                  <div class="liuyao-empty-symbol" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <h3>写下问题，开始一卦</h3>
+                  <p>你可以直接摇六次三钱，也可以手工输入已有的六次爻值。</p>
+                  <div class="liuyao-empty-rules">
+                    <span>23:00 子初换日</span>
+                    <span>月建按节气</span>
+                    <span>初爻自下而上</span>
+                  </div>
+                </div>
+                <div id="liuyao-reading" class="liuyao-reading" hidden></div>
+              </main>
+
+              <aside class="liuyao-interpretation-card" aria-label="六爻解卦">
+                <div class="liuyao-column-head">
+                  <h3>解卦</h3>
+                  <span>传统文化参考</span>
+                </div>
+                <div id="liuyao-interpretation-empty" class="liuyao-interpretation-empty">
+                  <span aria-hidden="true">☰</span>
+                  <strong>等待问卦</strong>
+                  <p>直接在左侧 AI 输入所问之事，回复与详细解卦会同时出现。</p>
+                </div>
+                <div id="liuyao-interpretation-content" class="liuyao-interpretation-content" hidden></div>
+              </aside>
+            </div>
+          </section>
+        </section>
+
         <section id="view-settings" class="app-view" data-view="settings" hidden>
           <section class="panel settings-panel">
             <div class="panel-head settings-panel-head">
-              <div class="settings-panel-head-main">
+              <div class="settings-panel-head-main page-panel-head-main">
                 <h2>设置</h2>
-                <p>仅保存在当前设备。</p>
+                <p>数据仅存本机</p>
               </div>
               <div class="settings-tabs" role="tablist" aria-label="设置分类">
                 <button id="settings-tab-ai-connect" class="settings-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="settings-page-ai-connect" data-settings-tab-target="ai-connect">AI 连接</button>
@@ -1299,6 +1395,88 @@
     </div>
   </main>
 
+  <aside id="pomodoro-floating-panel" class="pomodoro-floating-panel" aria-label="悬浮番茄钟">
+    <header
+      id="pomodoro-floating-handle"
+      class="pomodoro-floating-handle"
+      tabindex="0"
+      aria-label="拖动番茄钟；也可用方向键移动"
+      title="拖动番茄钟"
+    >
+      <span class="pomodoro-floating-title">番茄钟</span>
+      <span id="pomodoro-floating-summary" class="pomodoro-floating-summary" aria-hidden="true">25:00</span>
+      <button
+        id="pomodoro-floating-collapse"
+        class="pomodoro-floating-collapse"
+        type="button"
+        aria-label="收起番茄钟"
+        aria-expanded="true"
+        title="收起番茄钟"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m7 10 5 5 5-5" />
+        </svg>
+      </button>
+    </header>
+
+    <div class="pomodoro-floating-body">
+      <div class="pomodoro pomodoro-hero pomodoro--floating" aria-label="番茄计时">
+        <input id="pomodoro-minutes" type="hidden" value="25" />
+
+        <div class="pomodoro-layout">
+          <div class="pomodoro-visual">
+            <div class="pomodoro-dial" id="pomodoro-dial" role="img" aria-label="番茄钟进度">
+              <div class="pomodoro-dial-face" aria-hidden="true"></div>
+              <div class="pomodoro-dial-hand" id="pomodoro-hand" aria-hidden="true"></div>
+              <div class="pomodoro-dial-cap" aria-hidden="true"></div>
+            </div>
+
+            <div class="pomodoro-clock" id="pomodoro-display" aria-live="polite">25:00</div>
+
+            <div class="pomodoro-time-meta">
+              <button class="btn-secondary pomodoro-shift-btn" id="pomodoro-minus-five" type="button" aria-label="减少 5 分钟">-</button>
+              <p class="pomodoro-range" id="pomodoro-range">--:-- → --:--</p>
+              <button class="btn-secondary pomodoro-shift-btn" id="pomodoro-plus-five" type="button" aria-label="增加 5 分钟">+</button>
+            </div>
+          </div>
+
+          <div class="pomodoro-side">
+            <label class="pomodoro-category-wrap">
+              <select id="pomodoro-category" aria-label="类别">
+                <option value="工作">工作</option>
+                <option value="学习">学习</option>
+                <option value="运动">运动</option>
+                <option value="休息">休息</option>
+                <option value="社交">社交</option>
+                <option value="兴趣">兴趣</option>
+                <option value="家务">家务</option>
+                <option value="通勤">通勤</option>
+              </select>
+            </label>
+
+            <div class="pomodoro-actions pomodoro-actions-vertical">
+              <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-start" type="button" aria-label="开始" title="开始">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 5.5v13l10-6.5z" />
+                </svg>
+              </button>
+              <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-pause" type="button" aria-label="暂停" title="暂停" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7.5 5h3.5v14H7.5zM13 5h3.5v14H13z" />
+                </svg>
+              </button>
+              <button class="btn-secondary pomodoro-icon-btn" id="pomodoro-reset" type="button" aria-label="重置" title="重置">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 7h10v10H7z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
   <div id="pomodoro-score-modal" class="pomodoro-score-modal" hidden>
     <div class="pomodoro-score-backdrop" data-score-modal-close="true"></div>
     <section class="pomodoro-score-card" role="dialog" aria-modal="true" aria-labelledby="pomodoro-score-title">
@@ -1306,18 +1484,21 @@
       <p id="pomodoro-score-description">请确认本次专注的质量与幸福感评分，确认后将直接记录。</p>
 
       <div class="pomodoro-score-grid">
-        <label class="slider-wrap">
-          <div class="slider-head">
-            <span>质量评分</span>
-          </div>
-          <input id="pomodoro-quality-slider" type="number" min="1" max="10" step="1" value="7" required />
-        </label>
-        <label class="slider-wrap">
-          <div class="slider-head">
-            <span>幸福感评分</span>
-          </div>
-          <input id="pomodoro-happiness-slider" type="number" min="1" max="10" step="1" value="7" required />
-        </label>
+        <button
+          id="pomodoro-score-trigger"
+          class="score-pair-trigger"
+          type="button"
+          aria-controls="score-wheel-popover"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <span>评分</span>
+          <strong data-score-pair-value>7*7</strong>
+        </button>
+        <div class="score-pair-native-inputs" hidden>
+          <input id="pomodoro-quality-slider" type="number" min="1" max="10" step="1" value="7" />
+          <input id="pomodoro-happiness-slider" type="number" min="1" max="10" step="1" value="7" />
+        </div>
       </div>
 
       <div class="pomodoro-score-actions">
@@ -1363,14 +1544,24 @@
             <span>结束</span>
             <input id="calendar-event-edit-end" name="end" type="time" required />
           </label>
-          <label>
-            <span>质量评分（1-10）</span>
-            <input id="calendar-event-edit-quality" name="quality" type="number" min="1" max="10" step="1" required />
-          </label>
-          <label>
-            <span>幸福感评分（1-10）</span>
-            <input id="calendar-event-edit-happiness" name="happiness" type="number" min="1" max="10" step="1" required />
-          </label>
+          <div class="calendar-score-field">
+            <button
+              id="calendar-event-score-trigger"
+              class="score-pair-trigger"
+              type="button"
+              aria-controls="score-wheel-popover"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-required="true"
+            >
+              <span>评分</span>
+              <strong data-score-pair-value>--*--</strong>
+            </button>
+            <div class="score-pair-native-inputs" hidden>
+              <input id="calendar-event-edit-quality" name="quality" type="number" min="1" max="10" step="1" />
+              <input id="calendar-event-edit-happiness" name="happiness" type="number" min="1" max="10" step="1" />
+            </div>
+          </div>
         </div>
 
         <label class="calendar-event-form-note">
@@ -1386,10 +1577,19 @@
     </section>
   </div>
 
-  <div id="score-wheel-popover" class="score-wheel-popover" hidden aria-hidden="true">
-    <div class="score-wheel-shell" role="listbox" aria-label="评分滚轮选择器">
-      <div class="score-wheel-highlight" aria-hidden="true"></div>
-      <div id="score-wheel-track" class="score-wheel-track"></div>
+  <div
+    id="score-wheel-popover"
+    class="score-wheel-popover"
+    role="dialog"
+    aria-label="质量与幸福感评分"
+    hidden
+    aria-hidden="true"
+  >
+    <div class="score-quadrant-title">质量X幸福感</div>
+    <div id="score-wheel-track" class="score-quadrant-canvas" role="application" tabindex="0">
+      <span class="score-quadrant-marker" hidden>
+        <span class="score-quadrant-marker-value"></span>
+      </span>
     </div>
   </div>
 
@@ -1433,6 +1633,7 @@
   <script src="app-dom-refs.js"></script>
   <script src="app-startup.js"></script>
   <script src="app-core-utils.js"></script>
+  <script src="app-schedule-constraints.js"></script>
   <script src="app-overview.js"></script>
   <script src="app-layout-shell.js"></script>
   <script src="app-ai-ui-reactions.js"></script>
@@ -1454,6 +1655,9 @@
   <script src="app-todo-list.js"></script>
   <script src="app-sidebar-taxonomy.js"></script>
   <script src="app-review.js"></script>
+  <script src="app-liuyao-engine.js"></script>
+  <script src="app-liuyao-model.js"></script>
+  <script src="app-liuyao.js"></script>
   <script src="app-search.js"></script>
   <script src="app-score-wheel.js"></script>
   <script src="app-settings.js"></script>
@@ -1462,6 +1666,7 @@
   <script src="app-internal-update.js"></script>
   <script src="app-pomodoro-todo-link.js"></script>
   <script src="app-pomodoro.js"></script>
+  <script src="app-pomodoro-floating.js"></script>
   <script src="app-todo-reminder.js"></script>
   <script src="app-sync-settings.js"></script>
   <script src="app-calendar-ui.js"></script>

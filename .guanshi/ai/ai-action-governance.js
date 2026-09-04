@@ -44,6 +44,10 @@ function normalizeToolForReview(tool = {}, decision = {}) {
     scopes,
   });
   const draftSchema = normalizeStringList(source.draft_schema || source.draftSchema || fallback.draftSchema, 12, 80);
+  const artifactPersistence = normalizeText(
+    source.artifactPersistence || source.artifact_persistence || fallback.artifactPersistence || "pending",
+    40,
+  );
   const requiresUserConfirmation =
     source.requiresUserConfirmation === true
     || fallback.requiresUserConfirmation === true
@@ -56,6 +60,9 @@ function normalizeToolForReview(tool = {}, decision = {}) {
     mode,
     disabled: source.disabled === true || mode === "disabled",
     requiresUserConfirmation,
+    artifactPersistence: ["ephemeral", "pending", "persisted"].includes(artifactPersistence)
+      ? artifactPersistence
+      : "pending",
     scopes,
     draft_schema: draftSchema,
     apply_policy: {
@@ -102,8 +109,10 @@ function reviewActionPolicy(input = {}) {
     tool.requiresUserConfirmation === true
     || semanticNeedsConfirmation(semanticAction)
     || (tool.apply_policy.requiresUiConfirmation === true && tool.mode === "draft");
-  const createsDraft = tool.mode === "draft" || tool.draft_schema.length > 0 || requiresConfirmation;
-  const writesUserData = createsDraft || requestedApply;
+  const createsPendingArtifact = tool.mode === "draft"
+    || (tool.draft_schema.length > 0 && tool.artifactPersistence !== "ephemeral")
+    || requiresConfirmation;
+  const writesUserData = createsPendingArtifact || requestedApply;
   const reasons = [];
   const guardrails = [];
 
@@ -131,7 +140,7 @@ function reviewActionPolicy(input = {}) {
   let status = "allowed";
   if (tool.disabled || (requestedApply && tool.apply_policy.allowExternalApply !== true)) {
     status = "blocked";
-  } else if (requiresConfirmation || createsDraft) {
+  } else if (requiresConfirmation || createsPendingArtifact) {
     status = "needs_confirmation";
   } else if (missingFields.length || warnings.length) {
     status = "needs_review";
@@ -146,14 +155,15 @@ function reviewActionPolicy(input = {}) {
     moduleId: tool.module_id,
     toolMode: tool.mode,
     draftSchema: tool.draft_schema,
+    artifactPersistence: tool.artifactPersistence,
     requiresConfirmation,
     canApply: status === "allowed" && requestedApply && tool.apply_policy.allowExternalApply === true,
-    canExecuteWithoutConfirmation: status === "allowed" && !requiresConfirmation,
+    canExecuteWithoutConfirmation: status !== "blocked" && !requiresConfirmation && !createsPendingArtifact,
     writesUserData,
     requestedApply,
     permissions: {
       canApply: status === "allowed" && requestedApply && tool.apply_policy.allowExternalApply === true,
-      requiresGuanshiUiConfirmation: requiresConfirmation || createsDraft,
+      requiresGuanshiUiConfirmation: requiresConfirmation || createsPendingArtifact,
       allowExternalApply: tool.apply_policy.allowExternalApply === true,
     },
     guardrails: Array.from(new Set(guardrails)),

@@ -95,6 +95,8 @@
     const moveTodoOrder = requireFunction(deps, "moveTodoOrder");
     const moveTodoToOrder = requireFunction(deps, "moveTodoToOrder");
     const moveTodoToDateOrder = requireFunction(deps, "moveTodoToDateOrder");
+    const previewTodoMove = typeof deps.previewTodoMove === "function" ? deps.previewTodoMove : null;
+    const applyTodoScheduleChanges = typeof deps.applyTodoScheduleChanges === "function" ? deps.applyTodoScheduleChanges : null;
     const moveTodosToDateOrder =
       typeof deps.moveTodosToDateOrder === "function"
         ? deps.moveTodosToDateOrder
@@ -122,6 +124,58 @@
     let todoDragExpandKey = "";
     let todoSelectionAnchorId = "";
     let todoListRefreshAfterDragScheduled = false;
+    let todoSchedulePreviewNode = null;
+    let todoScheduleNoticeNode = null;
+    let todoScheduleNoticeTimer = null;
+
+    function clearSchedulePreview() {
+      todoSchedulePreviewNode?.remove();
+      todoSchedulePreviewNode = null;
+      for (const node of todoGroups?.querySelectorAll?.(".todo-drag-time-preview") || []) node.remove();
+    }
+
+    function showScheduleNotice(message, invalid = false) {
+      if (!documentRef || !todoGroups) return;
+      if (todoScheduleNoticeTimer) globalScope.clearTimeout(todoScheduleNoticeTimer);
+      todoScheduleNoticeNode?.remove();
+      const node = documentRef.createElement("div");
+      node.className = `todo-schedule-notice${invalid ? " is-invalid" : ""}`;
+      node.setAttribute("role", "status");
+      node.textContent = message;
+      documentRef.body.appendChild(node);
+      todoScheduleNoticeNode = node;
+      todoScheduleNoticeTimer = globalScope.setTimeout(() => { node.remove(); todoScheduleNoticeNode = null; }, 4500);
+    }
+
+    function buildSchedulePreview(payload, state) {
+      if (!previewTodoMove || payload.mode !== "time") return null;
+      const movingIds = normalizeTodoIdList(state.todoIds?.length ? state.todoIds : [state.todoId]);
+      const order = movingIds.length > 1 ? getDragDropBlockOrder(payload, movingIds) : payload.nextOrder;
+      const anchorId = String(payload.rowTarget?.rowNode?.dataset?.id || "");
+      const anchor = anchorId && !movingIds.includes(anchorId)
+        ? { anchorTodoId: anchorId, side: payload.rowTarget.insertBefore ? "before" : "after" }
+        : {};
+      return previewTodoMove(movingIds, payload.dueDate, order, anchor);
+    }
+
+    function showSchedulePreview(preview) {
+      if (!preview || !documentRef || !todoGroups) return;
+      const node = documentRef.createElement("div");
+      node.className = `todo-schedule-notice is-preview${preview.feasible ? "" : " is-invalid"}`;
+      node.setAttribute("role", "status");
+      node.textContent = preview.message;
+      documentRef.body.appendChild(node);
+      todoSchedulePreviewNode = node;
+      todoDropLine?.classList.toggle("is-invalid", !preview.feasible);
+      for (const row of todoGroups.querySelectorAll(".todo-item[data-id]")) {
+        const change = preview.changes?.find((item) => item.todoId === row.dataset.id);
+        if (!change || (change.before.startTime === change.after.startTime && change.before.endTime === change.after.endTime && change.before.dueDate === change.after.dueDate)) continue;
+        const badge = documentRef.createElement("span");
+        badge.className = "todo-drag-time-preview";
+        badge.textContent = `→ ${change.before.dueDate !== change.after.dueDate ? `${change.after.dueDate.slice(5)} ` : ""}${change.after.startTime}–${change.after.endTime}`;
+        (row.querySelector(".todo-badges") || row).appendChild(badge);
+      }
+    }
 
     function scheduleTodoListRefreshAfterDrag() {
       if (todoListRefreshAfterDragScheduled) return;
@@ -622,6 +676,7 @@
     }
 
     function clearDragVisualState({ keepDragging = true } = {}) {
+      clearSchedulePreview();
       if (!todoGroups) return;
       const dropTargets = todoGroups.querySelectorAll(".todo-item.is-drop-before, .todo-item.is-drop-after");
       for (const node of dropTargets) {
@@ -1036,6 +1091,10 @@
       if (!todoId || !mode || !groupKey || !Number.isInteger(fromOrder) || fromOrder < 0) return;
       if (mode === "time" && !isValidDateInput(dueDate)) return;
       const todoIds = getTodoDragIdsForRow(rowNode, mode);
+      if (todoScheduleNoticeTimer) globalScope.clearTimeout(todoScheduleNoticeTimer);
+      todoScheduleNoticeNode?.remove();
+      todoScheduleNoticeNode = null;
+      todoScheduleNoticeTimer = null;
 
       todoListDragState = {
         todoId,
@@ -1088,6 +1147,9 @@
       todoListDragState.targetGroupKey = dropPayload.groupKey;
       todoListDragState.targetDueDate = dropPayload.dueDate;
       todoListDragState.targetOrder = dropPayload.nextOrder;
+      const preview = buildSchedulePreview(dropPayload, todoListDragState);
+      dropPayload.schedulePreview = preview;
+      showSchedulePreview(preview);
       todoListDragState.lastDropPayload = dropPayload;
     }
 
@@ -1139,6 +1201,12 @@
         return;
       }
 
+      if (dropPayload.schedulePreview && applyTodoScheduleChanges) {
+        const result = applyTodoScheduleChanges(dropPayload.schedulePreview);
+        if (!result.feasible) showScheduleNotice(result.message, true);
+        else if (result.applied) showScheduleNotice("局部排序已应用，可按 ⌘Z 撤销。");
+        return;
+      }
       if (!isValidDateInput(targetDueDate) || !Number.isInteger(targetOrder)) return;
       if (!isMultiTodoDrag && targetDueDate === dueDate && targetOrder === fromOrder) return;
       if (isMultiTodoDrag) {
@@ -1930,6 +1998,7 @@
       getDragDropPayload,
       handleGroupDragStart,
       handleGroupDragOver,
+      showScheduleNotice,
       handleGroupDrop,
       handleGroupDragEnd,
       handleGroupDragLeave,

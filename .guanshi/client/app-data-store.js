@@ -212,7 +212,7 @@
         scheduleAutoBidirectionalSync("todos-save");
       }
       if (!skipUndoSnapshot) {
-        commitUndoSnapshot();
+        commitUndoSnapshot({ separate: Boolean(options?.undoBoundary) });
       }
     }
 

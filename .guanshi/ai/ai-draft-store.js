@@ -49,6 +49,7 @@ function sanitizeDraft(draft) {
     dateRange: draft.dateRange || {},
     summary: String(draft.summary || ""),
     changes: Array.isArray(draft.changes) ? draft.changes : [],
+    validation: draft.validation || null,
     conflicts: Array.isArray(draft.conflicts) ? draft.conflicts : [],
     impact: draft.impact || {},
     undo: draft.undo || { transactionId: null, restorable: true },

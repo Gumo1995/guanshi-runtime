@@ -104,7 +104,7 @@
         ? sumBy(analyzableList, (item) => item.happiness * item.durationHours) / Math.max(0.001, sumBy(analyzableList, (item) => item.durationHours))
         : 0;
 
-      reviewVisualSummary.textContent = `筛选 ${totalEntries} 条 entry · 覆盖 ${dayCount} 天 · 待补评分 ${unratedEntries} 条`;
+      reviewVisualSummary.textContent = `${totalEntries} 条日志 · ${dayCount} 天 · ${unratedEntries} 条待评分`;
 
       reviewVisualKpis.innerHTML = `
     <article class="review-kpi-card">

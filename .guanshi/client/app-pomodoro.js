@@ -494,11 +494,23 @@
 
       pomodoroScoreModal.hidden = false;
       updateBodyModalState();
-      pomodoroQualityScoreSlider.focus();
+      openScorePicker();
 
       return new Promise((resolve) => {
         scoreModalResolver = resolve;
       });
+    }
+
+    function openScorePicker() {
+      if (!pomodoroQualityScoreSlider || !pomodoroHappinessScoreSlider) return;
+      if (scoreWheelModule && typeof scoreWheelModule.syncPair === "function") {
+        scoreWheelModule.syncPair(pomodoroQualityScoreSlider, pomodoroHappinessScoreSlider);
+      }
+      if (scoreWheelModule && typeof scoreWheelModule.openForPair === "function") {
+        scoreWheelModule.openForPair(pomodoroQualityScoreSlider, pomodoroHappinessScoreSlider);
+        return;
+      }
+      pomodoroQualityScoreSlider.focus();
     }
 
     function handleScoreConfirm(action = "complete") {
@@ -508,13 +520,13 @@
 
       if (!Number.isInteger(quality) || quality < 1 || quality > 10) {
         alertFn("质量评分需为 1 到 10 的整数。");
-        pomodoroQualityScoreSlider.focus();
+        openScorePicker();
         return;
       }
 
       if (!Number.isInteger(happiness) || happiness < 1 || happiness > 10) {
         alertFn("幸福感评分需为 1 到 10 的整数。");
-        pomodoroHappinessScoreSlider.focus();
+        openScorePicker();
         return;
       }
 
