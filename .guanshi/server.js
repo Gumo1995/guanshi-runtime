@@ -47,6 +47,9 @@ if (DATA_DIR !== ROOT_DIR) {
 }
 
 const MIME_TYPES = {
+  ".glb": "model/gltf-binary",
+  ".gltf": "model/gltf+json",
+  ".mjs": "application/javascript; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",

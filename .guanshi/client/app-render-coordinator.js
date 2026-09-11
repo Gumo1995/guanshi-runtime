@@ -130,6 +130,7 @@
         ensureAiSettingsLoadedForSettingsView();
       }
 
+      renderReview();
       renderTopTodoSyncHub(getSelectedTodo());
     }
 

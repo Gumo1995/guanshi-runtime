@@ -28,6 +28,8 @@
       getShowTodoHistoryInMainList,
       createTodoDraft,
       assignScheduleForNewTodo,
+      runDataTransaction,
+      deferDataEffect = () => false,
       saveTodos,
       saveEntries,
       setActiveView,
@@ -1113,6 +1115,11 @@
         return;
       }
 
+      if (typeof runDataTransaction !== "function") throw new Error("待办保存保护模块不可用，未修改数据。");
+      return runDataTransaction(() => completeTodoWithPersistence(todo, requestedCompletionWindow), [todos, entries]);
+    }
+
+    function completeTodoWithPersistence(todo, requestedCompletionWindow) {
       const todoIdText = String(todo.id || "");
       const preCompleteSnapshot = {
         dueDate: String(todo.dueDate || "").trim(),
@@ -1203,7 +1210,8 @@
         render();
         if (hasExternalReminderId) {
           // Complete today's reminder immediately, then schedule next occurrence sync.
-          void syncRecurringTodoReminderNow(String(todo.id || ""));
+          const sync = () => { void syncRecurringTodoReminderNow(String(todo.id || "")); };
+          if (!deferDataEffect(sync)) sync();
         }
         return;
       }

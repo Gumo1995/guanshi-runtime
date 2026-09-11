@@ -2,7 +2,7 @@
 
 观时是一个本地运行的时间记录、待办规划与复盘工具。
 
-当前版本：1.6.14
+当前版本：1.6.15
 
 ## 第一次启动
 
@@ -48,7 +48,7 @@ http://127.0.0.1:8080/
 
 ## AI 与外部 Agent
 
-v1.6.14 包含本地 AI 基础能力：Provider / BYOK 服务端配置、Time 与 Liuyao Domain Module Runtime、AI memory proposal、确定性排程草稿、AI action workflows、Guanshi MCP 外部 Agent 接入和隐私脱敏 guard。默认不会自动调用模型或自动改动待办、日历、提醒或卦例。
+v1.6.15 包含本地 AI 基础能力：Provider / BYOK 服务端配置、Time 与 Liuyao Domain Module Runtime、AI memory proposal、确定性排程草稿、AI action workflows、Guanshi MCP 外部 Agent 接入和隐私脱敏 guard。默认不会自动调用模型或自动改动待办、日历、提醒或卦例。
 
 本版本新增“完成待办并记录实际时间”AI Action。模型可以根据用户明确提供的信息生成实际日期、起止时间、评分和待办字段修改草稿；未提供时间时会说明本地默认推导，未提供评分时不会自动填写。只有用户确认后，观时才会标记待办完成并生成对应的日历实际记录。
 

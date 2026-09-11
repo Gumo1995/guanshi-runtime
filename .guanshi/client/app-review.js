@@ -1,677 +1,226 @@
-(function attachTimeQualityReviewModule(globalScope) {
-  if (!globalScope) return;
-
-  function requireFunction(deps, key) {
-    const value = deps[key];
-    if (typeof value !== "function") {
-      throw new Error(`TimeQualityReviewModule missing required function dependency: ${key}`);
-    }
-    return value;
-  }
-
+/* The review route is retained for AI/context compatibility; its UI is Time Forest. */
+(function (scope) {
+  "use strict";
   function createReviewModule(deps = {}) {
-    const getEntries = requireFunction(deps, "getEntries");
-    const getTodos = requireFunction(deps, "getTodos");
-    const getGlobalSearchTerm = requireFunction(deps, "getGlobalSearchTerm");
-    const calcDurationHours = requireFunction(deps, "calcDurationHours");
-    const getEntryDisplayTitle = requireFunction(deps, "getEntryDisplayTitle");
-    const parseOptionalScore = requireFunction(deps, "parseOptionalScore");
-    const sumBy = requireFunction(deps, "sumBy");
-    const isValidDateInput = requireFunction(deps, "isValidDateInput");
-    const formatDateForInput = requireFunction(deps, "formatDateForInput");
-    const formatDate = requireFunction(deps, "formatDate");
-    const escapeHtml = requireFunction(deps, "escapeHtml");
-    const formatScoreLabel = requireFunction(deps, "formatScoreLabel");
-    const isImportedExternalEntry = requireFunction(deps, "isImportedExternalEntry");
-    const getTodoCategory = requireFunction(deps, "getTodoCategory");
-    const setReviewLegacyVisible = requireFunction(deps, "setReviewLegacyVisible");
-    const getReviewLegacyVisible = requireFunction(deps, "getReviewLegacyVisible");
-    const getCurrentRange = typeof deps.getCurrentRange === "function" ? deps.getCurrentRange : () => "all";
-    const getRangeEntries = typeof deps.getRangeEntries === "function" ? deps.getRangeEntries : null;
-
-    const REVIEW_VISUAL_LOOKBACK_DAYS = Math.max(1, Number.parseInt(String(deps.REVIEW_VISUAL_LOOKBACK_DAYS || 14), 10));
-
-    const reviewVisualSummary = deps.reviewVisualSummary || null;
-    const reviewVisualKpis = deps.reviewVisualKpis || null;
-    const reviewChartTrend = deps.reviewChartTrend || null;
-    const reviewChartCategory = deps.reviewChartCategory || null;
-    const reviewChartTimeband = deps.reviewChartTimeband || null;
-    const reviewChartMatrix = deps.reviewChartMatrix || null;
-    const reviewList = deps.reviewList || null;
-    const reviewSummary = deps.reviewSummary || null;
-    const reviewDebugTbody = deps.reviewDebugTbody || null;
-    const reviewDebugSummary = deps.reviewDebugSummary || null;
-
-    function getEntriesByCurrentRange() {
-      const source = Array.isArray(getEntries()) ? getEntries() : [];
-      const range = String(getCurrentRange() || "all");
-      if (typeof getRangeEntries !== "function") return source;
-      if (!range || range === "all") return source;
-      return getRangeEntries(source, range);
+    const root = document.getElementById("view-review");
+    const $ = (id) => root.querySelector("#" + id),
+      escape = deps.escapeHtml;
+    let range = "all",
+      month = "",
+      until = "",
+      unratedOnly = false,
+      page = 0,
+      selected = "",
+      snapshot = null,
+      scene = null,
+      loading = false,
+      failed = false,
+      visible = false,
+      signature = "",
+      drawn = "",
+      epoch = 0;
+    let autoRotate = !scope.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    try { const saved = localStorage.getItem("guanshi-forest-auto-rotate"); if (saved !== null) autoRotate = saved === "true"; } catch {}
+    $("forest-auto-rotate").setAttribute("aria-pressed", String(autoRotate));
+    $("forest-auto-rotate").onclick = () => {
+      autoRotate = !autoRotate;
+      $("forest-auto-rotate").setAttribute("aria-pressed", String(autoRotate));
+      try { localStorage.setItem("guanshi-forest-auto-rotate", String(autoRotate)); } catch {}
+      scene?.setAutoRotate(autoRotate);
+    };
+    const host = $("forest-canvas"), list = $("forest-record-list");
+    function setStatus(message = "", retry = false) {
+      $("forest-status").textContent = message;
+      $("forest-status-row").hidden = !message;
+      $("forest-retry").hidden = !retry;
     }
-
-    function getReviewEntryDurationHours(entry) {
-      if (!entry) return 0;
-      const existingDuration = Number(entry.duration);
-      if (Number.isFinite(existingDuration) && existingDuration > 0) return existingDuration;
-      const computedDuration = calcDurationHours(entry.start, entry.end);
-      if (Number.isFinite(computedDuration) && computedDuration > 0) return computedDuration;
-      return 0;
+    function select(id) {
+      selected = id;
+      if (id) root.querySelector(".forest-records").open = false;
+      scene?.select(id);
+      renderDetail();
+      for (const b of root.querySelectorAll("[data-tree]"))
+        b.setAttribute("aria-pressed", String(b.dataset.tree === id));
     }
-
-    function buildReviewVisualEntryDataset() {
-      const source = getEntriesByCurrentRange();
-      const searchTerm = String(getGlobalSearchTerm() || "").toLowerCase();
-      const normalized = [];
-
-      for (const entry of source) {
-        if (!entry) continue;
-        const durationHours = getReviewEntryDurationHours(entry);
-        const title = getEntryDisplayTitle(entry, entry.category || "记录");
-        const haystack = `${title} ${entry.category || ""} ${entry.note || ""} ${entry.source || ""} ${entry.calendarGroup || ""}`.toLowerCase();
-        if (searchTerm && !haystack.includes(searchTerm)) continue;
-
-        normalized.push({
-          entry,
-          title,
-          date: String(entry.date || ""),
-          start: String(entry.start || ""),
-          durationHours,
-          category: String(entry.category || "未分类"),
-          quality: parseOptionalScore(entry.quality),
-          happiness: parseOptionalScore(entry.happiness),
-          needsReview: Boolean(entry.needsReview),
-          source: String(entry.source || ""),
+    function renderDetail() {
+      const t = snapshot?.trees.find((t) => t.id === selected);
+      const box = $("forest-detail");
+      box.hidden = !t;
+      if (!t) return;
+      box.innerHTML = `<button class="forest-close" type="button" aria-label="关闭记录详情">×</button><span class="forest-eyebrow">这一段时间</span><h3>${escape(t.title)}</h3><p>${escape(t.date)} · ${Math.round(t.minutes)} 分钟</p><div class="forest-scores"><span>质量 <strong>${t.quality ?? "—"}<small>/10</small></strong></span><span>幸福感 <strong>${t.happiness ?? "—"}<small>/10</small></strong></span></div><p class="forest-category">${escape(t.category)}</p><p class="forest-origin">${t.external ? "日历记录" + (t.unrated ? "，待确认" : "") : escape({ manual: "手动记录", "todo-completed": "完成待办", "todo-recurring-completed": "周期待办完成", "pomodoro-session": "番茄钟记录" }[t.source] || "时间记录")}${t.unrated ? " · 待评分" : ""}</p><button class="forest-primary" type="button" data-open-record>查看与评分</button>`;
+      box.querySelector(".forest-close").onclick = () => select("");
+      box.querySelector("[data-open-record]").onclick = () =>
+        deps.openEntry(t.id);
+    }
+    async function ensureScene() {
+      if (scene || loading || failed || !visible) return;
+      loading = true;
+      const generation = ++epoch;
+      setStatus("正在载入森林…");
+      try {
+        const module = await import("/assets/forest/scene.mjs");
+        const built = await module.createForestScene(host, select, () => {
+          failed = true;
+          scene?.dispose();
+          scene = null;
+          setStatus("森林显示已中断，请重试。", true);
         });
-      }
-
-      return normalized;
-    }
-
-    function renderReviewVisualKpis(entryList, analyzableList) {
-      if (!reviewVisualKpis || !reviewVisualSummary) return;
-
-      const totalEntries = entryList.length;
-      const totalHours = sumBy(entryList, (item) => item.durationHours);
-      const ratedEntries = analyzableList.length;
-      const unratedEntries = entryList.filter((item) => item.needsReview || item.quality === null || item.happiness === null).length;
-      const dayCount = new Set(entryList.map((item) => item.date).filter((value) => isValidDateInput(value))).size;
-
-      const avgQuality = ratedEntries
-        ? sumBy(analyzableList, (item) => item.quality * item.durationHours) / Math.max(0.001, sumBy(analyzableList, (item) => item.durationHours))
-        : 0;
-      const avgHappiness = ratedEntries
-        ? sumBy(analyzableList, (item) => item.happiness * item.durationHours) / Math.max(0.001, sumBy(analyzableList, (item) => item.durationHours))
-        : 0;
-
-      reviewVisualSummary.textContent = `${totalEntries} 条日志 · ${dayCount} 天 · ${unratedEntries} 条待评分`;
-
-      reviewVisualKpis.innerHTML = `
-    <article class="review-kpi-card">
-      <p class="review-kpi-label">Entry 总数</p>
-      <p class="review-kpi-value">${totalEntries}</p>
-    </article>
-    <article class="review-kpi-card">
-      <p class="review-kpi-label">累计时长</p>
-      <p class="review-kpi-value">${totalHours.toFixed(1)}h</p>
-    </article>
-    <article class="review-kpi-card">
-      <p class="review-kpi-label">平均质量（加权）</p>
-      <p class="review-kpi-value">${ratedEntries ? avgQuality.toFixed(1) : "--"}</p>
-    </article>
-    <article class="review-kpi-card">
-      <p class="review-kpi-label">平均幸福（加权）</p>
-      <p class="review-kpi-value">${ratedEntries ? avgHappiness.toFixed(1) : "--"}</p>
-    </article>
-  `;
-    }
-
-    function renderReviewTrendChart(entryList) {
-      if (!reviewChartTrend) return;
-
-      const rangeToken = String(getCurrentRange() || "all");
-      const trendTitleNode = reviewChartTrend.parentElement?.querySelector("h4") || null;
-      const labels = [];
-      const dayTotals = new Map();
-      let emptyText = "暂无 entry 记录。";
-
-      if (rangeToken === "all") {
-        if (trendTitleNode) {
-          trendTitleNode.textContent = "全部记录时长";
+        if (generation !== epoch) {
+          built.dispose();
+          return;
         }
-        emptyText = "全部范围暂无 entry 记录。";
-
-        const validDates = [...new Set(entryList.map((item) => String(item.date || "")).filter((value) => isValidDateInput(value)))].sort();
-        if (validDates.length) {
-          const startDate = new Date(`${validDates[0]}T00:00:00`);
-          const endDate = new Date(`${validDates[validDates.length - 1]}T00:00:00`);
-          const spanDays = Math.max(1, Math.floor((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1);
-          const cappedDays = Math.min(spanDays, REVIEW_VISUAL_LOOKBACK_DAYS * 6);
-          const cursor = new Date(endDate);
-          cursor.setDate(endDate.getDate() - cappedDays + 1);
-
-          if (spanDays > cappedDays && trendTitleNode) {
-            trendTitleNode.textContent = `全部记录时长（近 ${cappedDays} 天）`;
-          }
-
-          for (let index = 0; index < cappedDays; index += 1) {
-            const day = new Date(cursor);
-            day.setDate(cursor.getDate() + index);
-            const key = formatDateForInput(day);
-            labels.push(key);
-            dayTotals.set(key, 0);
-          }
-        }
-      } else {
-        const days = Math.max(1, Number.parseInt(rangeToken, 10) || REVIEW_VISUAL_LOOKBACK_DAYS);
-        if (trendTitleNode) {
-          trendTitleNode.textContent = `最近 ${days} 天记录时长`;
-        }
-        emptyText = `近 ${days} 天暂无 entry 记录。`;
-
-        const baseDate = new Date();
-        baseDate.setHours(0, 0, 0, 0);
-        for (let index = days - 1; index >= 0; index -= 1) {
-          const day = new Date(baseDate);
-          day.setDate(baseDate.getDate() - index);
-          const key = formatDateForInput(day);
-          labels.push(key);
-          dayTotals.set(key, 0);
-        }
+        scene = built;
+        scene.setAutoRotate(autoRotate);
+        scene.update(currentTrees());
+        scene.select(selected);
+        scene.setVisible(visible);
+        drawn = signature;
+        setStatus();
+      } catch (error) {
+        if (generation !== epoch) return;
+        failed = true;
+        setStatus("森林加载失败，请重试。", true);
+      } finally {
+        if (generation === epoch) loading = false;
       }
-
-      for (const item of entryList) {
-        if (!dayTotals.has(item.date)) continue;
-        dayTotals.set(item.date, dayTotals.get(item.date) + item.durationHours);
-      }
-
-      const values = labels.map((key) => dayTotals.get(key) || 0);
-      const hasData = values.some((value) => value > 0);
-      if (!hasData) {
-        reviewChartTrend.innerHTML = `<p class="review-chart-empty">${escapeHtml(emptyText)}</p>`;
-        return;
-      }
-
-      const maxValue = Math.max(0.25, ...values);
-      reviewChartTrend.innerHTML = `
-    <div class="review-mini-bars">
-      ${labels
-    .map((key) => {
-      const value = dayTotals.get(key) || 0;
-      const height = Math.max(4, (value / maxValue) * 100);
-      const label = formatDate(key);
-      const valueText = value > 0 ? `${value.toFixed(value >= 10 ? 0 : 1)}h` : "";
-      return `
-          <div class="review-mini-bar-col" title="${escapeHtml(`${label} ${value.toFixed(1)}h`)}">
-            <span class="review-mini-bar-val">${escapeHtml(valueText)}</span>
-            <span class="review-mini-bar-track"><span class="review-mini-bar-fill" style="height:${height.toFixed(2)}%"></span></span>
-            <span class="review-mini-bar-label">${escapeHtml(label)}</span>
-          </div>
-        `;
-    })
-    .join("")}
-    </div>
-  `;
     }
-
-    function renderReviewCategoryChart(entryList) {
-      if (!reviewChartCategory) return;
-
-      const stats = new Map();
-      for (const item of entryList) {
-        const key = String(item.category || "未分类").trim() || "未分类";
-        stats.set(key, (stats.get(key) || 0) + item.durationHours);
-      }
-
-      const sorted = [...stats.entries()]
-        .filter(([, hours]) => hours > 0)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8);
-
-      if (!sorted.length) {
-        reviewChartCategory.innerHTML = '<p class="review-chart-empty">暂无可统计的分类时长。</p>';
-        return;
-      }
-
-      const maxValue = Math.max(...sorted.map(([, value]) => value), 0.25);
-      reviewChartCategory.innerHTML = `
-    <div class="review-progress-list">
-      ${sorted
-    .map(([label, value]) => {
-      const width = (value / maxValue) * 100;
-      return `
-          <div class="review-progress-row">
-            <span class="review-progress-label">${escapeHtml(label)}</span>
-            <span class="review-progress-track"><span class="review-progress-fill" style="width:${width.toFixed(2)}%"></span></span>
-            <span class="review-progress-value">${value.toFixed(1)}h</span>
-          </div>
-        `;
-    })
-    .join("")}
-    </div>
-  `;
+    function currentTrees() {
+      return snapshot ? snapshot.trees.slice(page * 300, (page + 1) * 300) : [];
     }
-
-    function renderReviewTimebandChart(entryList) {
-      if (!reviewChartTimeband) return;
-
-      const binDefs = [
-        { shortLabel: "子", label: "子时", modernRange: "23:00-00:59", hours: [23, 0] },
-        { shortLabel: "丑", label: "丑时", modernRange: "01:00-02:59", hours: [1, 2] },
-        { shortLabel: "寅", label: "寅时", modernRange: "03:00-04:59", hours: [3, 4] },
-        { shortLabel: "卯", label: "卯时", modernRange: "05:00-06:59", hours: [5, 6] },
-        { shortLabel: "辰", label: "辰时", modernRange: "07:00-08:59", hours: [7, 8] },
-        { shortLabel: "巳", label: "巳时", modernRange: "09:00-10:59", hours: [9, 10] },
-        { shortLabel: "午", label: "午时", modernRange: "11:00-12:59", hours: [11, 12] },
-        { shortLabel: "未", label: "未时", modernRange: "13:00-14:59", hours: [13, 14] },
-        { shortLabel: "申", label: "申时", modernRange: "15:00-16:59", hours: [15, 16] },
-        { shortLabel: "酉", label: "酉时", modernRange: "17:00-18:59", hours: [17, 18] },
-        { shortLabel: "戌", label: "戌时", modernRange: "19:00-20:59", hours: [19, 20] },
-        { shortLabel: "亥", label: "亥时", modernRange: "21:00-22:59", hours: [21, 22] },
-      ];
-      const bins = binDefs.map((def, index) => ({
-        index,
-        shortLabel: def.shortLabel,
-        label: def.label,
-        modernRange: def.modernRange,
-        hours: def.hours,
-        count: 0,
-        hoursTotal: 0,
-      }));
-      const hourToBinIndex = new Array(24).fill(-1);
-      bins.forEach((bin, binIndex) => {
-        for (const hour of bin.hours) {
-          if (Number.isInteger(hour) && hour >= 0 && hour <= 23) {
-            hourToBinIndex[hour] = binIndex;
-          }
-        }
-      });
-
-      for (const item of entryList) {
-        const hour = Number.parseInt(String(item.start || "").split(":")[0], 10);
-        if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
-        const bucketIndex = hourToBinIndex[hour];
-        const bucket = bins[bucketIndex];
-        if (!bucket) continue;
-        bucket.count += 1;
-        bucket.hoursTotal += item.durationHours;
-      }
-
-      const totalCount = bins.reduce((sum, bin) => sum + bin.count, 0);
-      if (!totalCount) {
-        reviewChartTimeband.innerHTML = '<p class="review-chart-empty">暂无可统计的时段活跃数据。</p>';
-        return;
-      }
-
-      const totalHours = bins.reduce((sum, bin) => sum + bin.hoursTotal, 0);
-      const maxCount = Math.max(1, ...bins.map((bin) => bin.count));
-      const peakBin = bins.reduce((best, current) => (current.count > best.count ? current : best), bins[0]);
-
-      const chartWidth = 100;
-      const chartHeight = 56;
-      const pointRadius = 1.2;
-      const chartSidePadding = pointRadius + 0.5;
-      const chartLeft = chartSidePadding;
-      const chartRight = chartWidth - chartSidePadding;
-      const chartTop = 6;
-      const chartBottom = 52;
-      const innerWidth = chartRight - chartLeft;
-      const innerHeight = chartBottom - chartTop;
-      const xStep = bins.length > 1 ? innerWidth / (bins.length - 1) : 0;
-
-      const points = bins.map((bin, index) => {
-        const ratio = maxCount > 0 ? bin.count / maxCount : 0;
-        const x = chartLeft + index * xStep;
-        const y = chartBottom - ratio * innerHeight;
-        return { ...bin, x, y };
-      });
-
-      const linePath = points
-        .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-        .join(" ");
-      const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${chartBottom.toFixed(2)} L ${points[0].x.toFixed(2)} ${chartBottom.toFixed(2)} Z`;
-
-      const rawYTickValues = [maxCount, Math.max(1, Math.round(maxCount * 0.5)), 0];
-      const yTickValues = [...new Set(rawYTickValues)].sort((a, b) => b - a);
-      const yTickMarks = yTickValues
-        .map((value) => {
-          const ratio = maxCount > 0 ? value / maxCount : 0;
-          const y = chartBottom - ratio * innerHeight;
-          return `<line x1="${chartLeft.toFixed(2)}" y1="${y.toFixed(2)}" x2="${chartRight.toFixed(2)}" y2="${y.toFixed(2)}"></line>`;
-        })
-        .join("");
-      const yTickLabels = yTickValues
-        .map((value) => {
-          const ratio = maxCount > 0 ? value / maxCount : 0;
-          const y = chartBottom - ratio * innerHeight;
-          const topPercent = (y / chartHeight) * 100;
-          return `<span class="review-line-ytick" style="top:${topPercent.toFixed(2)}%">${value}</span>`;
-        })
-        .join("");
-
-      reviewChartTimeband.innerHTML = `
-    <div class="review-line-wrap">
-      <div class="review-line-main">
-        <div class="review-line-yaxis" aria-hidden="true">
-          ${yTickLabels}
-        </div>
-        <div class="review-line-canvas">
-          <svg class="review-line-chart" viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" role="img" aria-label="按2小时区间统计的时段活跃度折线图">
-            <g class="review-line-grid">
-              ${yTickMarks}
-            </g>
-            <g class="review-line-axis">
-              <line x1="${chartLeft.toFixed(2)}" y1="${chartTop.toFixed(2)}" x2="${chartLeft.toFixed(2)}" y2="${chartBottom.toFixed(2)}"></line>
-              <line x1="${chartLeft.toFixed(2)}" y1="${chartBottom.toFixed(2)}" x2="${chartRight.toFixed(2)}" y2="${chartBottom.toFixed(2)}"></line>
-            </g>
-            <path class="review-line-area" d="${areaPath}"></path>
-            <path class="review-line-path" d="${linePath}"></path>
-            ${points
-      .map(
-        (point) => `
-                <circle class="review-line-dot" cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="${pointRadius.toFixed(2)}">
-                  <title>${escapeHtml(`${point.label}（${point.modernRange}） · ${point.count} 条 · ${point.hoursTotal.toFixed(1)}h`)}</title>
-                </circle>
-              `,
-      )
-      .join("")}
-          </svg>
-        </div>
-      </div>
-
-      <div class="review-line-xlabels">
-        ${bins
-      .map((bin, index) => {
-        const point = points[index];
-        const left = point ? point.x : 0;
-        return `<span class="review-line-xlabel" style="left:${left.toFixed(2)}%">${escapeHtml(bin.shortLabel)}</span>`;
-      })
-      .join("")}
-      </div>
-
-      <p class="review-line-meta">峰值时段：${escapeHtml(`${peakBin.label}（${peakBin.modernRange}）`)}（${peakBin.count}条，${peakBin.hoursTotal.toFixed(1)}h） · 总计 ${totalCount} 条，${totalHours.toFixed(1)}h</p>
-    </div>
-  `;
-    }
-
-    function renderReviewMatrixChart(analyzableList) {
-      if (!reviewChartMatrix) return;
-      if (!analyzableList.length) {
-        reviewChartMatrix.innerHTML = '<p class="review-chart-empty">暂无评分完整的 entry，可在记录后补评分。</p>';
-        return;
-      }
-
-      const matrix = Array.from({ length: 3 }, () => Array.from({ length: 3 }, () => ({ count: 0, hours: 0 })));
-
-      const getBucketIndex = (score) => {
-        if (score >= 8) return 2;
-        if (score >= 5) return 1;
-        return 0;
-      };
-
-      for (const item of analyzableList) {
-        const qualityIndex = getBucketIndex(item.quality);
-        const happinessIndex = getBucketIndex(item.happiness);
-        const cell = matrix[qualityIndex][happinessIndex];
-        cell.count += 1;
-        cell.hours += item.durationHours;
-      }
-
-      let maxCount = 0;
-      for (const row of matrix) {
-        for (const cell of row) {
-          maxCount = Math.max(maxCount, cell.count);
-        }
-      }
-      const safeMaxCount = Math.max(1, maxCount);
-      const rowLabels = ["高质", "中质", "低质"];
-      const colLabels = ["低幸", "中幸", "高幸"];
-      const rowOrder = [2, 1, 0];
-
-      reviewChartMatrix.innerHTML = `
-    <div class="review-matrix-wrap">
-      <div class="review-matrix-top-labels">
-        <span></span>
-        ${colLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
-      </div>
-      <div class="review-matrix-grid">
-        ${rowOrder
-    .map((bucketIndex, rowIndex) => `
-            <span class="review-matrix-row-label">${escapeHtml(rowLabels[rowIndex])}</span>
-            ${matrix[bucketIndex]
-      .map((cell) => {
-        const intensity = cell.count <= 0 ? 0 : cell.count / safeMaxCount;
-        const alpha = cell.count <= 0 ? 0.08 : 0.14 + intensity * 0.56;
-        const valueText = cell.count <= 0 ? "--" : `${cell.count}条`;
-        const hoursText = cell.hours > 0 ? `${cell.hours.toFixed(1)}h` : "";
-        return `
-                  <span class="review-matrix-cell" style="background: rgba(62, 141, 132, ${alpha.toFixed(3)});" title="${escapeHtml(`${valueText} ${hoursText}`)}">
-                    <strong>${escapeHtml(valueText)}</strong>
-                    <small>${escapeHtml(hoursText)}</small>
-                  </span>
-                `;
-      })
-      .join("")}
-          `)
-    .join("")}
-      </div>
-      <p class="review-matrix-note">行表示质量（上高下低），列表示幸福（左低右高）。</p>
-    </div>
-  `;
-    }
-
-    function renderReviewVisuals() {
-      const entryDataset = buildReviewVisualEntryDataset();
-      const analyzable = entryDataset.filter(
-        (item) => item.durationHours > 0 && item.quality !== null && item.happiness !== null && !item.needsReview,
-      );
-      renderReviewVisualKpis(entryDataset, analyzable);
-      renderReviewTrendChart(entryDataset);
-      renderReviewCategoryChart(entryDataset);
-      renderReviewTimebandChart(entryDataset);
-      renderReviewMatrixChart(analyzable);
-    }
-
-    function renderReviewDebugTable() {
-      if (!reviewDebugTbody || !reviewDebugSummary) return;
-
-      const todos = Array.isArray(getTodos()) ? getTodos() : [];
-      const entries = getEntriesByCurrentRange();
-      const searchTerm = String(getGlobalSearchTerm() || "").toLowerCase();
-      const rows = [];
-
-      for (const todo of todos) {
-        const timestamp = Date.parse(String(todo.updatedAt || todo.createdAt || ""));
-        const stateTags = [];
-        stateTags.push(todo.completed ? "completed" : "pending");
-        if (todo.syncState) stateTags.push(`sync:${todo.syncState}`);
-        if (todo.calendarSynced) stateTags.push("calendarSynced");
-        if (todo.repeat && todo.repeat !== "none") stateTags.push(`repeat:${todo.repeat}`);
-
-        const sourceTags = [];
-        if (todo.externalCalendarId) sourceTags.push("externalCalendar");
-        if (todo.lastSyncError) sourceTags.push("syncError");
-
-        rows.push({
-          timestamp: Number.isFinite(timestamp) ? timestamp : 0,
-          type: "todo",
-          id: String(todo.id || ""),
-          title: String(todo.title || ""),
-          date: String(todo.dueDate || ""),
-          time: `${String(todo.startTime || "--")} - ${String(todo.endTime || "--")}`,
-          category: `分类:${getTodoCategory(todo, todo.project)} / 项目:${String(todo.project || "--")}`,
-          tags: Array.isArray(todo.tags) ? todo.tags.map((tag) => `#${tag}`).join(" ") : "",
-          score: `质${formatScoreLabel(todo.qualityScore)} / 幸${formatScoreLabel(todo.happinessScore)}`,
-          stateTags: stateTags.join(" · "),
-          source: sourceTags.join(" · ") || "--",
-          externalId: String(todo.externalCalendarId || ""),
-          linkedId: String(todo.completionEntryId || ""),
-          updatedAt: String(todo.updatedAt || todo.createdAt || ""),
-          searchText: `${todo.title || ""} ${todo.project || ""} ${todo.category || ""} ${todo.note || ""} ${Array.isArray(todo.tags) ? todo.tags.join(" ") : ""}`.toLowerCase(),
-        });
-      }
-
-      for (const entry of entries) {
-        const timestamp = Date.parse(`${entry.date || ""}T${entry.start || "00:00"}:00`);
-        const stateTags = [];
-        if (entry.needsReview) stateTags.push("needsReview");
-        if (isImportedExternalEntry(entry)) stateTags.push("importedExternal");
-        if (entry.source) stateTags.push(`source:${entry.source}`);
-
-        rows.push({
-          timestamp: Number.isFinite(timestamp) ? timestamp : 0,
-          type: "entry",
-          id: String(entry.id || ""),
-          title: getEntryDisplayTitle(entry, entry.category || "记录"),
-          date: String(entry.date || ""),
-          time: `${String(entry.start || "--")} - ${String(entry.end || "--")}`,
-          category: String(entry.category || ""),
-          tags: entry.calendarGroup ? `group:${entry.calendarGroup}` : "--",
-          score: `质${formatScoreLabel(entry.quality)} / 幸${formatScoreLabel(entry.happiness)}`,
-          stateTags: stateTags.join(" · ") || "--",
-          source: String(entry.source || "--"),
-          externalId: String(entry.externalId || ""),
-          linkedId: String(entry.linkedTodoId || ""),
-          updatedAt: String(entry.updatedAt || entry.createdAt || ""),
-          searchText: `${entry.title || ""} ${entry.category || ""} ${entry.note || ""} ${entry.source || ""} ${entry.calendarGroup || ""}`.toLowerCase(),
-        });
-      }
-
-      const filteredRows = rows
-        .filter((row) => !searchTerm || row.searchText.includes(searchTerm))
-        .sort((a, b) => b.timestamp - a.timestamp);
-
-      const todoCount = filteredRows.filter((item) => item.type === "todo").length;
-      const entryCount = filteredRows.filter((item) => item.type === "entry").length;
-      reviewDebugSummary.textContent = `共 ${filteredRows.length} 行（待办 ${todoCount} / 日程 ${entryCount}）`;
-
-      if (!filteredRows.length) {
-        reviewDebugTbody.innerHTML = '<tr><td class="is-empty" colspan="13">没有匹配的调试数据。</td></tr>';
-        return;
-      }
-
-      reviewDebugTbody.innerHTML = filteredRows
-        .map(
-          (row) => `
-      <tr>
-        <td>${escapeHtml(row.type)}</td>
-        <td>${escapeHtml(row.id || "--")}</td>
-        <td>${escapeHtml(row.title || "--")}</td>
-        <td>${escapeHtml(row.date || "--")}</td>
-        <td>${escapeHtml(row.time || "--")}</td>
-        <td>${escapeHtml(row.category || "--")}</td>
-        <td>${escapeHtml(row.tags || "--")}</td>
-        <td>${escapeHtml(row.score || "--")}</td>
-        <td>${escapeHtml(row.stateTags || "--")}</td>
-        <td>${escapeHtml(row.source || "--")}</td>
-        <td>${escapeHtml(row.externalId || "--")}</td>
-        <td>${escapeHtml(row.linkedId || "--")}</td>
-        <td>${escapeHtml(row.updatedAt || "--")}</td>
-      </tr>
-    `,
-        )
-        .join("");
-    }
-
     function renderReview() {
-      renderReviewVisuals();
-      setReviewLegacyVisible(getReviewLegacyVisible());
-      if (!reviewList || !reviewSummary) return;
-
-      const todos = Array.isArray(getTodos()) ? getTodos() : [];
-      const entries = getEntriesByCurrentRange();
-      const searchTerm = String(getGlobalSearchTerm() || "").toLowerCase();
-      const completedTodos = todos.filter((item) => item.completed);
-      const journalEntries = entries.filter((item) => String(item.note || "").trim());
-      reviewSummary.textContent = `已完成待办 ${completedTodos.length} 项 · 时间记录 ${entries.length} 条 · 含备注日志 ${journalEntries.length} 条`;
-
-      const records = [];
-      for (const todo of completedTodos) {
-        records.push({
-          timestamp: new Date(todo.completedAt || todo.updatedAt || todo.createdAt || Date.now()).getTime(),
-          title: `完成待办：${todo.title}`,
-          meta: `${todo.project} · ${todo.dueDate || "未排期"} · 质${formatScoreLabel(todo.qualityScore)} / 幸${formatScoreLabel(todo.happinessScore)}`,
-          note: todo.note || "无备注",
-        });
-      }
-
-      for (const entry of journalEntries) {
-        const entryTitle = getEntryDisplayTitle(entry, entry.category || "记录");
-        records.push({
-          timestamp: new Date(`${entry.date}T${entry.start}:00`).getTime(),
-          title: `${entryTitle} · ${entry.date} ${entry.start}-${entry.end}`,
-          meta: `质${formatScoreLabel(entry.quality)} / 幸${formatScoreLabel(entry.happiness)}`,
-          note: entry.note || "无备注",
-        });
-      }
-
-      const filtered = records
-        .filter((item) => {
-          if (!searchTerm) return true;
-          const haystack = `${item.title} ${item.meta} ${item.note}`.toLowerCase();
-          return haystack.includes(searchTerm);
-        })
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, 40);
-
-      renderReviewDebugTable();
-
-      if (!filtered.length) {
-        reviewList.innerHTML = '<p class="todo-empty">没有匹配的复盘记录。</p>';
+      visible = !root.hidden;
+      if (!visible) {
+        scene?.setVisible(false);
         return;
       }
-
-      const rowsHtml = filtered
-        .map((item) => {
-          const timeText = Number.isFinite(item.timestamp)
-            ? new Date(item.timestamp).toLocaleString("zh-CN", { hour12: false })
-            : "--";
-          return `
-        <tr>
-          <td>${escapeHtml(item.title)}</td>
-          <td>${escapeHtml(item.meta)}</td>
-          <td>${escapeHtml(item.note)}</td>
-          <td>${escapeHtml(timeText)}</td>
-        </tr>
-      `;
-        })
-        .join("");
-
-      reviewList.innerHTML = `
-    <div class="review-log-table-wrap">
-      <table class="review-log-table">
-        <thead>
-          <tr>
-            <th>标题</th>
-            <th>信息</th>
-            <th>备注</th>
-            <th>时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rowsHtml}
-        </tbody>
-      </table>
-    </div>
-  `;
+      const base = deps.forestData.buildSnapshot(deps.getEntries(), {
+        range,
+        isImportedExternalEntry: deps.isImportedExternalEntry,
+      });
+      if (!base.months.includes(month)) month = base.months[0] || "";
+      const monthStart = month ? month + "-01" : "";
+      const today = deps.forestData.dateKey(new Date());
+      const monthEnd = month
+        ? deps.forestData.dateKey(
+            new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0),
+          )
+        : today;
+      const maxDate = monthEnd < today ? monthEnd : today;
+      if (until && (until < monthStart || until > maxDate)) until = "";
+      snapshot = deps.forestData.buildSnapshot(deps.getEntries(), {
+        range,
+        month,
+        until: until || maxDate,
+        unratedOnly,
+        search: deps.getGlobalSearchTerm(),
+        isImportedExternalEntry: deps.isImportedExternalEntry,
+      });
+      page = Math.min(
+        page,
+        Math.max(0, Math.ceil(snapshot.trees.length / 300) - 1),
+      );
+      const items = currentTrees();
+      $("forest-summary").innerHTML =
+        `<span><span class="forest-metric-label">种下的树</span><span><strong>${snapshot.trees.length}</strong> 棵</span></span><span><span class="forest-metric-label">记录的时间</span><span><strong>${(snapshot.totalRecordedMinutes / 60).toFixed(1)}</strong> 小时</span></span><span><span class="forest-metric-label">等待回顾</span><span><strong>${snapshot.unratedCount}</strong> 段</span></span>`;
+      $("forest-month").innerHTML = base.months.length
+        ? base.months
+            .map(
+              (m) =>
+                `<option value="${m}" ${m === month ? "selected" : ""}>${m.slice(0, 4)}年 ${Number(m.slice(5))}月</option>`,
+            )
+            .join("")
+        : '<option value="">尚无林区</option>';
+      const scopeNotes = [
+        snapshot.overlap ? "记录时长包含重叠时段" : "",
+        snapshot.invalid.length ? `${snapshot.invalid.length} 条记录时间不完整，暂未种树` : "",
+      ].filter(Boolean).join(" · ");
+      $("forest-scope").textContent = scopeNotes;
+      $("forest-scope").hidden = !scopeNotes;
+      $("forest-empty").hidden = items.length > 0;
+      $("forest-empty").textContent =
+        unratedOnly || deps.getGlobalSearchTerm() || until
+          ? "这个筛选范围还没有树，试试调整条件。"
+          : "记录一段时间，让森林开始生长。";
+      $("forest-pagination").hidden = snapshot.trees.length <= 300;
+      $("forest-page-label").textContent =
+        `林地 ${page + 1} / ${Math.max(1, Math.ceil(snapshot.trees.length / 300))}`;
+      $("forest-prev").disabled = page === 0;
+      $("forest-next").disabled = (page + 1) * 300 >= snapshot.trees.length;
+      const nextSignature = JSON.stringify(items);
+      if (signature !== nextSignature) {
+        signature = nextSignature;
+        list.innerHTML =
+          items
+            .map(
+              (t) =>
+                `<button type="button" data-tree="${escape(t.id)}" aria-pressed="false"><span>${escape(t.title)}</span><small>${escape(t.date)} · ${Math.round(t.minutes)}分钟 · 质量 ${t.quality ?? "—"} / 幸福 ${t.happiness ?? "—"}${t.unrated ? " · 待评分" : ""}</small></button>`,
+            )
+            .join("") || "<p>当前没有符合条件的记录。</p>";
+      }
+      if (selected && !snapshot.trees.some((t) => t.id === selected))
+        selected = "";
+      renderDetail();
+      if (scene) {
+        scene.setVisible(true);
+        if (drawn !== signature) {
+          scene.update(items);
+          drawn = signature;
+        }
+      } else ensureScene();
+      scene?.select(selected);
     }
-
+    root.addEventListener("click", (event) => {
+      const b = event.target.closest("button");
+      if (!b) return;
+      if (b.dataset.tree) select(b.dataset.tree);
+    });
+    $("forest-month").onchange = (e) => {
+      month = e.target.value;
+      until = "";
+      page = 0;
+      renderReview();
+    };
+    $("forest-unrated").onchange = (e) => {
+      unratedOnly = e.target.checked;
+      page = 0;
+      renderReview();
+    };
+    $("forest-prev").onclick = () => {
+      page--;
+      renderReview();
+    };
+    $("forest-next").onclick = () => {
+      page++;
+      renderReview();
+    };
+    $("forest-reset").onclick = () => scene?.reset();
+    $("forest-zoom-in").onclick = () => scene?.zoom(1.2);
+    $("forest-zoom-out").onclick = () => scene?.zoom(1 / 1.2);
+    $("forest-retry").onclick = () => {
+      failed = false;
+      scene?.dispose();
+      scene = null;
+      loading = false;
+      epoch++;
+      renderReview();
+    };
     return {
-      buildReviewVisualEntryDataset,
-      renderReviewVisualKpis,
-      renderReviewTrendChart,
-      renderReviewCategoryChart,
-      renderReviewTimebandChart,
-      renderReviewMatrixChart,
-      renderReviewVisuals,
       renderReview,
-      renderReviewDebugTable,
+      getVisibleRange: () => snapshot?.visibleRange,
+      getRange: () => range,
+      dispose: () => {
+        epoch++;
+        scene?.dispose();
+        scene = null;
+      },
+      getDiagnostics: () => ({
+        mode: "3d",
+        failed,
+        visible,
+        count: currentTrees().length,
+        ...scene?.stats(),
+      }),
     };
   }
-
-  const existing = globalScope.TimeQualityReviewModule || {};
-  globalScope.TimeQualityReviewModule = {
-    ...existing,
-    createReviewModule,
-  };
+  scope.TimeQualityReviewModule = { createReviewModule };
 })(typeof window !== "undefined" ? window : globalThis);

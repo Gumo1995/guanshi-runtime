@@ -143,16 +143,14 @@
               </span>
               <span class="nav-label">日历</span>
             </button>
-            <button id="nav-review" class="sidebar-nav-item" data-view="review" type="button" aria-label="复盘" title="复盘">
+            <button id="nav-review" class="sidebar-nav-item" data-view="review" type="button" aria-label="时间森林" title="时间森林">
               <span class="nav-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
-                  <rect x="4" y="3.5" width="16" height="17" rx="2.5" />
-                  <path d="M8 8.5h8" />
-                  <path d="M8 12h8" />
-                  <path d="M8 15.5h5" />
+                  <path d="M12 3 7 9h3l-5 6h5l-4 4h12l-4-4h5l-5-6h3Z" />
+                  <path d="M12 19v3" />
                 </svg>
               </span>
-              <span class="nav-label">复盘</span>
+              <span class="nav-label">时间森林</span>
             </button>
             <button id="nav-liuyao" class="sidebar-nav-item" data-view="liuyao" type="button" aria-label="六爻" title="六爻">
               <span class="nav-icon" aria-hidden="true">
@@ -635,75 +633,24 @@
         </section>
 
         <section id="view-review" class="app-view" data-view="review" hidden>
-          <section class="panel review-panel">
-            <div class="panel-head review-panel-head">
-              <div class="review-panel-head-main page-panel-head-main">
-                <h2>日志复盘</h2>
-                <p id="review-visual-summary" class="review-panel-head-summary">--</p>
-              </div>
-              <div class="review-panel-head-actions">
-                <div id="review-range-switch" class="range-switch review-range-switch" role="tablist" aria-label="复盘时间范围">
-                  <button class="active" data-range="7" type="button">近 7 天</button>
-                  <button data-range="30" type="button">近 30 天</button>
-                  <button data-range="all" type="button">全部</button>
-                </div>
-              </div>
+          <section class="panel review-panel forest-panel">
+            <header class="forest-header">
+              <div><h2>时间森林</h2><p>把度过的时间，种成自己的森林。</p></div>
+              <div class="forest-filters"><div class="forest-toolbar"><select id="forest-month" aria-label="选择月份林区"></select><label class="forest-check"><input id="forest-unrated" type="checkbox">待评分</label></div></div>
+            </header>
+            <div class="forest-overview-row">
+            <div id="forest-summary" class="forest-summary" aria-live="polite"></div>
+            <details class="forest-records"><summary>查看记录详情</summary><div id="forest-record-list"></div></details>
             </div>
-
-            <section class="review-visual-panel" aria-label="Entry 多维可视化">
-              <div id="review-visual-kpis" class="review-visual-kpis"></div>
-              <div class="review-visual-grid">
-                <article class="review-visual-card">
-                  <h4>最近 14 天记录时长</h4>
-                  <div id="review-chart-trend" class="review-chart review-chart-trend"></div>
-                </article>
-                <article class="review-visual-card">
-                  <h4>分类时长分布</h4>
-                  <div id="review-chart-category" class="review-chart review-chart-category"></div>
-                </article>
-                <article class="review-visual-card">
-                  <h4>时段活跃度</h4>
-                  <div id="review-chart-timeband" class="review-chart review-chart-timeband"></div>
-                </article>
-                <article class="review-visual-card">
-                  <h4>质量 × 幸福矩阵</h4>
-                  <div id="review-chart-matrix" class="review-chart review-chart-matrix"></div>
-                </article>
-              </div>
-            </section>
-
-            <div id="review-legacy-sections" class="review-legacy-sections" hidden>
-              <div id="review-summary" class="review-summary"></div>
-              <div id="review-list" class="review-list"></div>
-              <section class="review-debug-panel" aria-label="调试数据表">
-                <div class="review-debug-head">
-                  <h3>调试数据表（待办 / 日程）</h3>
-                  <p id="review-debug-summary">--</p>
-                </div>
-                <div class="review-debug-table-wrap">
-                  <table class="review-debug-table">
-                    <thead>
-                      <tr>
-                        <th>类型</th>
-                        <th>ID</th>
-                        <th>标题</th>
-                        <th>日期</th>
-                        <th>时间</th>
-                        <th>分类/项目</th>
-                        <th>标签</th>
-                        <th>评分</th>
-                        <th>状态标签</th>
-                        <th>同步/来源</th>
-                        <th>外部ID</th>
-                        <th>关联ID</th>
-                        <th>更新时间</th>
-                      </tr>
-                    </thead>
-                    <tbody id="review-debug-tbody"></tbody>
-                  </table>
-                </div>
-              </section>
+            <p id="forest-scope" class="forest-scope" hidden></p>
+            <div class="forest-world">
+              <div id="forest-canvas" class="forest-canvas"></div>
+              <div class="forest-empty-wrap"><p id="forest-empty"></p></div>
+              <aside id="forest-detail" class="forest-detail" aria-label="选中的时间记录" hidden></aside>
+              <div class="forest-camera"><button id="forest-auto-rotate" type="button" aria-pressed="false">自动旋转</button><button id="forest-zoom-out" type="button" aria-label="缩小森林">−</button><button id="forest-zoom-in" type="button" aria-label="放大森林">+</button><button id="forest-reset" type="button">重置视角</button></div>
             </div>
+            <div id="forest-pagination" class="forest-pagination" hidden><button type="button" id="forest-prev" aria-label="上一片林地">←</button><span id="forest-page-label"></span><button type="button" id="forest-next" aria-label="下一片林地">→</button></div>
+            <div id="forest-status-row" class="forest-status-row" hidden><span id="forest-status" role="status"></span><button id="forest-retry" type="button" hidden>重试</button></div>
           </section>
         </section>
 
@@ -1654,6 +1601,7 @@
   <script src="app-todo-detail.js"></script>
   <script src="app-todo-list.js"></script>
   <script src="app-sidebar-taxonomy.js"></script>
+  <script src="app-forest-data.js"></script>
   <script src="app-review.js"></script>
   <script src="app-liuyao-engine.js"></script>
   <script src="app-liuyao-model.js"></script>

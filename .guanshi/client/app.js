@@ -36,7 +36,7 @@ const {
   CALENDAR_CLICK_MINUTE_STEP, CALENDAR_NEW_EVENT_DEFAULT_DURATION_MINUTES, CALENDAR_DIRECT_EDIT_MINUTES_STEP,
   CALENDAR_DIRECT_EDIT_MIN_DURATION_MINUTES, CALENDAR_DIRECT_EDIT_DRAG_SLOP_PX, CALENDAR_DIRECT_EDIT_CLICK_SUPPRESS_MS,
   CALENDAR_NOW_LINE_REFRESH_MS, GLOBAL_SEARCH_RESULT_LIMIT, GLOBAL_SEARCH_TARGET_HIGHLIGHT_MS,
-  REVIEW_VISUAL_LOOKBACK_DAYS, AUTO_BIDIRECTIONAL_SYNC_ENABLED, AUTO_BIDIRECTIONAL_SYNC_DEBOUNCE_MS,
+  AUTO_BIDIRECTIONAL_SYNC_ENABLED, AUTO_BIDIRECTIONAL_SYNC_DEBOUNCE_MS,
   AUTO_BIDIRECTIONAL_SYNC_PULL_INTERVAL_MS, AUTO_BIDIRECTIONAL_SYNC_START_DELAY_MS, SIDEBAR_WIDTH_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY, TODO_DETAIL_WIDTH_STORAGE_KEY, POMODORO_FLOAT_LAYOUT_STORAGE_KEY,
   SIDEBAR_TAXONOMY_RANGE_STORAGE_KEY,
@@ -453,7 +453,7 @@ if (typeof createRenderCoordinatorModule !== "function") {
 
 const domRefs = createDomRefsModule({ documentRef: document });
 const {
-  rangeSwitch, reviewRangeSwitch, recordsPanel, emptyTip, calendarRangeLabel, calendarWeekdays,
+  rangeSwitch, recordsPanel, emptyTip, calendarRangeLabel, calendarWeekdays,
   calendarScroll, calendarCustomScrollbar, calendarCustomThumb, calendarTimeAxis, calendarDayColumns,
   calendarUnratedJumpBtn, calendarUnratedCount, calendarPrevWeekBtn, calendarTodayBtn, calendarNextWeekBtn,
   calendarSyncStatus, calendarEventModal, calendarEventTitle, calendarEventForm, calendarEventEditCategory,
@@ -480,9 +480,7 @@ const {
   todoTagSuggestionMenu, todoPriorityInput, todoNoteInput, todoQualityInput, todoHappinessInput, todoStartTimeInput,
   todoEndTimeInput, todoEstimateInput, todoReminderInput, todoRepeatInput, todoPlanLockBtn, todoFocusBtn,
   todoDeleteBtn,
-  todoSyncMessage, reviewSummary, reviewList, reviewDebugSummary, reviewDebugTbody, reviewLegacyToggleBtn,
-  reviewLegacySections, reviewVisualSummary, reviewVisualKpis, reviewChartTrend, reviewChartCategory,
-  reviewChartTimeband, reviewChartMatrix, settingsCategoryList, settingsCategoryAddInput, settingsCategoryAddBtn,
+  todoSyncMessage, settingsCategoryList, settingsCategoryAddInput, settingsCategoryAddBtn,
   settingsCategoryResetBtn, settingsSyncAllRefreshBtn, settingsSyncCalendarSelect, settingsSyncCalendarHint,
   settingsSyncReminderSelect, settingsSyncReminderHint, settingsReminderLeadSelect, settingsReminderLeadHint,
   settingsQuoteEditor, settingsQuoteSaveBtn, settingsQuoteResetBtn, settingsQuoteStatus, settingsDataExportBtn,
@@ -1003,35 +1001,13 @@ function getGlobalSearchTerm() {
 }
 
 const reviewModule = createReviewModule({
-  REVIEW_VISUAL_LOOKBACK_DAYS,
+  forestData: window.TimeQualityForestData,
   getEntries: () => entries,
-  getTodos: () => todos,
   getGlobalSearchTerm,
-  calcDurationHours,
-  getEntryDisplayTitle,
-  parseOptionalScore,
-  sumBy,
-  isValidDateInput,
-  formatDateForInput,
-  formatDate,
   escapeHtml,
-  reviewVisualSummary,
-  reviewVisualKpis,
-  reviewChartTrend,
-  reviewChartCategory,
-  reviewChartTimeband,
-  reviewChartMatrix,
-  reviewList,
-  reviewSummary,
-  reviewDebugTbody,
-  reviewDebugSummary,
-  formatScoreLabel,
   isImportedExternalEntry,
-  getTodoCategory,
-  getCurrentRange: () => currentRange,
-  getRangeEntries,
-  setReviewLegacyVisible,
-  getReviewLegacyVisible: () => reviewLegacyVisible,
+  openEntry: (id) => { const entry = entries.find(item => String(item.id) === id); if (entry) openCalendarEventModal(entry); },
+  openCalendar: () => setActiveView("calendar"),
 });
 
 const liuyaoModel = createLiuyaoModelModule({
@@ -1080,6 +1056,12 @@ const dataStoreModule = createDataStoreModule({
   },
 });
 
+try {
+  dataStoreModule.recoverDataTransaction();
+} catch (error) {
+  window.alert(`待办数据恢复未完成，请释放浏览器存储空间后刷新。${error.message}`);
+  throw error;
+}
 runOneTimeCacheResetIfNeeded();
 
 let currentRange = "7";
@@ -1095,7 +1077,6 @@ let showRecurringReminderOnlyInMainList = false;
 let selectedTodoId = null;
 let selectedTodoIds = new Set();
 let aiHighlightedTodoIds = new Set();
-let reviewLegacyVisible = false;
 
 let calendarWeekStart = getStartOfWeek(new Date());
 let calendarNeedsViewportReset = true;
@@ -1488,6 +1469,8 @@ const calendarActionsModule = createCalendarActionsModule({
 });
 
 const todoActionsModule = createTodoActionsModule({
+  runDataTransaction: (operation, collections) => dataStoreModule.runDataTransaction(operation, collections),
+  deferDataEffect: (effect) => dataStoreModule.deferDataEffect(effect),
   TODO_PLAN_NEW_TODO_DURATION_MINUTES,
   TODO_PLAN_DAY_FIRST_START_MINUTES,
   TODO_PLAN_DAY_GAP_MINUTES,
@@ -1796,9 +1779,6 @@ function bindEvents() {
   if (rangeSwitch) {
     rangeSwitch.addEventListener("click", handleRangeSwitchClick);
   }
-  if (reviewRangeSwitch) {
-    reviewRangeSwitch.addEventListener("click", handleRangeSwitchClick);
-  }
   sidebarTaxonomyModule.bindEvents();
   aiSidebarModule.bindEvents();
 
@@ -1815,11 +1795,6 @@ function bindEvents() {
   pomodoroFloatingModule.bindEvents();
   todoDetailModule.bindEvents();
 
-  if (reviewLegacyToggleBtn) {
-    reviewLegacyToggleBtn.addEventListener("click", () => {
-      setReviewLegacyVisible(!reviewLegacyVisible);
-    });
-  }
 
   if (topSyncRefreshBtn) {
     topSyncRefreshBtn.addEventListener("click", () => {
@@ -1988,6 +1963,7 @@ function triggerTopSyncRefreshSpin() {
 }
 
 function render() {
+  if (dataStoreModule.deferDataEffect(() => render())) return;
   renderCoordinatorModule.render();
 }
 
@@ -2313,7 +2289,14 @@ function ensureCompletedTodoEntries(...args) {
 }
 
 function toggleTodoCompleted(...args) {
-  return todoActionsModule.toggleTodoCompleted(...args);
+  try {
+    return todoActionsModule.toggleTodoCompleted(...args);
+  } catch (error) {
+    if (error.code === "TODO_SAVE_FAILED" || error.code === "TODO_SAVE_RECOVERY_REQUIRED") {
+      window.alert(error.message);
+    }
+    throw error;
+  }
 }
 
 async function syncRecurringTodoReminderNow(...args) {
@@ -2466,20 +2449,8 @@ function renderTodoDetail() {
   todoDetailModule.renderTodoDetail();
 }
 
-function setReviewLegacyVisible(nextVisible) {
-  reviewLegacyVisible = Boolean(nextVisible);
-  if (reviewLegacySections) {
-    reviewLegacySections.hidden = !reviewLegacyVisible;
-  }
-  if (reviewLegacyToggleBtn) {
-    reviewLegacyToggleBtn.setAttribute("aria-pressed", reviewLegacyVisible ? "true" : "false");
-    reviewLegacyToggleBtn.classList.toggle("is-active", reviewLegacyVisible);
-    reviewLegacyToggleBtn.textContent = reviewLegacyVisible ? "隐藏明细" : "显示明细";
-  }
-}
-
 function syncRangeSwitchButtons() {
-  const switchNodes = [rangeSwitch, reviewRangeSwitch];
+  const switchNodes = [rangeSwitch];
   for (const switchNode of switchNodes) {
     if (!switchNode) continue;
     for (const node of switchNode.querySelectorAll("button[data-range]")) {
@@ -2500,52 +2471,12 @@ function handleRangeSwitchClick(event) {
   render();
 }
 
-function getReviewEntryDurationHours(entry) {
-  if (!entry) return 0;
-  const existingDuration = Number(entry.duration);
-  if (Number.isFinite(existingDuration) && existingDuration > 0) return existingDuration;
-  const computedDuration = calcDurationHours(entry.start, entry.end);
-  if (Number.isFinite(computedDuration) && computedDuration > 0) return computedDuration;
-  return 0;
-}
-
-function buildReviewVisualEntryDataset() {
-  return reviewModule.buildReviewVisualEntryDataset();
-}
-
-function renderReviewVisualKpis(entryList, analyzableList) {
-  return reviewModule.renderReviewVisualKpis(entryList, analyzableList);
-}
-
-function renderReviewTrendChart(entryList) {
-  return reviewModule.renderReviewTrendChart(entryList);
-}
-
-function renderReviewCategoryChart(entryList) {
-  return reviewModule.renderReviewCategoryChart(entryList);
-}
-
-function renderReviewTimebandChart(entryList) {
-  return reviewModule.renderReviewTimebandChart(entryList);
-}
-
-function renderReviewMatrixChart(analyzableList) {
-  return reviewModule.renderReviewMatrixChart(analyzableList);
-}
-
-function renderReviewVisuals() {
-  return reviewModule.renderReviewVisuals();
-}
-
 function renderReview() {
   return reviewModule.renderReview();
 }
 
-function renderReviewDebugTable() {
-  return reviewModule.renderReviewDebugTable();
-}
-
 function markTodoRecentlyCompletedForDisplay(todoId, snapshot) {
+  if (dataStoreModule.deferDataEffect(() => markTodoRecentlyCompletedForDisplay(todoId, snapshot))) return;
   const id = String(todoId || "").trim();
   if (!id) return;
   const prev = recentlyCompletedTodoDisplayMap.get(id);
@@ -2577,6 +2508,7 @@ function markTodoRecentlyCompletedForDisplay(todoId, snapshot) {
 }
 
 function clearTodoRecentlyCompletedForDisplay(todoId) {
+  if (dataStoreModule.deferDataEffect(() => clearTodoRecentlyCompletedForDisplay(todoId))) return;
   const id = String(todoId || "").trim();
   if (!id) return;
   const prev = recentlyCompletedTodoDisplayMap.get(id);
@@ -2797,7 +2729,7 @@ function getAiViewContext() {
     };
   } else if (activeView === "review") {
     surface = "review.range";
-    visibleRange = buildRecentDateRangeFromCurrentRange();
+    visibleRange = reviewModule.getVisibleRange() || buildRecentDateRangeFromCurrentRange();
   } else if (activeView === "settings") {
     surface = "settings";
   } else if (activeView === "overview") {
@@ -2816,7 +2748,7 @@ function getAiViewContext() {
     visibleRange,
     filters: {
       todoDimension: currentTodoDimension,
-      currentRange,
+      currentRange: activeView === "review" ? reviewModule.getRange() : currentRange,
       showHistory: showTodoHistoryInMainList,
       showRecurringOnly: showRecurringReminderOnlyInMainList,
       todoSelection: getSelectedTodoIds().length > 1 ? "selected_multiple" : selectedTodo ? "selected" : "none",
@@ -3493,6 +3425,7 @@ function initAutoBidirectionalSync() {
 }
 
 function scheduleAutoBidirectionalSync(reason = "change", delayMs = AUTO_BIDIRECTIONAL_SYNC_DEBOUNCE_MS) {
+  if (dataStoreModule.deferDataEffect(() => scheduleAutoBidirectionalSync(reason, delayMs))) return;
   return syncRuntimeModule.scheduleAutoBidirectionalSync(reason, delayMs);
 }
 
@@ -3907,7 +3840,15 @@ function sumBy(list, getter) {
 }
 
 function completeLinkedTodoByPomodoroSession(todo, scoreResult, sessionRange) {
-  return pomodoroTodoLinkModule.completeLinkedTodoByPomodoroSession(todo, scoreResult, sessionRange);
+  try {
+    return dataStoreModule.runDataTransaction(
+      () => pomodoroTodoLinkModule.completeLinkedTodoByPomodoroSession(todo, scoreResult, sessionRange),
+      [todos, entries],
+    );
+  } catch (error) {
+    window.alert(error.message);
+    throw error;
+  }
 }
 
 function recordLinkedTodoPomodoroSession(todo, scoreResult, sessionRange) {

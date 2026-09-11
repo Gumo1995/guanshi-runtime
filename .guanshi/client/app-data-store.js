@@ -50,6 +50,91 @@
       ["setPendingTodoReminderDisables", setPendingTodoReminderDisables],
     ].forEach(([name, value]) => assertFunction(name, value));
 
+    // A write-ahead rollback record protects the two existing storage keys.
+    // It deliberately lives outside the exportable time_quality_* namespace.
+    const completionRecoveryKey = "guanshi_pending_completion_transaction_v1";
+    let dataTransaction = null;
+
+    function recoverDataTransaction() {
+      const raw = localStorageRef.getItem(completionRecoveryKey);
+      if (!raw) return;
+      const record = JSON.parse(raw);
+      const keys = [STORAGE_KEY, TODO_STORAGE_KEY];
+      if (record.schema !== 1 || !record.before || keys.some((key) =>
+        record.before[key] !== null && typeof record.before[key] !== "string")) {
+        throw new Error("待办保存恢复记录无效，请勿继续编辑，请从本地备份恢复。");
+      }
+      for (const key of keys) {
+        const value = record.before[key];
+        if (localStorageRef.getItem(key) === value) continue;
+        if (value === null) localStorageRef.removeItem(key);
+        else localStorageRef.setItem(key, value);
+      }
+      localStorageRef.removeItem(completionRecoveryKey);
+    }
+
+    function deferDataEffect(effect) {
+      if (!dataTransaction) return false;
+      dataTransaction.effects.push(effect);
+      return true;
+    }
+
+    function runDataTransaction(operation, collections) {
+      // A caller such as Pomodoro may already protect the same completion chain.
+      if (dataTransaction) return operation();
+      recoverDataTransaction();
+      const snapshots = collections.map((items) => ({
+        items, refs: [...items], values: JSON.parse(JSON.stringify(items)),
+      }));
+      const transaction = { writes: new Map(), effects: [], sync: false, undo: false };
+      dataTransaction = transaction;
+      let result;
+      let journalWritten = false;
+      try {
+        result = operation();
+        if (result && typeof result.then === "function") throw new Error("待办保存操作必须同步完成。");
+        if (transaction.writes.size) {
+          const before = Object.fromEntries([STORAGE_KEY, TODO_STORAGE_KEY].map((key) => [key, localStorageRef.getItem(key)]));
+          localStorageRef.setItem(completionRecoveryKey, JSON.stringify({ schema: 1, before }));
+          journalWritten = true;
+          for (const [key, value] of transaction.writes) localStorageRef.setItem(key, value);
+          localStorageRef.removeItem(completionRecoveryKey);
+          journalWritten = false;
+        }
+      } catch (cause) {
+        let recoveryError = null;
+        if (journalWritten) {
+          try { recoverDataTransaction(); } catch (error) { recoveryError = error; }
+        }
+        for (const { items, refs, values } of snapshots) {
+          refs.forEach((item, index) => {
+            Object.keys(item).forEach((key) => delete item[key]);
+            Object.assign(item, values[index]);
+          });
+          items.splice(0, items.length, ...refs);
+        }
+        const error = new Error(recoveryError
+          ? "保存失败，恢复尚未完成。请释放浏览器存储空间后刷新，恢复完成前请勿继续编辑。"
+          : "保存失败，本次修改已撤回，请释放浏览器存储空间后重试。");
+        error.code = recoveryError ? "TODO_SAVE_RECOVERY_REQUIRED" : "TODO_SAVE_FAILED";
+        error.cause = cause;
+        throw error;
+      } finally {
+        dataTransaction = null;
+      }
+      // Persistence is committed. Presentation failures must never roll it back.
+      const effects = transaction.writes.size ? [
+        () => scheduleLocalDataBackup("todo-completion-save"),
+        () => { if (transaction.sync) scheduleAutoBidirectionalSync("todo-completion-save"); },
+        () => { if (transaction.undo) commitUndoSnapshot({ separate: true }); },
+        ...transaction.effects,
+      ] : transaction.effects;
+      for (const effect of effects) {
+        try { effect(); } catch (error) { globalScope.console?.error("待办已保存，后续刷新失败", error); }
+      }
+      return result;
+    }
+
     function runOneTimeCacheResetIfNeeded() {
       if (!localStorageRef) return;
       try {
@@ -204,6 +289,13 @@
     }
 
     function saveTodos(value, options = {}) {
+      if (dataTransaction) {
+        dataTransaction.writes.set(TODO_STORAGE_KEY, JSON.stringify(value.map(normalizeTodo)));
+        dataTransaction.sync ||= !options.skipSyncSchedule && !getIsApplyingUndo();
+        dataTransaction.undo ||= !options.skipUndoSnapshot;
+        return;
+      }
+      recoverDataTransaction();
       const skipSyncSchedule = Boolean(options && options.skipSyncSchedule);
       const skipUndoSnapshot = Boolean(options && options.skipUndoSnapshot);
       localStorageRef.setItem(TODO_STORAGE_KEY, JSON.stringify(value.map(normalizeTodo)));
@@ -324,6 +416,13 @@
     }
 
     function saveEntries(value, options = {}) {
+      if (dataTransaction) {
+        dataTransaction.writes.set(STORAGE_KEY, JSON.stringify(value));
+        dataTransaction.sync ||= !options.skipSyncSchedule && !getIsApplyingUndo();
+        dataTransaction.undo ||= !options.skipUndoSnapshot;
+        return;
+      }
+      recoverDataTransaction();
       const skipUndoSnapshot = Boolean(options && options.skipUndoSnapshot);
       const skipSyncSchedule = Boolean(options && options.skipSyncSchedule);
       localStorageRef.setItem(STORAGE_KEY, JSON.stringify(value));
@@ -337,6 +436,9 @@
     }
 
     return {
+      runDataTransaction,
+      recoverDataTransaction,
+      deferDataEffect,
       runOneTimeCacheResetIfNeeded,
       normalizeTodoReminderDisableItem,
       loadTodoReminderDisableQueue,
