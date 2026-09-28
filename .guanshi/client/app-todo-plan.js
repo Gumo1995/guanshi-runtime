@@ -163,12 +163,7 @@
     }
 
     function sortTodosByDayOrder(list) {
-      return [...list].sort((a, b) => {
-        const orderA = Number.isFinite(Number(a.orderInDay)) ? Number(a.orderInDay) : Number.MAX_SAFE_INTEGER;
-        const orderB = Number.isFinite(Number(b.orderInDay)) ? Number(b.orderInDay) : Number.MAX_SAFE_INTEGER;
-        if (orderA !== orderB) return orderA - orderB;
-        return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
-      });
+      return [...list].sort(scheduleCore().compareTodoDayOrder);
     }
 
     function getIncompleteTodosByDate(date) {
@@ -176,7 +171,7 @@
       if (!isValidDateInput(key)) return [];
       const todos = getTodos();
       return sortTodosByDayOrder(
-        todos.filter((todo) => !todo.completed && String(todo.dueDate || "").trim() === key),
+        todos.filter((todo) => todo.todoKind !== "group" && todo.scheduleState !== "unplanned" && !todo.completed && String(todo.dueDate || "").trim() === key),
       );
     }
 
@@ -200,28 +195,8 @@
       const dayTodos = getIncompleteTodosByDate(key);
       if (!dayTodos.length) return false;
 
-      const orderedByClock = [...dayTodos].sort((a, b) => {
-        const rangeA = getTodoClockRange(a);
-        const rangeB = getTodoClockRange(b);
-        const hasRangeA = Boolean(rangeA);
-        const hasRangeB = Boolean(rangeB);
-        if (hasRangeA !== hasRangeB) return hasRangeA ? -1 : 1;
-        if (hasRangeA && hasRangeB) {
-          if (rangeA.startMinutes !== rangeB.startMinutes) {
-            return rangeA.startMinutes - rangeB.startMinutes;
-          }
-          if (rangeA.endMinutes !== rangeB.endMinutes) {
-            return rangeA.endMinutes - rangeB.endMinutes;
-          }
-        }
-        const orderA = Number.isFinite(Number(a.orderInDay)) ? Number(a.orderInDay) : Number.MAX_SAFE_INTEGER;
-        const orderB = Number.isFinite(Number(b.orderInDay)) ? Number(b.orderInDay) : Number.MAX_SAFE_INTEGER;
-        if (orderA !== orderB) return orderA - orderB;
-        return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
-      });
-
       let changed = false;
-      orderedByClock.forEach((todo, index) => {
+      dayTodos.forEach((todo, index) => {
         if (todo.orderInDay === index) return;
         todo.orderInDay = index;
         changed = true;
@@ -414,7 +389,7 @@
       const daySet = new Set();
 
       for (const todo of todos) {
-        if (todo.completed) continue;
+        if (todo.completed || todo.todoKind === "group" || todo.scheduleState === "unplanned") continue;
         const dueDate = String(todo.dueDate || "").trim();
         if (!isValidDateInput(dueDate)) {
           todo.dueDate = getTodayDateInputValue();
@@ -466,7 +441,7 @@
     }
 
     function createTodoPlanEntry(todo) {
-      if (!todo || todo.completed || isTodoOverdue(todo)) return null;
+      if (!todo || todo.todoKind === "group" || todo.scheduleState === "unplanned" || todo.completed || isTodoOverdue(todo)) return null;
       const dueDate = String(todo.dueDate || "").trim();
       if (!isValidDateInput(dueDate)) return null;
       const range = getTodoClockRange(todo);
@@ -557,6 +532,25 @@
         .map((entry) => scheduleCore().normalizeBlock(entry)).filter(Boolean);
     }
 
+    function validateTodoEdit(todo, candidate) {
+      return scheduleCore().validateChanges(getTodos(), [{ todoId: todo.id, after: candidate }], {
+        busyBlocks: getScheduleBusyBlocks(), gapMinutes: TODO_PLAN_DAY_GAP_MINUTES,
+        notBefore: { date: getTodayDateInputValue(), time: formatMinutesForInput(getCurrentClockMinutes()) },
+      });
+    }
+
+    function validateTodoScheduleChanges(todoSnapshot, changes, options = {}) {
+      const snapshot = Array.isArray(todoSnapshot) ? todoSnapshot : getTodos();
+      return scheduleCore().validateChanges(snapshot, Array.isArray(changes) ? changes : [], {
+        busyBlocks: getScheduleBusyBlocks(),
+        gapMinutes: options.gapMinutes ?? TODO_PLAN_DAY_GAP_MINUTES,
+        preserveDuration: options.preserveDuration === true,
+        notBefore: options.allowPast === true
+          ? null
+          : { date: getTodayDateInputValue(), time: formatMinutesForInput(getCurrentClockMinutes()) },
+      });
+    }
+
     function previewTodoMove(todoIds, targetDate, targetOrder, anchor = {}) {
       return scheduleCore().previewMove(
         { todos: getTodos(), busyBlocks: getScheduleBusyBlocks() },
@@ -579,6 +573,11 @@
         return failure("schedule_state_changed", "拖动期间任务或占用发生变化，请重新拖动。");
       }
       const isAi = options.kind === "ai";
+      const newTodo = options.kind === "insert" ? plan?.newTodo : null;
+      if (options.kind === "insert" && (!newTodo?.id || newTodo.completed || newTodo.planLocked || todos.some((todo) => String(todo.id) === String(newTodo.id)))) {
+        return failure("schedule_insert_invalid", "新待办状态无效，未新增。");
+      }
+      const sourceTodos = newTodo ? [...todos, newTodo] : todos;
       const changes = (Array.isArray(plan?.changes) ? plan.changes : []).map((change) => ({
         ...change,
         todoId: String(change.todoId || change.parentTodoId || change.target?.id || ""),
@@ -593,7 +592,7 @@
       if (isAi && changes.some((change) => todos.find((todo) => String(todo.id) === change.todoId)?.planLocked)) {
         return failure("schedule_target_locked", "任务已锁定，请重新生成安排。");
       }
-      const validation = core.validateChanges(todos, changes, {
+      const validation = core.validateChanges(sourceTodos, changes, {
         busyBlocks: [...busyBlocks, ...(plan?.validation?.fixedBlocks || [])],
         gapMinutes: plan?.gapMinutes ?? plan?.validation?.gapMinutes ?? TODO_PLAN_DAY_GAP_MINUTES,
         preserveDuration: !isAi,
@@ -603,13 +602,13 @@
       if (options.dryRun) return { feasible: true, applied: 0, created: 0, invalid: 0, missing: 0, appliedIds: [], createdIds: [], updatedIds: [] };
 
       const nowIso = new Date().toISOString();
-      const nextTodos = todos.map((todo) => ({ ...todo, aiMeta: todo.aiMeta ? { ...todo.aiMeta } : todo.aiMeta }));
+      const nextTodos = sourceTodos.map((todo) => ({ ...todo, aiMeta: todo.aiMeta ? { ...todo.aiMeta } : todo.aiMeta }));
       const byId = new Map(nextTodos.map((todo) => [String(todo.id), todo]));
-      const originals = new Map(todos.map((todo) => [String(todo.id), todo]));
+      const originals = new Map(sourceTodos.map((todo) => [String(todo.id), todo]));
       const used = new Set();
       const splitIds = new Map();
       const touchedDates = new Set();
-      const appliedIds = [], createdIds = [], updatedIds = [];
+      const appliedIds = [], createdIds = newTodo ? [String(newTodo.id)] : [], updatedIds = [];
       for (const change of changes) {
         const base = byId.get(change.todoId);
         const original = originals.get(change.todoId);
@@ -627,10 +626,10 @@
           nextTodos.push(todo);
           createdIds.push(todo.id);
           splitIds.set(original.id, [...(splitIds.get(original.id) || []), todo.id]);
-        } else updatedIds.push(todo.id);
+        } else if (String(todo.id) !== String(newTodo?.id)) updatedIds.push(todo.id);
         touchedDates.add(original.dueDate);
         touchedDates.add(change.after.dueDate);
-        Object.assign(todo, change.after);
+        Object.assign(todo, change.after, { scheduleState: "planned" });
         if (isAi) {
           const time = core.range(change.after);
           todo.estimatedMinutes = time.end - time.start;
@@ -660,6 +659,9 @@
             .forEach((todo, order) => { todo.orderInDay = order; });
         }
       }
+      if (newTodo && typeof options.prepareGroupOrder === "function") {
+        options.prepareGroupOrder(nextTodos, String(newTodo.id));
+      }
       const previous = [...todos];
       todos.splice(0, todos.length, ...nextTodos);
       try {
@@ -674,6 +676,27 @@
 
     function applyTodoScheduleDraft(draft, options = {}) {
       return applyTodoScheduleChanges(draft, { ...options, kind: "ai", render: false });
+    }
+
+    function insertTodoAfterAnchor(todo, anchorTodoId = "", options = {}) {
+      const core = scheduleCore();
+      const todos = getTodos();
+      const anchor = anchorTodoId ? todos.find((item) => String(item.id) === String(anchorTodoId)) : null;
+      const today = getTodayDateInputValue();
+      if (anchorTodoId && (!anchor || anchor.completed || !core.validDate(anchor.dueDate) || anchor.dueDate < today || !core.range(anchor))) {
+        return { feasible: false, applied: 0, message: "选中待办已过期、已完成或时间无效，请选择其他位置，或取消选中后在今天新增。" };
+      }
+      const targetDate = anchor ? anchor.dueDate : today;
+      const preview = core.previewInsert({ todos, busyBlocks: getScheduleBusyBlocks() }, todo, {
+        targetDate,
+        targetOrder: getIncompleteTodosByDate(targetDate).length,
+        ...(anchor ? { anchorTodoId: anchor.id, side: "after" } : {}),
+      }, {
+        gapMinutes: TODO_PLAN_DAY_GAP_MINUTES,
+        firstStartMinutes: TODO_PLAN_DAY_FIRST_START_MINUTES,
+        notBefore: { date: today, time: formatMinutesForInput(getCurrentClockMinutes()) },
+      });
+      return applyTodoScheduleChanges(preview, { ...options, kind: "insert", render: false });
     }
 
     function moveTodoOrder(todoId, direction) {
@@ -764,7 +787,10 @@
       getPendingTodoCalendarEntries,
       mergeCalendarEntriesWithTodoPlans,
       findOverlappingCalendarItem,
+      validateTodoScheduleChanges,
+      validateTodoEdit,
       previewTodoMove,
+      insertTodoAfterAnchor,
       applyTodoScheduleChanges,
       applyTodoScheduleDraft,
       moveTodoOrder,

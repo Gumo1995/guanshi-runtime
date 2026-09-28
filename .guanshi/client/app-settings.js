@@ -882,6 +882,7 @@
 
     function applyImportedStorageSnapshot(storageSnapshot) {
       const nextSnapshot = normalizeImportedStorage(storageSnapshot);
+      deps.validateTodoStorageSnapshot?.(nextSnapshot);
       const nextKeys = Object.keys(nextSnapshot);
       if (!nextKeys.length) {
         return { imported: 0 };
@@ -932,6 +933,7 @@
           return;
         }
 
+        deps.validateTodoStorageSnapshot?.(storage);
         const confirmed = confirmFn(`将覆盖当前本地数据并刷新页面，确认导入 ${itemCount} 项数据吗？`);
         if (!confirmed) {
           setDataStatus("已取消导入。", "normal");
@@ -942,8 +944,8 @@
         await backupLocalDataNow("manual-import");
         setDataStatus(`导入成功：${result.imported} 项，正在刷新。`, "success");
         setTimeoutFn(() => reloadPage(), 160);
-      } catch {
-        setDataStatus("导入失败：文件解析错误。", "danger");
+      } catch (error) {
+        setDataStatus(`导入失败：${error?.message || "文件解析错误"}。`, "danger");
       } finally {
         input.value = "";
       }

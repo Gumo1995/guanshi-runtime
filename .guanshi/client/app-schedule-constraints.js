@@ -31,7 +31,7 @@
     const targets = new Set(ids(options.targetIds));
     const blocks = busyBlocks.map(normalizeBlock).filter(Boolean);
     for (const todo of todos) {
-      if (todo.completed || (!todo.planLocked && (!options.includeOtherTodos || targets.has(text(todo.id))))) continue;
+      if (todo.todoKind === "group" || todo.scheduleState === "unplanned" || todo.completed || (!todo.planLocked && (!options.includeOtherTodos || targets.has(text(todo.id))))) continue;
       const block = normalizeBlock({ ...todo, todoId: todo.id, source: todo.planLocked ? "locked_todo" : "unchanged_todo" });
       if (block) blocks.push(block);
     }
@@ -55,7 +55,7 @@
       id: text(todo.id), dueDate: text(todo.dueDate), startTime: text(todo.startTime), endTime: text(todo.endTime),
       orderInDay: todo.orderInDay ?? null, completed: Boolean(todo.completed), planLocked: Boolean(todo.planLocked),
       estimatedMinutes: todo.estimatedMinutes ?? null, remainingMinutes: todo.remainingMinutes ?? null,
-      dependencies: ids(todo.dependencies),
+      dependencies: ids(todo.dependencies), todoKind: todo.todoKind || "task", containerTodoId: todo.containerTodoId || null, scheduleState: todo.scheduleState || null,
     };
   }
   function fingerprint(todos, busyBlocks, dates) {
@@ -80,18 +80,19 @@
     for (const change of changes) {
       if (change.operation && change.operation !== "schedule_todo_block") return fail("schedule_operation_invalid", "草稿包含不支持的操作。");
       const todo = byId.get(text(change.todoId));
-      if (!todo || todo.completed) return fail("schedule_target_unavailable", "任务已删除或完成，请重新调整。");
+      if (!todo || todo.todoKind === "group" || todo.completed) return fail("schedule_target_unavailable", "任务已删除或完成，请重新调整。");
       const after = change.after || {};
       const time = range(after);
       if (!time || !validDate(after.dueDate)) return fail("schedule_range_invalid", "任务时间无效，未应用调整。");
       const timeChanged = ["dueDate", "startTime", "endTime"].some((key) => text(after[key]) !== text(todo[key]));
       if (timeChanged && todo.planLocked) return fail("schedule_target_locked", "任务已锁定，请重新生成安排。", { todoId: todo.id });
       if (change.before) {
+        const currentState = todoState(todo);
         if (change.before.dependencies && JSON.stringify(ids(change.before.dependencies)) !== JSON.stringify(ids(todo.dependencies))) {
           return fail("schedule_state_changed", "任务依赖已变化，请重新调整。");
         }
-        for (const key of ["dueDate", "startTime", "endTime", "planLocked", "completed", "orderInDay", "estimatedMinutes", "remainingMinutes"]) {
-          if (Object.prototype.hasOwnProperty.call(change.before, key) && text(change.before[key] ?? "") !== text(todo[key] ?? "")) {
+        for (const key of ["dueDate", "startTime", "endTime", "planLocked", "completed", "orderInDay", "estimatedMinutes", "remainingMinutes", "todoKind", "containerTodoId", "scheduleState"]) {
+          if (Object.prototype.hasOwnProperty.call(change.before, key) && text(change.before[key] ?? "") !== text(currentState[key] ?? "")) {
             return fail("schedule_state_changed", "任务在预览后发生变化，请重新调整。", { todoId: todo.id });
           }
         }
@@ -141,36 +142,35 @@
     }
     return { feasible: true, conflicts: [] };
   }
-  function byOrder(a, b) {
-    return (Number(a.orderInDay) || 0) - (Number(b.orderInDay) || 0) || text(a.createdAt).localeCompare(text(b.createdAt));
-  }
-  function splitSegments(list) {
-    const segments = [];
-    let left = null;
-    let items = [];
-    for (const todo of list) {
-      if (!todo.planLocked) { items.push(todo); continue; }
-      segments.push({ left, right: todo, items });
-      left = todo;
-      items = [];
+  function compareTodoDayOrder(a, b) {
+    // The clock is authoritative: imports, recurring tasks and edits can leave
+    // orderInDay stale, including on locks used as segment boundaries.
+    const left = range(a);
+    const right = range(b);
+    if (Boolean(left) !== Boolean(right)) return left ? -1 : 1;
+    if (left && right) {
+      const timeDifference = left.start - right.start || left.end - right.end;
+      if (timeDifference) return timeDifference;
     }
-    segments.push({ left, right: null, items });
-    return segments;
+    const order = (todo) => todo.orderInDay !== null && text(todo.orderInDay).trim() !== "" && Number.isFinite(Number(todo.orderInDay))
+      ? Number(todo.orderInDay) : Number.MAX_SAFE_INTEGER;
+    return order(a) - order(b) || text(a.createdAt).localeCompare(text(b.createdAt)) || text(a.id).localeCompare(text(b.id));
   }
-  function previewMove(snapshot, intent, options = {}) {
-    const todos = snapshot.todos || [];
+  function previewPlacement(snapshot, intent, options = {}, newTodo = null) {
+    const originalTodos = snapshot.todos || [];
+    const todos = newTodo ? [...originalTodos, newTodo] : originalTodos;
     const busyBlocks = snapshot.busyBlocks || [];
     const movingIds = ids(intent.todoIds);
     const movingSet = new Set(movingIds);
     const targetDate = text(intent.targetDate);
     const byId = new Map(todos.map((todo) => [text(todo.id), todo]));
     const moving = movingIds.map((id) => byId.get(id));
-    if (!moving.length || !validDate(targetDate) || moving.some((todo) => !todo || todo.completed || todo.planLocked || !validDate(todo.dueDate))) {
+    if (!moving.length || !validDate(targetDate) || moving.some((todo) => !todo || todo.todoKind === "group" || todo.scheduleState === "unplanned" || todo.completed || todo.planLocked || !validDate(todo.dueDate))) {
       return fail("schedule_move_invalid", "已锁定、已完成或不存在的任务不能拖动。");
     }
     if (options.notBefore && targetDate < options.notBefore.date) return fail("schedule_in_past", "不能把任务移到过去的日期。");
     const dates = ids([...moving.map((todo) => todo.dueDate), targetDate]).sort();
-    const oldTarget = todos.filter((todo) => !todo.completed && todo.dueDate === targetDate).sort(byOrder);
+    const oldTarget = originalTodos.filter((todo) => !todo.completed && todo.dueDate === targetDate).sort(compareTodoDayOrder);
     const remaining = oldTarget.filter((todo) => !movingSet.has(text(todo.id)));
     let index = Number(intent.targetOrder);
     if (intent.anchorTodoId) {
@@ -189,39 +189,62 @@
     const nextById = new Map(todos.map((todo) => [text(todo.id), { ...todo }]));
     for (const todo of moving) nextById.get(text(todo.id)).dueDate = targetDate;
     const gap = options.gapMinutes ?? 5;
-    const blocks = buildFixedBlocks(todos, busyBlocks);
-    const oldSegments = splitSegments(oldTarget);
-    for (const segment of splitSegments(desired)) {
-      const old = oldSegments.find((item) => item.left?.id === segment.left?.id && item.right?.id === segment.right?.id)?.items || [];
-      const next = segment.items;
-      // Removing a task leaves a gap; it must not compact the source segment.
-      const first = next.findIndex((todo) => movingSet.has(text(todo.id)));
-      if (first < 0) continue;
-      const lastChanged = next.reduce((last, todo, i) => movingSet.has(text(todo.id)) ? i : last, first);
-      const leftEnd = segment.left ? range(segment.left).end + gap : 0;
-      const rightStart = segment.right ? range(segment.right).start - gap : 1439;
-      const previous = first ? range(nextById.get(text(next[first - 1].id))) : null;
-      const originalStart = previous ? previous.end + gap : segment.left ? leftEnd : old[0] ? range(old[0]).start : (options.firstStartMinutes ?? 570);
-      let cursor = Math.max(originalStart, previous ? previous.end + gap : leftEnd);
-      if (options.notBefore?.date === targetDate) cursor = Math.max(cursor, clock(options.notBefore.time));
-      for (let i = first; i < next.length; i += 1) {
-        const todo = next[i];
-        const original = range(todo);
-        // Once the unchanged suffix still fits, leave its original gaps and times intact.
-        if (i > lastChanged && todo.dueDate === targetDate && original.start >= cursor) break;
-        const duration = original.end - original.start;
-        const start = findStart(cursor, duration, blocks, targetDate, gap);
-        if (start + duration > rightStart) {
-          return fail("schedule_no_space", segment.right ? "锁定任务前没有足够的连续时间，未应用调整。" : "当天剩余时间放不下，未自动顺延到次日。", { blockerId: segment.right?.id || "" });
+    // Every unselected task is fixed for a manual insertion, even if unlocked.
+    // The adjacent rows bound the chosen slot; never push a suffix to make room.
+    const blocks = buildFixedBlocks(todos, busyBlocks, { targetIds: movingIds, includeOtherTodos: true });
+    const previous = index > 0 ? range(remaining[index - 1]) : null;
+    const following = index < remaining.length ? range(remaining[index]) : null;
+    let lower = previous ? previous.end + gap : 0;
+    const upper = following ? following.start - gap : 1439;
+    if (options.notBefore?.date === targetDate) lower = Math.max(lower, clock(options.notBefore.time));
+    const fits = (time) => time.start >= lower && time.end <= upper &&
+      !blocks.some((block) => overlaps({ date: targetDate, ...time }, block, gap));
+    // Keep valid original clock times when they already fit the requested order.
+    let placements = moving.map(range);
+    const preserve = !newTodo && placements.every((time, i) => fits(time) &&
+      (i === 0 || placements[i - 1].end + gap <= time.start));
+    if (!preserve) {
+      placements = [];
+      if (!previous && following) {
+        // Before the day's first row, search backwards from its start. This
+        // uses the closest available gap instead of stealing that row's time.
+        let end = upper;
+        const dayBlocks = blocks.filter((block) => block.date === targetDate).sort((a, b) => b.end - a.end);
+        for (let i = moving.length - 1; i >= 0; i -= 1) {
+          const original = range(moving[i]);
+          const duration = original.end - original.start;
+          for (const block of dayBlocks) {
+            if (end <= block.start - gap || end - duration >= block.end + gap) continue;
+            end = block.start - gap;
+          }
+          const time = { start: end - duration, end };
+          placements.unshift(time);
+          end = time.start - gap;
         }
-        const updated = nextById.get(text(todo.id));
-        updated.startTime = formatClock(start);
-        updated.endTime = formatClock(start + duration);
-        cursor = start + duration + gap;
+      } else {
+        // Between rows / at the end, start after the preceding row. An empty
+        // day retains the normal default start and current-clock constraint.
+        let cursor = previous ? lower : Math.max(lower, options.firstStartMinutes ?? 570);
+        for (const todo of moving) {
+          const original = range(todo);
+          const duration = original.end - original.start;
+          const start = findStart(cursor, duration, blocks, targetDate, gap);
+          placements.push({ start, end: start + duration });
+          cursor = start + duration + gap;
+        }
       }
     }
+    if (!placements.every(fits)) {
+      return fail("schedule_no_space", "该位置没有足够的空闲时间，请选择其他位置；已有待办时间未改动。",
+        { blockerId: remaining[index]?.id || "" });
+    }
+    moving.forEach((todo, i) => {
+      const updated = nextById.get(text(todo.id));
+      updated.startTime = formatClock(placements[i].start);
+      updated.endTime = formatClock(placements[i].end);
+    });
     for (const date of dates) {
-      const day = date === targetDate ? desired : todos.filter((todo) => !todo.completed && todo.dueDate === date && !movingSet.has(text(todo.id))).sort(byOrder);
+      const day = date === targetDate ? desired : todos.filter((todo) => !todo.completed && todo.dueDate === date && !movingSet.has(text(todo.id))).sort(compareTodoDayOrder);
       day.forEach((todo, order) => { nextById.get(text(todo.id)).orderInDay = order; });
       const times = day.map((todo) => nextById.get(text(todo.id)));
       for (let i = 1; i < times.length; i += 1) {
@@ -232,18 +255,34 @@
     }
     const changes = todos.flatMap((todo) => {
       const next = nextById.get(text(todo.id));
-      if (["dueDate", "startTime", "endTime", "orderInDay"].every((key) => todo[key] === next[key])) return [];
+      if (todo !== newTodo && ["dueDate", "startTime", "endTime", "orderInDay"].every((key) => todo[key] === next[key])) return [];
       return [{ todoId: text(todo.id), title: todo.title, before: todoState(todo), after: { dueDate: next.dueDate, startTime: next.startTime, endTime: next.endTime, orderInDay: next.orderInDay } }];
     });
     const validation = validateChanges(todos, changes, { busyBlocks, gapMinutes: gap, preserveDuration: true, notBefore: options.notBefore });
     if (!validation.feasible) return validation;
     return {
-      feasible: true, changes, conflicts: [], dates, kind: "manual_move", gapMinutes: gap,
-      expectedState: { dates, fingerprint: fingerprint(todos, busyBlocks, dates) },
+      feasible: true, changes, conflicts: [], dates, kind: newTodo ? "todo_insert" : "manual_move", gapMinutes: gap,
+      ...(newTodo ? { newTodo } : {}),
+      expectedState: { dates, fingerprint: fingerprint(originalTodos, busyBlocks, dates) },
       message: changes.length ? `调整 ${changes.filter((change) => ["dueDate", "startTime", "endTime"].some((key) => change.before[key] !== change.after[key])).length} 条任务的时间；松手应用，可撤销。` : "顺序未变化。",
     };
   }
-  const api = { clock, formatClock, validDate, range, normalizeBlock, buildFixedBlocks, overlaps, findStart, todoState, fingerprint, validateChanges, previewMove };
+  function previewMove(snapshot, intent, options = {}) {
+    return previewPlacement(snapshot, intent, options);
+  }
+  function previewInsert(snapshot, todo, intent, options = {}) {
+    const duration = Number(todo?.estimatedMinutes);
+    if (!todo?.id || (snapshot.todos || []).some((item) => text(item.id) === text(todo.id)) ||
+        !Number.isInteger(duration) || duration < 5 || duration > 1439) {
+      return fail("schedule_insert_invalid", "新待办的标识或预计时长无效，未新增。");
+    }
+    // A virtual task participates in the same scheduling checks; it is never
+    // added to the live collection until the entire insertion is feasible.
+    const candidate = { ...todo, dueDate: intent.targetDate, startTime: "00:00", endTime: formatClock(duration),
+      completed: false, planLocked: false, orderInDay: null };
+    return previewPlacement(snapshot, { ...intent, todoIds: [text(todo.id)] }, options, candidate);
+  }
+  const api = { clock, formatClock, validDate, range, normalizeBlock, buildFixedBlocks, overlaps, findStart, todoState, fingerprint, validateChanges, compareTodoDayOrder, previewMove, previewInsert };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (scope) scope.TimeQualityScheduleConstraints = api;
 })(typeof window !== "undefined" ? window : globalThis);

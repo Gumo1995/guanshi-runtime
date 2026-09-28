@@ -94,6 +94,18 @@ const LEGACY_TOOL_DEFINITIONS = {
     label: "拆解任务",
     description: "用于把当前任务拆成待确认子任务草稿。",
   },
+  copy_task: {
+    label: "复制待办",
+    description: "用于确定性复制当前或明确指定的待办；副本默认不锁定、不重复提醒，并插入源待办之后。",
+  },
+  edit_task: {
+    label: "修改待办",
+    description: "用于修改当前或明确指定待办的详情、计划日期、时间、锁定、提醒和重复字段，先生成待确认草稿。",
+  },
+  move_task: {
+    label: "移动待办",
+    description: "用于调整待办的父项、项目或同级位置，保持原日期和时间，先生成待确认草稿。",
+  },
   complete_task: {
     label: "完成待办并记录实际时间",
     description: "用于修订当前待办的实际时间、评分或备注，生成待确认完成草稿；确认后才完成待办并生成日历实际记录。",
@@ -937,6 +949,10 @@ function summarizeTodo(todo) {
     estimatedMinutes: Number(todo?.estimatedMinutes || todo?.remainingMinutes || 0) || undefined,
     remainingMinutes: Number(todo?.remainingMinutes || todo?.estimatedMinutes || 0) || undefined,
     planLocked: todo?.planLocked === true,
+    todoKind: normalizeText(todo?.todoKind || "task", 20),
+    containerTodoId: normalizeText(todo?.containerTodoId, 80) || null,
+    scheduleState: normalizeText(todo?.scheduleState, 20),
+    targetDate: normalizeText(todo?.targetDate, 20),
   };
   if (note) summary.note = note;
   if (dependencies.length) summary.dependencies = dependencies;
@@ -1172,6 +1188,13 @@ function normalizeWorkflowTodoCandidate(todo) {
     planLocked: source.planLocked === true,
     completed: source.completed === true,
     repeat: normalizeText(source.repeat || "none", 40),
+    reminder: normalizeText(source.reminder || "none", 80),
+    note: normalizeText(source.note || source.notes, 1500),
+    todoKind: normalizeText(source.todoKind || "task", 20),
+    containerTodoId: normalizeText(source.containerTodoId, 120) || null,
+    scheduleState: normalizeText(source.scheduleState, 20),
+    targetDate: normalizeText(source.targetDate, 20),
+    updatedAt: normalizeText(source.updatedAt, 80),
     qualityScore: Number.isInteger(Number(source.qualityScore)) ? Number(source.qualityScore) : undefined,
     happinessScore: Number.isInteger(Number(source.happinessScore)) ? Number(source.happinessScore) : undefined,
     orderInDay: Number.isFinite(Number(source.orderInDay)) ? Number(source.orderInDay) : undefined,
@@ -2489,8 +2512,13 @@ function buildSystemPrompt(toolCatalog) {
 	    "执行引用规则：排程和重排时优先输出 todoRefs/contextRefs 或 todoIds，不要复制整批 todos/tasks。Workflow 会从服务端 TurnContext 补齐真实待办；模型生成的 tasks/todos 不是执行数据源。",
       "重排策略规则：time.reflow_unfinished 默认 strategy=minimal_change，尊重手动顺序和仍有效的时间；只有用户明确要求整体优化、按优先级或截止日期重新排序时才选择 balanced 或 deadline_first。锁定任务不能移动，选择部分任务也不能忽略范围内其他任务的占用。",
 	    "估时字段规则：选择 time.parse_task 时，如果用户没有明确时长，也要结合任务语义、上下文和已确认记忆输出 task.estimatedMinutes、task.taskType、task.minimumBlockMinutes，并在 assumptions 或 warnings 里说明估时依据或不确定性。",
-	    "拆解估时规则：选择 time.breakdown_task 时，尽量输出 parentTask 或 contextRefs；父任务已有 dueDate/startTime/endTime 时要带给 workflow。如果能拆出步骤，输出 subtasks 数组，每项包含 title、estimatedMinutes、taskType；子任务时间要按步骤成本分配，不要机械平分。",
+	    "新增位置规则：选择 time.parse_task 时，用户明确给出日期或时间就设置 placement.mode=scheduled_time；用户明确说归入某个父待办时设置 placement.mode=child_of 和 parentTodoId；没有明确时间但当前有选中待办时设置 placement.mode=after_todo 和 anchorTodoId；都没有时使用 placement.mode=today。",
+	    "拆解估时规则：选择 time.breakdown_task 时，尽量输出 parentTask 或 contextRefs；父任务已有 dueDate/startTime/endTime 时要带给 workflow。如果能拆出步骤，输出 subtasks 数组，每项包含 title、estimatedMinutes、taskType；子任务时间要按步骤成本分配，不要机械平分。拆解结果会建立真实父子待办，父容器不占用时间。",
 	    "拆解命名规则：拆解出的子待办 title 尽量使用“总事项 - 子事项”格式；总事项代表父任务的核心目标，子事项代表当前步骤，两段都要精简，例如“回复客户 - 整理要点”。",
+	    "复制待办规则：用户要求复制当前或指定待办时选择 time.copy_task，只提供目标引用，不重新生成标题或内容；副本由本地确定性复制，默认不锁定、不重复提醒。",
+	    "修改待办规则：用户要求修改已有待办字段但不是完成任务时选择 time.edit_task，把明确变动放在 arguments.patch；只填写用户要求改变的字段，不补造其它字段。设为未排期使用 patch.scheduleState=unplanned。",
+	    "移动待办规则：用户要求归入父待办、移出父待办、移动项目或调整同级位置时选择 time.move_task；arguments.structure.kind 只能是 reparent、project、reorder，并提供目标 parentId、projectId 或 anchorTodoId。结构移动不修改日期和时间。",
+	    "父子限制规则：父待办容器不能设置具体时间、锁定、提醒或重复；子待办不能再拥有下一层子待办，也不能设置重复规则。",
 	    "完成待办规则：用户明确说某个待办已经完成、做完或要标记完成时，选择 time.complete_task；默认目标是当前选中待办，若用户明确指定其他待办则在 todoId、todoRefs 或 targetTodo.id 中给出引用。",
 	    "完成信息字段：选择 time.complete_task 时，在 arguments.completion 中只填写用户明确提供或能从本轮语义可靠换算的 actualDate、actualStartTime、actualEndTime、actualDurationMinutes、qualityScore、happinessScore；需要修改标题、项目、分类、标签或备注时放在 completion.updates。评分范围为 1-10。",
 	    "完成信息缺省：实际时间和评分都不是选择完成 Action 的前提；用户没提供实际时间时不要追问，Workflow 会按当前完成时刻和原任务估时生成实际时间块。不要为了填满字段虚构评分或业务信息。",
@@ -2915,6 +2943,15 @@ function resolveWorkflowScheduleTodos(request, mergedArgs, turnContext) {
   };
 }
 
+function resolveCanonicalTodoReference(canonicalTodos, reference) {
+  const ref = normalizeText(reference, 200);
+  if (!ref) return null;
+  const byId = canonicalTodos.find((todo) => todo.id === ref || `todo:${todo.id}` === ref);
+  if (byId) return byId;
+  const byTitle = canonicalTodos.filter((todo) => todo.title === ref);
+  return byTitle.length === 1 ? byTitle[0] : null;
+}
+
 function buildWorkflowInput(request, decision, turnContext = {}) {
   const args = normalizeObject(decision.arguments);
   const semanticAction = normalizeObject(decision.semanticAction || decision.semantic || args.semanticAction || args.semantic || args.actionPlan);
@@ -2949,6 +2986,60 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
     const semanticStartTime = extractClockFromText(input.normalizedGoal) || extractClockFromText(input.text);
     if (!input.targetDate && !input.date && semanticDate) input.targetDate = semanticDate;
     if (!input.startTime && semanticStartTime) input.startTime = semanticStartTime;
+  }
+
+  if (["breakdown_task", "copy_task", "edit_task", "move_task"].includes(action)) {
+    const selectedObjects = normalizeObject(requestInput.selectedObjects || requestInput.contextCandidates?.selectedObjects);
+    const selectedTodoIds = normalizeIdList(selectedObjects.selectedTodoIds, 10);
+    const canonicalTodos = normalizeWorkflowTodoCandidates(turnContext?.execution?.todos, 200);
+    const explicitTarget = normalizeObject(mergedArgs.targetTodo || mergedArgs.parentTask || mergedArgs.parentTodo);
+    const explicitTargetRef = normalizeText(
+      mergedArgs.targetTodoId
+        || mergedArgs.todoId
+        || mergedArgs.sourceTodoId
+        || explicitTarget.id
+        || explicitTarget.todoId,
+      200,
+    );
+    const fallbackRefs = collectPlannerTodoReferences(mergedArgs);
+    const sourceRef = explicitTargetRef || selectedTodoIds[0] || fallbackRefs[0];
+    const requestTodo = normalizeWorkflowTodoCandidate(requestInput.todo || requestInput.selectedTodo || selectedObjects.todos?.[0]);
+    const targetTodo = resolveCanonicalTodoReference(canonicalTodos, sourceRef) ||
+      (requestTodo && (!sourceRef || requestTodo.id === sourceRef || requestTodo.title === sourceRef) ? requestTodo : null);
+    input.todo = targetTodo || null;
+    input.targetTodoId = normalizeText(targetTodo?.id || sourceRef, 120);
+    input.sourceTodoId = input.targetTodoId;
+    input.todos = action === "move_task" ? canonicalTodos : targetTodo ? [targetTodo] : [];
+    if (action === "breakdown_task") input.parentTask = targetTodo || normalizeObject(input.parentTask);
+
+    if (action === "move_task") {
+      const structure = normalizeObject(mergedArgs.structure || mergedArgs.move);
+      const parentRef = normalizeText(structure.parentId || structure.parentTitle || mergedArgs.parentTodoId || mergedArgs.parentTitle, 200);
+      const anchorRef = normalizeText(structure.anchorTodoId || structure.anchorTitle || mergedArgs.anchorTodoId || mergedArgs.anchorTitle, 200);
+      const resolvedParent = resolveCanonicalTodoReference(canonicalTodos, parentRef);
+      const resolvedAnchor = resolveCanonicalTodoReference(canonicalTodos, anchorRef);
+      input.structure = {
+        ...structure,
+        ...(parentRef ? {
+          parentId: resolvedParent?.id || "",
+          parentTitle: resolvedParent?.title || normalizeText(structure.parentTitle || mergedArgs.parentTitle, 160),
+          parentResolution: resolvedParent ? "resolved" : "unresolved",
+        } : {}),
+        ...(anchorRef ? {
+          anchorTodoId: resolvedAnchor?.id || "",
+          anchorTitle: resolvedAnchor?.title || normalizeText(structure.anchorTitle || mergedArgs.anchorTitle, 160),
+          anchorResolution: resolvedAnchor ? "resolved" : "unresolved",
+        } : {}),
+      };
+    }
+    input.contextResolution = {
+      schema: "guanshi-ai-workflow-input-resolution-v1",
+      todosSource: targetTodo ? "turn_context_target" : "missing",
+      todoCount: targetTodo ? 1 : 0,
+      plannerRefCount: fallbackRefs.length,
+      busyBlockCount: 0,
+    };
+    delete input.tasks;
   }
 
   if (action === "complete_task") {

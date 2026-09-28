@@ -58,6 +58,7 @@
     }
 
     function buildTodoSyncRequest(todo) {
+      if (todo?.todoKind === "group" || todo?.scheduleState === "unplanned") return { ok: false, code: "TODO_NOT_SCHEDULED", message: "父待办和未排期待办无需同步日历或提醒。" };
       if (!todo || !String(todo.id || "").trim()) {
         return { ok: false, message: "待办数据无效，请重新创建任务后再同步。" };
       }
@@ -205,6 +206,7 @@
     }
 
     function buildTodoReminderSyncRequest(todo) {
+      if (todo?.todoKind === "group" || todo?.scheduleState === "unplanned") return { ok: false, code: "TODO_NOT_SCHEDULED", message: "父待办和未排期待办无需同步日历或提醒。" };
       if (!todo || !String(todo.id || "").trim()) {
         return { ok: false, code: "INVALID_TODO", message: "待办数据无效，请重新创建任务后再同步提醒。" };
       }

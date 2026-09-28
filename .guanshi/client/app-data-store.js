@@ -30,6 +30,7 @@
       TODO_PROJECT_LEVEL_SEPARATOR = " / ",
       localStorageRef = globalScope.localStorage || null,
       normalizeTodo,
+      validateTodoHierarchy = () => {},
       normalizeProjectName,
       commitUndoSnapshot,
       scheduleAutoBidirectionalSync,
@@ -289,6 +290,7 @@
     }
 
     function saveTodos(value, options = {}) {
+      validateTodoHierarchy(value);
       if (dataTransaction) {
         dataTransaction.writes.set(TODO_STORAGE_KEY, JSON.stringify(value.map(normalizeTodo)));
         dataTransaction.sync ||= !options.skipSyncSchedule && !getIsApplyingUndo();

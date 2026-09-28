@@ -382,6 +382,7 @@
                       <path d="m12 15.5 2.5 1.4" />
                     </svg>
                   </button>
+                  <button id="todo-detail-menu-btn" class="todo-head-icon-btn" type="button" aria-label="更多待办操作" aria-haspopup="menu" title="更多操作" hidden>···</button>
                   <button
                     id="todo-delete-btn"
                     class="todo-head-icon-btn todo-delete-btn"
@@ -401,11 +402,19 @@
               </div>
 
               <form id="todo-detail-form" class="todo-detail-form">
-                <label>
-                  <span>标题 *</span>
+                <div class="todo-title-field">
+                  <span class="todo-field-label-row">
+                    <label for="todo-title-input">标题 *</label>
+                    <span id="todo-container-path" class="todo-container-path" hidden></span>
+                  </span>
                   <input id="todo-title-input" type="text" required placeholder="输入待办标题" />
-                </label>
+                </div>
 
+                <div id="todo-hierarchy-controls" class="todo-hierarchy-controls" hidden>
+                  <p id="todo-group-summary" class="todo-detail-summary" hidden></p>
+                </div>
+                <button id="todo-schedule-expand" type="button" class="todo-text-action" hidden>未排期 · 安排时间</button>
+                <div id="todo-schedule-fields" class="todo-schedule-fields">
                 <div class="todo-inline-grid">
                   <label>
                     <span>截止日期 *</span>
@@ -434,10 +443,10 @@
                       </span>
                     </div>
                   </label>
-                </div>
+                  </div>
 
-                <div class="todo-inline-grid">
-                  <label>
+                <div id="todo-duration-fields" class="todo-inline-grid">
+                  <label id="todo-end-label">
                     <span>结束时间</span>
                     <div class="todo-native-input-wrap is-time">
                       <input id="todo-end-time-input" type="time" />
@@ -450,15 +459,18 @@
                       </span>
                     </div>
                   </label>
-                  <label>
+                  <label id="todo-duration-label">
                     <span>预计时长(分钟)</span>
                     <input id="todo-estimate-input" type="number" min="5" step="5" placeholder="45" />
                   </label>
-                </div>
+                  </div>
 
+                  <button id="todo-time-mode-btn" type="button" class="todo-text-action" hidden>结束时间未设置 · 编辑结束时间</button>
+                </div>
                 <div class="todo-inline-grid">
                   <label>
                     <span>项目</span>
+                    <span id="todo-project-inherited" class="todo-project-inherited" hidden></span>
                     <div id="todo-project-suggest-wrap" class="todo-suggest-wrap">
                       <input id="todo-project-input" type="text" autocomplete="off" placeholder="例如 A-B-C" />
                       <div id="todo-project-suggestion-menu" class="todo-suggestion-menu" hidden></div>
@@ -491,9 +503,10 @@
                       </select>
                     </div>
                   </label>
-                </div>
+                  </div>
 
-                <div class="todo-inline-grid">
+                <div id="todo-more-properties" class="todo-more-properties">
+                  <div class="todo-inline-grid">
                   <label>
                     <span>标签（逗号分隔）</span>
                     <div id="todo-tag-suggest-wrap" class="todo-suggest-wrap">
@@ -516,7 +529,7 @@
                 <input id="todo-quality-input" type="hidden" />
                 <input id="todo-happiness-input" type="hidden" />
 
-                <div class="todo-inline-grid">
+                  <div id="todo-reminder-fields" class="todo-inline-grid">
                   <label>
                     <span>提醒</span>
                     <div class="todo-native-input-wrap is-datetime">
@@ -558,12 +571,15 @@
                       </select>
                     </div>
                   </label>
+                  </div>
                 </div>
 
                 <label class="todo-note-full">
                   <span>备注</span>
-                  <textarea id="todo-note-input" rows="1" placeholder="补充你的执行要点。"></textarea>
+                  <textarea id="todo-note-input" rows="4" placeholder="补充你的执行要点。"></textarea>
                 </label>
+
+
 
               </form>
               <div class="todo-detail-foot" aria-label="任务信息">
@@ -572,6 +588,12 @@
             </section>
           </div>
         </section>
+
+        <dialog id="todo-parent-picker" class="todo-structure-dialog" aria-labelledby="todo-parent-picker-trigger">
+          <div class="todo-structure-dialog-head"><h3 id="todo-parent-picker-trigger">移动到父待办</h3><button id="todo-parent-picker-close" type="button" aria-label="关闭选择">×</button></div>
+          <input id="todo-parent-search" type="search" placeholder="搜索父待办或项目" aria-label="搜索目标" />
+          <div id="todo-parent-options" class="todo-parent-options" role="group" aria-label="可选目标"></div>
+        </dialog>
 
         <section id="view-calendar" class="app-view" data-view="calendar" hidden>
           <section class="panel records-panel calendar-page-panel">

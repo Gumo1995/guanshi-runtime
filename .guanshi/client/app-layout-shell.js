@@ -26,6 +26,8 @@
       TODO_DETAIL_MIN_WIDTH = 320,
       TODO_DETAIL_MAX_WIDTH = 640,
       TODO_LIST_MIN_WIDTH = 420,
+      TODO_DETAIL_COLLAPSE_EXTRA_DRAG = 108,
+      TODO_DETAIL_RESTORE_DRAG = 24,
     } = deps;
 
     const ElementCtor = windowRef?.Element || globalScope.Element;
@@ -42,6 +44,7 @@
     let todoDetailResizePointerId = null;
     let todoDetailResizeStartX = 0;
     let todoDetailResizeStartWidth = 0;
+    let isTodoDetailCollapsed = false;
     let todoDetailPreferredWidth = DEFAULT_TODO_DETAIL_WIDTH;
     let todoListPreferredWidth = 0;
     let todoLayoutSyncFrame = 0;
@@ -242,6 +245,20 @@
     function syncTodoLayoutWidths() {
       todoLayoutSyncFrame = 0;
       if (!todoLayout) return;
+      if (isTodoDetailCollapsed) {
+        const resizerWidth = getTodoDetailResizerWidth();
+        const minTotal = TODO_LIST_MIN_WIDTH + resizerWidth;
+        todoLayout.style.setProperty("--todo-list-width", "calc(100% - var(--todo-detail-resizer-width))");
+        todoLayout.style.setProperty("--todo-detail-width", "0px");
+        todoLayout.style.setProperty("--todo-layout-min-width", `${Math.round(minTotal)}px`);
+        if (todoDetailResizer) {
+          todoDetailResizer.setAttribute("aria-valuemin", "0");
+          todoDetailResizer.setAttribute("aria-valuemax", String(TODO_DETAIL_MAX_WIDTH));
+          todoDetailResizer.setAttribute("aria-valuenow", "0");
+          todoDetailResizer.setAttribute("aria-expanded", "false");
+        }
+        return;
+      }
       const { listWidth, detailWidth, minTotal } = calculateTodoColumnWidths();
       todoLayout.style.setProperty("--todo-list-width", `${Math.round(listWidth)}px`);
       todoLayout.style.setProperty("--todo-detail-width", `${Math.round(detailWidth)}px`);
@@ -250,6 +267,7 @@
         todoDetailResizer.setAttribute("aria-valuemin", String(TODO_DETAIL_MIN_WIDTH));
         todoDetailResizer.setAttribute("aria-valuemax", String(TODO_DETAIL_MAX_WIDTH));
         todoDetailResizer.setAttribute("aria-valuenow", String(Math.round(detailWidth)));
+        todoDetailResizer.setAttribute("aria-expanded", "true");
       }
     }
 
@@ -294,7 +312,25 @@
       if (!todoLayout || !todoDetailResizer) return false;
       const style = windowRef?.getComputedStyle ? windowRef.getComputedStyle(todoDetailResizer) : null;
       if (style && style.display === "none") return false;
-      return getTodoLayoutWidth() >= TODO_LIST_MIN_WIDTH + TODO_DETAIL_MIN_WIDTH + getTodoDetailResizerWidth();
+      return isTodoDetailCollapsed || getTodoLayoutWidth() >= TODO_LIST_MIN_WIDTH + TODO_DETAIL_MIN_WIDTH + getTodoDetailResizerWidth();
+    }
+
+    function applyTodoDetailCollapsed(value) {
+      isTodoDetailCollapsed = Boolean(value);
+      todoLayout?.classList.toggle("is-todo-detail-collapsed", isTodoDetailCollapsed);
+      if (todoDetailResizer) {
+        todoDetailResizer.setAttribute("aria-label", isTodoDetailCollapsed ? "显示任务详情" : "调整待办事项和任务详情宽度");
+        todoDetailResizer.title = isTodoDetailCollapsed ? "向左拖动恢复任务详情，也可按 Enter" : "拖动调整宽度，向右继续拖动可收起任务详情";
+      }
+      scheduleTodoLayoutSync();
+    }
+
+    function restoreTodoDetailFromCollapse() {
+      applyTodoDetailCollapsed(false);
+      applyTodoDetailWidth(TODO_DETAIL_MIN_WIDTH);
+      if (typeof saveTodoDetailWidth === "function") {
+        saveTodoDetailWidth(TODO_DETAIL_MIN_WIDTH);
+      }
     }
 
     function handleTodoDetailResizeStart(event) {
@@ -304,9 +340,13 @@
       isTodoDetailResizing = true;
       todoDetailResizePointerId = event.pointerId;
       todoDetailResizeStartX = event.clientX;
-      todoDetailResizeStartWidth = getCurrentTodoDetailWidth(
-        typeof loadTodoDetailWidth === "function" ? loadTodoDetailWidth() : 430,
-      );
+      if (isTodoDetailCollapsed) {
+        todoDetailResizeStartWidth = TODO_DETAIL_MIN_WIDTH;
+      } else {
+        todoDetailResizeStartWidth = getCurrentTodoDetailWidth(
+          typeof loadTodoDetailWidth === "function" ? loadTodoDetailWidth() : 430,
+        );
+      }
       todoDetailResizer.classList.add("is-dragging");
       todoLayout.classList.add("is-resizing");
       getInteractionClassTarget()?.classList.add("is-todo-detail-resizing");
@@ -318,7 +358,23 @@
       if (!isTodoDetailResizing) return;
       if (event.pointerId !== todoDetailResizePointerId) return;
       const delta = event.clientX - todoDetailResizeStartX;
+      if (isTodoDetailCollapsed) {
+        if (delta <= -TODO_DETAIL_RESTORE_DRAG) {
+          // Restore at the minimum; later pointer movement can widen it.
+          restoreTodoDetailFromCollapse();
+          todoDetailResizeStartX = event.clientX;
+          todoDetailResizeStartWidth = getCurrentTodoDetailWidth();
+        }
+        return;
+      }
       applyTodoDetailWidth(todoDetailResizeStartWidth - delta);
+      const minReached = todoDetailResizeStartWidth - delta <= TODO_DETAIL_MIN_WIDTH;
+      const extraDrag = delta - (todoDetailResizeStartWidth - TODO_DETAIL_MIN_WIDTH);
+      if (minReached && extraDrag >= TODO_DETAIL_COLLAPSE_EXTRA_DRAG) {
+        applyTodoDetailCollapsed(true);
+        // Reversing this same drag can restore without crossing its old origin.
+        todoDetailResizeStartX = event.clientX;
+      }
     }
 
     function handleTodoDetailResizeEnd(event) {
@@ -341,13 +397,20 @@
       getInteractionClassTarget()?.classList.remove("is-todo-detail-resizing");
 
       const width = getCurrentTodoDetailWidth(typeof loadTodoDetailWidth === "function" ? loadTodoDetailWidth() : 430);
-      if (typeof saveTodoDetailWidth === "function") {
+      if (!isTodoDetailCollapsed && typeof saveTodoDetailWidth === "function") {
         saveTodoDetailWidth(width);
       }
     }
 
     function handleTodoDetailResizeKeydown(event) {
       if (!isTodoDetailResizeAvailable()) return;
+      if (isTodoDetailCollapsed) {
+        if (event.key === "Enter" || event.key === " " || event.key === "ArrowLeft") {
+          restoreTodoDetailFromCollapse();
+          event.preventDefault();
+        }
+        return;
+      }
       let nextWidth = null;
       const currentWidth = getCurrentTodoDetailWidth(
         typeof loadTodoDetailWidth === "function" ? loadTodoDetailWidth() : 430,
@@ -363,6 +426,18 @@
       }
       if (nextWidth === null) return;
       applyTodoDetailWidth(nextWidth);
+      const nextClamped = clampTodoDetailPreference(nextWidth);
+      if (
+        event.key === "ArrowRight"
+        && currentWidth <= TODO_DETAIL_MIN_WIDTH
+      ) {
+        applyTodoDetailCollapsed(true);
+        if (typeof saveTodoDetailWidth === "function") {
+          saveTodoDetailWidth(nextClamped);
+        }
+        event.preventDefault();
+        return;
+      }
       if (typeof saveTodoDetailWidth === "function") {
         saveTodoDetailWidth(getCurrentTodoDetailWidth(nextWidth));
       }

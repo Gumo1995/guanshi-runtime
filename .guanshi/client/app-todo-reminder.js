@@ -79,7 +79,7 @@
     }
 
     function isEligibleForSync(todo) {
-      if (!todo || todo.completed) return false;
+      if (!todo || todo.todoKind === "group" || todo.scheduleState === "unplanned" || todo.completed) return false;
       const repeat = normalizeRepeatValue(todo.repeat);
       const externalReminderId = String(todo.externalReminderId || "").trim();
       if (repeat !== "none") return true;

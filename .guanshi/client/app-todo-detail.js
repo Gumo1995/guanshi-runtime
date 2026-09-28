@@ -85,6 +85,18 @@
     const scoreWheelPopover = deps.scoreWheelPopover || null;
 
     let eventsBound = false;
+    const deleteGroupButton = documentRef?.getElementById?.("todo-delete-group-btn");
+    const childButton = documentRef?.getElementById?.("todo-add-child-btn");
+    const parentSelect = documentRef?.getElementById?.("todo-container-input");
+    const parentLink = documentRef?.getElementById?.("todo-container-link");
+    const hierarchyControls = documentRef?.getElementById?.("todo-hierarchy-controls");
+    const containerPath = documentRef?.getElementById?.("todo-container-path");
+    const parentPicker = documentRef?.getElementById?.("todo-parent-picker");
+    const parentPickerTrigger = documentRef?.getElementById?.("todo-parent-picker-trigger");
+    const parentSearch = documentRef?.getElementById?.("todo-parent-search");
+    const parentOptions = documentRef?.getElementById?.("todo-parent-options");
+    const moreProperties = documentRef?.getElementById?.("todo-more-properties");
+    const groupSummary = documentRef?.getElementById?.("todo-group-summary");
     let todoDetailDirty = false;
     let todoPlanLockTouched = false;
     let todoProjectSuggestionItems = [];
@@ -94,6 +106,30 @@
     let todoCategorySuggestionActiveIndex = -1;
     let todoRepeatSuggestionActiveIndex = -1;
     let todoReminderConfigCommitTimerId = 0;
+    let structurePickerMode = "parent";
+    let structurePickerTodoId = "";
+    let scheduleExpanded = false;
+    const element = (id) => documentRef?.getElementById?.(id);
+    const scheduleFields = element("todo-schedule-fields");
+    const scheduleExpand = element("todo-schedule-expand");
+    const timeModeButton = element("todo-time-mode-btn");
+
+    function fitNote() {
+      if (!todoNoteInput?.style) return;
+      todoNoteInput.style.height = "auto";
+      todoNoteInput.style.height = `${Math.min(240, Math.max(74, todoNoteInput.scrollHeight || 74))}px`;
+    }
+
+    function renderScheduleControls(selected = getSelectedTodo()) {
+      const group = selected?.todoKind === "group";
+      if (scheduleExpand) scheduleExpand.hidden = true;
+      if (scheduleFields) scheduleFields.hidden = false;
+      if (element("todo-duration-fields")) element("todo-duration-fields").hidden = group;
+      if (element("todo-end-label")) element("todo-end-label").hidden = group;
+      if (element("todo-duration-label")) element("todo-duration-label").hidden = group;
+      if (timeModeButton) timeModeButton.hidden = true;
+    }
+
 
     function isNode(node) {
       return typeof globalScope.Node !== "undefined" && node instanceof globalScope.Node;
@@ -221,7 +257,7 @@
       if (title !== String(selected.title || "").trim()) return true;
 
       const dueDate = String(todoDueDateInput?.value || "").trim();
-      if (dueDate !== String(selected.dueDate || "").trim()) return true;
+      if (dueDate !== String((selected.todoKind === "group" ? selected.targetDate : selected.dueDate) || "").trim()) return true;
 
       const project = normalizeProjectName(todoProjectInput?.value || "");
       if (project !== normalizeProjectName(selected.project || "")) return true;
@@ -270,6 +306,8 @@
     }
 
     function collectFormInput({ fallbackTodo = null, lenientRequired = false } = {}) {
+      const selected = getSelectedTodo();
+      const optionalDate = selected && (selected.todoKind === "group" || selected.containerTodoId || selected.scheduleState === "unplanned");
       let title = String(todoTitleInput?.value || "").trim();
       let dueDate = String(todoDueDateInput?.value || "").trim();
       let project = normalizeProjectName(todoProjectInput?.value || "");
@@ -293,7 +331,7 @@
         if (!title) {
           title = String(fallback.title || "").trim();
         }
-        if (!dueDate) {
+        if (!dueDate && !optionalDate) {
           dueDate = String(fallback.dueDate || "").trim();
         }
         category = normalizeTodoCategoryValue(todoCategoryInput?.value, fallback.category || fallback.project);
@@ -302,7 +340,7 @@
       if (!title) {
         return { ok: false, message: "标题为必填项。", field: todoTitleInput };
       }
-      if (!dueDate || !isValidDateInput(dueDate)) {
+      if ((!optionalDate && !dueDate) || (dueDate && !isValidDateInput(dueDate))) {
         return { ok: false, message: "截止日期为必填项且格式需为 YYYY-MM-DD。", field: todoDueDateInput };
       }
       project = project || "";
@@ -357,6 +395,7 @@
       if (!isNode(target)) return;
       if (todoDetailPanel && todoDetailPanel.contains(target)) return;
       if (scoreWheelPopover && scoreWheelPopover.contains(target)) return;
+      if (parentPicker?.contains(target)) return;
       const selected = getSelectedTodo();
       const hasPendingChanges = selected ? (todoDetailDirty || hasPendingChangesFor(selected)) : todoDetailDirty;
       if (!hasPendingChanges) return;
@@ -387,10 +426,101 @@
       });
     }
 
+    function renderHierarchyControls(selected) {
+      const group = selected?.todoKind === "group";
+      if (groupSummary) {
+        groupSummary.hidden = !group;
+        const summary = group ? deps.summarizeTodoGroup?.(selected) : null;
+        if (groupSummary) groupSummary.classList.toggle("is-two-lines", Boolean(summary));
+        const formatMinutes = (minutes) => {
+          const value = Math.max(0, Math.round(Number(minutes) || 0));
+          return value >= 60 ? `${Math.floor(value / 60)} 小时${value % 60 ? ` ${value % 60} 分钟` : ""}` : `${value} 分钟`;
+        };
+        groupSummary.textContent = summary
+          ? `已完成 ${summary.completedCount}/${summary.total} · ${summary.startDate && summary.endDate ? `${summary.startDate}—${summary.endDate}` : "未排期"}\n剩余预计 ${formatMinutes(summary.remainingMinutes)} · 实际投入 ${formatMinutes(summary.actualMinutes)}`
+          : "";
+      }
+      if (deleteGroupButton) deleteGroupButton.hidden = true;
+      if (hierarchyControls) hierarchyControls.hidden = !group;
+      if (moreProperties) moreProperties.hidden = !selected;
+      if (containerPath) {
+        const parent = selected?.containerTodoId ? getTodos().find((item) => String(item.id) === String(selected.containerTodoId)) : null;
+        containerPath.hidden = !parent;
+        containerPath.innerHTML = parent
+          ? `<button type="button" class="todo-container-path-button" data-todo-parent-link="${escapeHtml(parent.id)}" title="${escapeHtml(parent.title)}">${escapeHtml(parent.title)}</button>`
+          : "";
+      }
+      if (todoDueDateInput) {
+        todoDueDateInput.required = Boolean(selected && !group && !selected.containerTodoId && selected.scheduleState !== "unplanned");
+        const label = todoDueDateInput.closest?.("label")?.querySelector("span");
+        if (label) label.textContent = group ? "目标完成日（可选）" : selected?.containerTodoId || selected?.scheduleState === "unplanned" ? "计划日期" : "计划日期 *";
+      }
+      for (const input of [todoStartTimeInput, todoEndTimeInput, todoEstimateInput, todoReminderInput, todoRepeatInput, todoQualityInput, todoHappinessInput]) {
+        const label = input?.closest?.("label");
+        if (label) label.hidden = Boolean(group);
+      }
+      if (todoProjectInput) todoProjectInput.readOnly = Boolean(selected?.containerTodoId);
+      if (todoProjectSuggestWrap) todoProjectSuggestWrap.hidden = Boolean(selected?.containerTodoId);
+      const inherited = element("todo-project-inherited");
+      if (inherited) { inherited.hidden = !selected?.containerTodoId; inherited.textContent = `${selected?.project || "未设置项目"} · 随父待办`; }
+      if (element("todo-reminder-fields")) element("todo-reminder-fields").hidden = group;
+      if (element("todo-detail-menu-btn")) element("todo-detail-menu-btn").disabled = !selected;
+      if (todoFocusBtn) todoFocusBtn.hidden = Boolean(group);
+      if (todoPlanLockBtn) todoPlanLockBtn.hidden = Boolean(group);
+      if (todoDeleteBtn) {
+        const label = group ? "解散父待办，保留子待办" : "删除待办";
+        todoDeleteBtn.setAttribute("aria-label", label); todoDeleteBtn.title = label;
+      }
+    }
+
+    function renderTodoParentPicker(query = "") {
+      if (!parentOptions || !parentPicker) return;
+      const selected = getSelectedTodo();
+      const keyword = String(query || "").trim().toLowerCase();
+      if (structurePickerMode === "project") {
+        const projects = [...new Set([...(getProjectLibrary() || []).map((item) => item.name), ...getTodos().map((item) => item.project), "未设置项目"])]
+          .filter(Boolean)
+          .filter((name) => !keyword || name.toLowerCase().includes(keyword))
+          .slice(0, 24);
+        parentOptions.innerHTML = projects.length
+          ? projects.map((name) => `<button type="button" class="todo-parent-option" data-project-name="${escapeHtml(name)}"><strong>${escapeHtml(name)}</strong><span>项目</span></button>`).join("")
+          : '<p class="todo-parent-empty">没有匹配项目</p>';
+        return;
+      }
+      const groups = getTodos()
+        .filter((item) => item.todoKind === "group" && String(item.id) !== String(selected?.id || ""))
+        .filter((item) => !keyword || `${item.title} ${item.project || ""}`.toLowerCase().includes(keyword))
+        .slice(0, 24);
+      parentOptions.innerHTML = groups.length
+        ? groups.map((item) => `<button type="button" class="todo-parent-option" data-parent-id="${escapeHtml(item.id)}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.project || "未设置项目")}</span></button>`).join("")
+        : '<p class="todo-parent-empty">没有匹配父项</p>';
+    }
+
+    function openTodoStructurePicker(todoId, mode = "parent") {
+      if (!commitIfDirty()) return false;
+      const todo = getTodos().find((item) => String(item.id) === String(todoId || ""));
+      if (!todo || !parentPicker) return false;
+      structurePickerMode = mode === "project" ? "project" : "parent";
+      if (structurePickerMode === "parent" && (todo.todoKind === "group" || isRecurringTodoRepeatMode(todo.repeat))) return false;
+      structurePickerTodoId = String(todo.id);
+      if (getSelectedTodo()?.id !== todo.id) setSelectedTodoId(todo.id);
+      renderTodoDetail();
+      if (parentPickerTrigger) parentPickerTrigger.textContent = structurePickerMode === "project" ? "移动到项目" : "移动到父待办";
+      if (parentSearch) { parentSearch.value = ""; parentSearch.placeholder = structurePickerMode === "project" ? "搜索项目" : "搜索父待办或项目"; }
+      renderTodoParentPicker("");
+      parentPicker.showModal?.();
+      parentSearch?.focus?.();
+      return true;
+    }
+
     function renderTodoDetail() {
       if (!todoDetailForm) return;
 
       const selected = getSelectedTodo();
+      if (String(selected?.id || "") !== String(todoDetailForm.dataset.boundTodoId || "")) {
+        scheduleExpanded = false;
+      }
+      renderHierarchyControls(selected);
       if (!selected) {
         clearSubmitState();
         todoDetailForm.reset();
@@ -405,6 +535,7 @@
         if (todoPlanLockBtn) todoPlanLockBtn.disabled = true;
         if (todoDeleteBtn) todoDeleteBtn.disabled = true;
         setTodoPlanLockControlEnabled(false);
+        renderScheduleControls(null);
         renderTopTodoSyncHub(null);
         return;
       }
@@ -412,6 +543,7 @@
       const selectedId = String(selected.id || "");
       const boundTodoId = String(todoDetailForm.dataset.boundTodoId || "");
       if (todoDetailDirty && boundTodoId && boundTodoId === selectedId) {
+        renderScheduleControls(selected);
         renderTopTodoSyncHub(selected);
         return;
       }
@@ -420,17 +552,17 @@
         todoDetailId.textContent = String(selected.id);
       }
       if (todoFocusBtn) {
-        todoFocusBtn.disabled = Boolean(selected.completed);
+        todoFocusBtn.disabled = Boolean(selected.completed || selected.todoKind === "group" || selected.scheduleState === "unplanned");
       }
       if (todoPlanLockBtn) {
-        todoPlanLockBtn.disabled = Boolean(selected.completed);
+        todoPlanLockBtn.disabled = Boolean(selected.completed || selected.todoKind === "group" || selected.scheduleState === "unplanned");
       }
       if (todoDeleteBtn) {
         todoDeleteBtn.disabled = false;
       }
 
       if (todoTitleInput) todoTitleInput.value = selected.title || "";
-      if (todoDueDateInput) todoDueDateInput.value = selected.dueDate || "";
+      if (todoDueDateInput) todoDueDateInput.value = (selected.todoKind === "group" ? selected.targetDate : selected.dueDate) || "";
       if (todoProjectInput) todoProjectInput.value = selected.project || "";
       if (todoCategoryInput) todoCategoryInput.value = getTodoCategory(selected, selected.project);
       syncTodoCategoryTriggerLabel();
@@ -458,6 +590,8 @@
       updateTodoRepeatSuggestionOptions({ forceShow: false });
       todoDetailForm.dataset.boundTodoId = selectedId;
       clearSubmitState();
+      renderScheduleControls(selected);
+      fitNote();
       renderTopTodoSyncHub(selected);
     }
 
@@ -669,7 +803,7 @@
       todoCategorySuggestionMenu.innerHTML = categories
         .map((item, index) => {
           const activeClass = index === todoCategorySuggestionActiveIndex ? " is-active" : "";
-          return `<button class="todo-suggestion-item${activeClass}" type="button" data-index="${index}" role="option">${escapeHtml(item)}</button>`;
+          return `<button class="todo-suggestion-item${activeClass}" type="button" data-index="${index}">${escapeHtml(item)}</button>`;
         })
         .join("");
       syncTodoSuggestionMenuActiveState(todoCategorySuggestionMenu, todoCategorySuggestionActiveIndex);
@@ -691,7 +825,7 @@
       todoRepeatSuggestionMenu.innerHTML = options
         .map((item, index) => {
           const activeClass = index === todoRepeatSuggestionActiveIndex ? " is-active" : "";
-          return `<button class="todo-suggestion-item${activeClass}" type="button" data-index="${index}" role="option">${escapeHtml(item.label)}</button>`;
+          return `<button class="todo-suggestion-item${activeClass}" type="button" data-index="${index}">${escapeHtml(item.label)}</button>`;
         })
         .join("");
       syncTodoSuggestionMenuActiveState(todoRepeatSuggestionMenu, todoRepeatSuggestionActiveIndex);
@@ -1237,6 +1371,48 @@
       }
     }
 
+    deleteGroupButton?.addEventListener("click", () => deps.deleteTodoGroupWithChildren?.());
+    childButton?.addEventListener("click", () => deps.addTodoChild?.());
+    parentSelect?.addEventListener("change", () => { const id = parentSelect.value; if (!deps.setTodoParent?.(id)) renderTodoDetail(); });
+    parentLink?.addEventListener("click", () => { const id = getSelectedTodo()?.containerTodoId; if (id) deps.showTodoInProject?.(id); });
+    containerPath?.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("[data-todo-parent-link]");
+      if (button?.dataset?.todoParentLink && commitIfDirty()) deps.showTodoInProject?.(button.dataset.todoParentLink);
+    });
+    element("todo-parent-picker-close")?.addEventListener("click", () => parentPicker?.close?.());
+    parentSearch?.addEventListener("input", () => renderTodoParentPicker(parentSearch.value));
+    parentPicker?.addEventListener("keydown", (event) => {
+      if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+      const options = [...(parentOptions?.querySelectorAll("button") || [])];
+      if (!options.length) return;
+      event.preventDefault();
+      const index = options.indexOf(documentRef.activeElement);
+      options[(index + (event.key === "ArrowDown" ? 1 : options.length - 1)) % options.length]?.focus();
+    });
+    parentOptions?.addEventListener("click", (event) => {
+      const option = event.target?.closest?.("[data-parent-id], [data-project-name]");
+      if (!option || !structurePickerTodoId) return;
+      const operation = option.hasAttribute("data-project-name")
+        ? { todoId: structurePickerTodoId, kind: getTodos().find((item) => String(item.id) === structurePickerTodoId)?.containerTodoId ? "reparent" : "project", parentId: "", projectId: option.dataset.projectName === "未设置项目" ? "" : option.dataset.projectName }
+        : { todoId: structurePickerTodoId, kind: "reparent", parentId: option.dataset.parentId };
+      if (deps.moveTodoStructure?.(operation)) { parentPicker.close?.(); render(); }
+    });
+    element("todo-detail-menu-btn")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!commitIfDirty()) return;
+      const id = getSelectedTodo()?.id;
+      if (id) deps.showTodoRowMenu?.(id, event.currentTarget);
+    });
+    scheduleExpand?.addEventListener("click", () => {
+      scheduleExpanded = true;
+      renderScheduleControls();
+      todoDueDateInput?.focus?.();
+    });
+    for (const input of [todoStartTimeInput, todoEstimateInput, todoEndTimeInput]) {
+      input?.addEventListener("input", () => renderScheduleControls());
+    }
+    todoNoteInput?.addEventListener("input", fitNote);
+
     return {
       bindEvents,
       markDirty,
@@ -1260,6 +1436,7 @@
       syncTodoRepeatTriggerLabel,
       updateTodoRepeatSuggestionOptions,
       isTodoRepeatSuggestionMenuOpen,
+      openTodoStructurePicker,
       isTodoProjectSuggestionMenuOpen,
       isTodoTagSuggestionMenuOpen,
       isTodoPlanLockControlEnabled,

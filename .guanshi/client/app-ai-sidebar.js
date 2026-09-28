@@ -230,34 +230,18 @@
     const selectLiuyaoLatestReading = typeof deps.selectLiuyaoLatestReading === "function" ? deps.selectLiuyaoLatestReading : () => null;
     const applyLiuyaoAiResult = typeof deps.applyLiuyaoAiResult === "function" ? deps.applyLiuyaoAiResult : () => false;
     const getViewContext = typeof deps.getViewContext === "function" ? deps.getViewContext : () => ({});
-    const getCategories = typeof deps.getCategories === "function" ? deps.getCategories : () => [];
     const getTodayDateInputValue =
       typeof deps.getTodayDateInputValue === "function"
         ? deps.getTodayDateInputValue
         : () => new Date().toISOString().slice(0, 10);
-    const createTodoDraft =
-      typeof deps.createTodoDraft === "function"
-        ? deps.createTodoDraft
-        : () => ({ id: `todo_${Date.now()}`, title: "新待办事项" });
-    const normalizeTodo = typeof deps.normalizeTodo === "function" ? deps.normalizeTodo : (todo) => todo;
-    const getNextTodoOrderForDate =
-      typeof deps.getNextTodoOrderForDate === "function" ? deps.getNextTodoOrderForDate : () => null;
-    const markTodoPlanningDirty =
-      typeof deps.markTodoPlanningDirty === "function"
-        ? deps.markTodoPlanningDirty
-        : (todo, timestampIso = new Date().toISOString()) => {
-          todo.updatedAt = timestampIso;
-          todo.calendarSynced = false;
-          todo.syncState = "dirty";
-          todo.lastSyncError = "";
-        };
-    const normalizeTodoOrderByClockForDate =
-      typeof deps.normalizeTodoOrderByClockForDate === "function" ? deps.normalizeTodoOrderByClockForDate : () => false;
-    const saveTodos = typeof deps.saveTodos === "function" ? deps.saveTodos : () => {};
-    const setTodos = typeof deps.setTodos === "function" ? deps.setTodos : () => {};
+    const applyAiTodoMutationDraft =
+      typeof deps.applyAiTodoMutationDraft === "function"
+        ? deps.applyAiTodoMutationDraft
+        : () => ({ feasible: false, applied: 0, message: "AI 待办写入链路不可用。" });
     const toggleTodoCompleted = typeof deps.toggleTodoCompleted === "function" ? deps.toggleTodoCompleted : () => false;
     const setSelectedTodoId = typeof deps.setSelectedTodoId === "function" ? deps.setSelectedTodoId : () => {};
     const setActiveView = typeof deps.setActiveView === "function" ? deps.setActiveView : () => {};
+    const showTodoInProject = typeof deps.showTodoInProject === "function" ? deps.showTodoInProject : () => {};
     const setSettingsTab = typeof deps.setSettingsTab === "function" ? deps.setSettingsTab : () => {};
     const render = typeof deps.render === "function" ? deps.render : () => {};
     const uiReactionsModule =
@@ -3497,6 +3481,10 @@
       const result = {
         id: normalizeText(todo?.id),
         title: normalizeText(todo?.title, "未命名待办"),
+        todoKind: todo?.todoKind || "task",
+        containerTodoId: todo?.containerTodoId || null,
+        scheduleState: todo?.scheduleState || "planned",
+        targetDate: normalizeText(todo?.targetDate),
         category: normalizeText(todo?.category),
         project: normalizeText(todo?.project),
         tags: Array.isArray(todo?.tags) ? todo.tags.slice(0, 8) : [],
@@ -3515,6 +3503,8 @@
         dependencies: Array.isArray(todo?.dependencies) ? todo.dependencies.slice(0, 20) : [],
         planLocked: Boolean(todo?.planLocked),
         repeat: normalizeText(todo?.repeat, "none"),
+        reminder: normalizeText(todo?.reminder, "none"),
+        updatedAt: normalizeText(todo?.updatedAt),
         orderInDay: Number.isFinite(Number(todo?.orderInDay)) ? Number(todo.orderInDay) : null,
         completed: Boolean(todo?.completed),
       };
@@ -3537,7 +3527,7 @@
       const mode = normalizeText(scope.resolvedMode);
       const maxItems = Math.max(1, Math.min(200, Number.parseInt(String(scope.maxItems || scope.range?.maxItems || 80), 10) || 80));
       return (Array.isArray(getTodos()) ? getTodos() : [])
-        .filter((todo) => todo)
+        .filter((todo) => todo && (todo.todoKind !== "group" || mode === "view_todo_summary"))
         .filter((todo) => {
           if (mode === "unfinished" || mode === "reflow_unfinished" || mode === "view_todo_list" || mode === "view_todo_summary") return true;
           if (mode !== "granted_range" && !todo.completed && !todo.dueDate) return true;
@@ -3593,7 +3583,7 @@
     }
 
     function buildProgressSummary(action) {
-      const todos = Array.isArray(getTodos()) ? getTodos() : [];
+      const todos = (Array.isArray(getTodos()) ? getTodos() : []).filter((t) => t.todoKind !== "group");
       const entries = Array.isArray(getEntries()) ? getEntries() : [];
       const today = normalizeText(getTodayDateInputValue(), new Date().toISOString().slice(0, 10));
       const unfinished = todos.filter((todo) => !todo.completed).length;
@@ -3631,6 +3621,10 @@
         estimatedMinutes: Number(todo?.estimatedMinutes) || undefined,
         remainingMinutes: Number(todo?.remainingMinutes) || Number(todo?.estimatedMinutes) || undefined,
         planLocked: Boolean(todo?.planLocked),
+        todoKind: todo?.todoKind || "task",
+        containerTodoId: todo?.containerTodoId || null,
+        scheduleState: todo?.scheduleState || (todo?.todoKind === "group" ? null : "planned"),
+        targetDate: normalizeText(todo?.targetDate),
       };
       if (options.includeCompletion === true) result.completed = Boolean(todo?.completed);
       if (options.includeNote === true) {
@@ -3761,7 +3755,7 @@
     function countTodoStats(todoList, today) {
       const weekEnd = addDays(today, 6);
       return todoList.reduce((stats, todo) => {
-        if (!todo) return stats;
+        if (!todo || todo.todoKind === "group") return stats;
         stats.total += 1;
         if (todo.completed) stats.completed += 1;
         if (!todo.completed) stats.unfinished += 1;
@@ -3885,7 +3879,7 @@
     function buildTimeWindowSummary(start, end, disabled) {
       if (disabled || !isValidDate(start) || !isValidDate(end)) return [];
       const dates = getDateListFromRange(start, end, 8);
-      const todos = Array.isArray(getTodos()) ? getTodos() : [];
+      const todos = (Array.isArray(getTodos()) ? getTodos() : []).filter((t) => t.todoKind !== "group");
       const entries = Array.isArray(getEntries()) ? getEntries() : [];
       return dates.map((date) => {
         const dayTodos = todos.filter((todo) => todo && !todo.completed && String(todo.dueDate || "") === date);
@@ -3960,7 +3954,7 @@
       return {
         source: "client_local_state",
         todos: (Array.isArray(getTodos()) ? getTodos() : [])
-          .filter((todo) => todo && !todo.completed)
+          .filter((todo) => todo && (todo.todoKind === "group" || !todo.completed))
           .sort((left, right) => getTodoSortKey(left).localeCompare(getTodoSortKey(right), "zh-Hans-CN"))
           .slice(0, 200)
           .map(pickTodo),
@@ -4477,7 +4471,9 @@
             text: item.title || "待办草稿",
           })),
           payload: {
+            operation: "create",
             items: result.items,
+            placement: result.placement || {},
             originalText: workflow?.request?.input?.sourceText || workflow?.request?.input?.text || text,
             normalizedGoal: workflow?.request?.input?.normalizedGoal || "",
             ...withWorkflowUiPayload({}, workflowAction),
@@ -4489,7 +4485,7 @@
       if (workflow?.request?.action === "breakdown_task" && Array.isArray(result.children) && result.children.length) {
         pendingIds.push(upsertPendingItem({
           id: createId("breakdown"),
-          type: "todo_draft",
+          type: "todo_hierarchy_draft",
           title: "任务拆解草稿",
           detail: result.children.map((item) => item.title).filter(Boolean).join("、"),
           preview: result.children.slice(0, 3).map((item) => ({
@@ -4497,11 +4493,33 @@
             text: item.title || "子任务草稿",
           })),
           payload: {
+            operation: "breakdown",
             items: result.children,
             originalText: workflow?.request?.input?.sourceText || workflow?.request?.input?.text || text,
             normalizedGoal: workflow?.request?.input?.normalizedGoal || "",
             parentTitle: result.parentTitle || "",
             sourceTodoId: result.sourceTodoId || "",
+            targetTodoId: result.sourceTodoId || "",
+            targetSnapshot: result.targetSnapshot || null,
+            ...withWorkflowUiPayload({}, workflowAction),
+          },
+          editText: text,
+        }, { render: false }));
+      }
+      if (["copy_task", "edit_task", "move_task"].includes(workflow?.request?.action) && result?.operation) {
+        const operationLabels = { copy: "复制待办草稿", edit: "修改待办草稿", move: "移动待办草稿" };
+        const previewRows = Array.isArray(result.preview) ? result.preview : [];
+        pendingIds.push(upsertPendingItem({
+          id: result.draftId || createId("todo-mutation"),
+          type: "todo_mutation_draft",
+          title: operationLabels[result.operation] || "待办变更草稿",
+          detail: result.summary || result.targetTitle || "等待确认",
+          preview: previewRows.slice(0, 4).map((row) => ({
+            time: row.label || row.field || result.operation,
+            text: row.text || row.value || `${row.before ?? ""} → ${row.after ?? ""}`,
+          })),
+          payload: {
+            ...result,
             ...withWorkflowUiPayload({}, workflowAction),
           },
           editText: text,
@@ -4962,59 +4980,6 @@
       }
     }
 
-    function buildAiTodoNote(item, context = {}) {
-      const direct = normalizeText(item.notes || item.note || item.description);
-      if (direct) return direct;
-      const sourceText = normalizeText(item.sourceText || item.originalText || context.originalText || context.editText);
-      const understanding = normalizeText(item.normalizedGoal || item.summary || context.normalizedGoal);
-      const lines = [];
-      if (sourceText) lines.push(`原文：${sourceText}`);
-      if (understanding) lines.push(`理解：${understanding}`);
-      return lines.join("\n");
-    }
-
-    function createTodoFromAiItem(item, context = {}) {
-      const categories = Array.isArray(getCategories()) ? getCategories() : [];
-      const category = normalizeText(item.category, categories[0] || "工作");
-      const base = createTodoDraft();
-      const priorityMap = {
-        urgent: "P0",
-        high: "P1",
-        medium: "P2",
-        low: "P3",
-      };
-      return normalizeTodo({
-        ...base,
-        id: createId("todo"),
-        title: normalizeText(item.title, "待确认任务"),
-        dueDate: isValidDate(item.dueDate) ? item.dueDate : base.dueDate,
-        project: normalizeText(item.project),
-        category,
-        tags: Array.isArray(item.tags) ? item.tags : [],
-        note: buildAiTodoNote(item, context),
-        startTime: isValidClock(item.startTime) ? item.startTime : "",
-        endTime: isValidClock(item.endTime) ? item.endTime : "",
-        estimatedMinutes: Number(item.estimatedMinutes) || Number(item.remainingMinutes) || base.estimatedMinutes,
-        remainingMinutes: Number(item.remainingMinutes) || Number(item.estimatedMinutes) || base.estimatedMinutes,
-        priority: priorityMap[item.priority] || item.priority || "P2",
-        importance: item.importance,
-        urgency: item.urgency,
-        taskType: item.taskType || "other",
-        energyLevel: item.energyLevel || "medium",
-        splittable: Boolean(item.splittable),
-        minimumBlockMinutes: Number(item.minimumBlockMinutes) || 30,
-        dependencies: Array.isArray(item.dependencies) ? item.dependencies : [],
-        calendarSynced: false,
-        syncState: "dirty",
-        aiMeta: {
-          source: "ai_sidebar",
-          draftId: item.draftTodoId || item.childDraftId || "",
-          confirmedAt: new Date().toISOString(),
-        },
-        updatedAt: new Date().toISOString(),
-      });
-    }
-
     function normalizeTodoIdList(value) {
       const source = Array.isArray(value) ? value : value ? [value] : [];
       return Array.from(new Set(source.map((item) => normalizeText(item, 120)).filter(Boolean)));
@@ -5041,7 +5006,7 @@
           ...source,
         };
       }
-      if (item?.type === "todo_draft") {
+      if (["todo_draft", "todo_hierarchy_draft", "todo_mutation_draft"].includes(item?.type)) {
         return {
           view: "todo",
           select: "first_created",
@@ -5077,6 +5042,7 @@
       if (select === "first_applied") return normalizeTodoIdList(applyResult.appliedIds)[0] || targetIds[0] || "";
       if (select === "first_updated") return normalizeTodoIdList(applyResult.updatedIds)[0] || targetIds[0] || "";
       if (select === "first_created") return normalizeTodoIdList(applyResult.createdIds)[0] || targetIds[0] || "";
+      if (select === "result_selected") return normalizeText(applyResult.selectedId, 120) || targetIds[0] || "";
       return targetIds[0] || "";
     }
 
@@ -5099,7 +5065,11 @@
         setAiHighlightedTodoIds([]);
       }
 
-      render();
+      if (normalizeText(reaction.expand, 40) === "parent" && (applyResult.parentId || selectedId)) {
+        showTodoInProject(selectedId || applyResult.parentId);
+      } else {
+        render();
+      }
 
       const scrollMode = normalizeText(reaction.scroll, 80);
       if (scrollMode && scrollMode !== "none") {
@@ -5107,6 +5077,8 @@
           ? normalizeTodoIdList(applyResult.createdIds)[0]
           : scrollMode === "first_applied"
             ? normalizeTodoIdList(applyResult.appliedIds)[0]
+            : scrollMode === "result_selected"
+              ? normalizeText(applyResult.selectedId, 120)
             : selectedId;
         scheduleTimeout(() => {
           findTodoRowNode(scrollTargetId || selectedId)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
@@ -5372,25 +5344,30 @@
         }
         return;
       }
-      if (item.type === "todo_draft") {
-        const draftItems = Array.isArray(item.payload?.items) ? item.payload.items : [];
-        const createdTodos = draftItems.map((draftItem) => createTodoFromAiItem(draftItem, {
-          originalText: item.payload?.originalText || item.editText || item.detail || item.title,
-          normalizedGoal: item.payload?.normalizedGoal || item.payload?.parentTitle || "",
-          editText: item.editText,
-        }));
-        const currentTodos = Array.isArray(getTodos()) ? [...getTodos()] : [];
-        setTodos([...createdTodos, ...currentTodos]);
-        saveTodos([...createdTodos, ...currentTodos]);
-        runPostApplyUiReaction(getPostApplyReaction(item), {
-          createdIds: createdTodos.map((todo) => todo.id).filter(Boolean),
-          appliedIds: createdTodos.map((todo) => todo.id).filter(Boolean),
-          targetIds: createdTodos.map((todo) => todo.id).filter(Boolean),
-          count: createdTodos.length,
-        });
-        setPendingStatus(item.id, "confirmed");
-        appendMessage({ role: "assistant", state: "已确认", paragraphs: [`已写入 ${createdTodos.length} 个本地待办。`] });
-        setStatus("待办草稿已写入。");
+      if (["todo_draft", "todo_hierarchy_draft", "todo_mutation_draft"].includes(item.type)) {
+        const applyResult = applyAiTodoMutationDraft(item.payload || {});
+        if (applyResult?.feasible && applyResult.applied > 0) {
+          runPostApplyUiReaction(getPostApplyReaction(item), applyResult);
+          setPendingStatus(item.id, "confirmed");
+          const operation = normalizeText(item.payload?.operation, 40);
+          const message = operation === "breakdown"
+            ? `已建立父子待办，并应用 ${applyResult.applied} 项变更。`
+            : operation === "copy"
+              ? "已复制待办；副本未锁定，也不含重复提醒规则。"
+              : operation === "edit"
+                ? "已通过原生待办链路应用修改。"
+                : operation === "move"
+                  ? "已通过原生结构操作移动待办。"
+                  : `已通过原生待办链路创建 ${applyResult.created || 1} 个待办。`;
+          appendMessage({ role: "assistant", state: "已确认", paragraphs: [message] });
+          setStatus("待办变更已应用。");
+        } else {
+          const invalidated = ["todo_target_missing", "todo_target_changed", "todo_anchor_missing", "todo_anchor_changed"].includes(applyResult?.code);
+          if (invalidated) setPendingStatus(item.id, "rejected");
+          appendMessage({ role: "assistant", state: "未执行", paragraphs: [applyResult?.message || "待办变更无法应用，数据保持不变。"] });
+          setStatus(applyResult?.message || "待办变更未应用。");
+        }
+        return;
       }
     }
 

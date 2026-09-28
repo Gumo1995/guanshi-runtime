@@ -16,6 +16,7 @@ const AI_COMPOSED_CONTEXT_SCHEMA = "guanshi-ai-composed-context-v1";
 const AI_WORKFLOW_EXECUTION_SCHEMA = "guanshi-ai-workflow-execution-v1";
 const TASK_PARSE_SCHEMA = "guanshi-task-parse-result-v1";
 const TASK_BREAKDOWN_SCHEMA = "guanshi-task-breakdown-result-v1";
+const TODO_MUTATION_SCHEMA = "guanshi-todo-mutation-result-v1";
 const TODO_COMPLETION_SCHEMA = "guanshi-todo-completion-result-v1";
 const PRINCIPLE_MEMORY_PROPOSAL_SCHEMA = "guanshi-principle-memory-proposal-v1";
 const PLAN_INTENT_SCHEMA = "guanshi-plan-intent-v1";
@@ -27,6 +28,9 @@ const ACTIONS = new Set([
   "explore_principles",
   "parse_task",
   "breakdown_task",
+  "copy_task",
+  "edit_task",
+  "move_task",
   "complete_task",
   "save_memory_proposal",
   "plan_today",
@@ -941,6 +945,206 @@ function resolveCompletionTarget(input = {}) {
   return Object.keys(selectedTarget).length ? selectedTarget : {};
 }
 
+function snapshotTodoForMutation(todo = {}) {
+  const source = normalizeObject(todo);
+  return {
+    id: normalizeText(source.id || source.todoId, 120),
+    updatedAt: normalizeText(source.updatedAt, 80),
+    title: normalizeText(source.title || "未命名待办", 160),
+    todoKind: normalizeText(source.todoKind || "task", 20),
+    containerTodoId: normalizeText(source.containerTodoId, 120) || null,
+    project: normalizeText(source.project, 120),
+    dueDate: normalizeDate(source.dueDate),
+    startTime: normalizeClock(source.startTime),
+    endTime: normalizeClock(source.endTime),
+    estimatedMinutes: normalizePositiveInteger(source.estimatedMinutes || source.remainingMinutes, 0, 0, 24 * 60),
+    scheduleState: normalizeText(source.scheduleState || (source.dueDate ? "planned" : "unplanned"), 20),
+    planLocked: source.planLocked === true,
+    repeat: normalizeText(source.repeat || "none", 80),
+    completed: source.completed === true,
+  };
+}
+
+function getSelectedTodoFromInput(input = {}) {
+  const selectedObjects = normalizeObject(input.selectedObjects);
+  const candidates = [
+    normalizeObject(input.todo),
+    normalizeObject(input.selectedTodo),
+    normalizeObject(Array.isArray(selectedObjects.todos) ? selectedObjects.todos[0] : null),
+  ];
+  return candidates.find((item) => Object.keys(item).length) || {};
+}
+
+function buildTodoPlacement(input = {}, item = {}) {
+  const requested = normalizeObject(input.placement || item.placement);
+  const selected = getSelectedTodoFromInput(input);
+  const selectedId = normalizeText(selected.id || selected.todoId, 120);
+  const mode = normalizeText(requested.mode, 40);
+  const supported = new Set(["today", "scheduled_time", "after_todo", "child_of"]);
+  if (supported.has(mode)) {
+    const anchorTodoId = normalizeText(requested.anchorTodoId || (mode === "after_todo" ? selectedId : ""), 120);
+    return {
+      mode,
+      anchorTodoId,
+      parentTodoId: normalizeText(requested.parentTodoId, 120),
+      anchorSnapshot: anchorTodoId && anchorTodoId === selectedId ? snapshotTodoForMutation(selected) : null,
+    };
+  }
+  const task = normalizeObject(input.task || input.todoDraft || input.parsedTask);
+  const explicitSchedule = Boolean(task.targetDate || task.dueDate || task.startTime || task.time || task.endTime);
+  if (explicitSchedule) return { mode: "scheduled_time", anchorTodoId: "", parentTodoId: "", anchorSnapshot: null };
+  if (selectedId) return { mode: "after_todo", anchorTodoId: selectedId, parentTodoId: "", anchorSnapshot: snapshotTodoForMutation(selected) };
+  return { mode: "today", anchorTodoId: "", parentTodoId: "", anchorSnapshot: null };
+}
+
+function normalizeTodoEditPatch(input = {}, target = {}) {
+  const source = normalizeObject(input.patch || input.updates || input.taskUpdates || input.todoPatch);
+  const patch = {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(source, key);
+  for (const key of ["title", "project", "category", "priority", "note", "reminder", "repeat", "scheduleState"]) {
+    if (has(key)) patch[key] = normalizeText(source[key], key === "note" ? 2000 : 160);
+  }
+  if (has("notes") && !has("note")) patch.note = normalizeText(source.notes, 2000);
+  if (has("tags")) patch.tags = normalizeStringList(source.tags, 16, 60);
+  for (const key of ["dueDate", "targetDate"]) {
+    if (!has(key)) continue;
+    const raw = normalizeText(source[key], 20);
+    if (!raw) {
+      patch[key] = "";
+      continue;
+    }
+    const normalized = normalizeDate(raw);
+    if (!normalized || normalized !== raw) {
+      throw createWorkflowError("AI_TODO_EDIT_DATE_INVALID", `Todo ${key} must be a valid YYYY-MM-DD date.`, 400, { field: key });
+    }
+    patch[key] = normalized;
+  }
+  for (const key of ["startTime", "endTime"]) {
+    if (!has(key)) continue;
+    const raw = normalizeText(source[key], 20);
+    if (!raw) {
+      patch[key] = "";
+      continue;
+    }
+    const normalized = normalizeClock(raw);
+    if (!normalized) {
+      throw createWorkflowError("AI_TODO_EDIT_TIME_INVALID", `Todo ${key} must be a valid clock time.`, 400, { field: key });
+    }
+    patch[key] = normalized;
+  }
+  if (has("estimatedMinutes")) {
+    const duration = Number(source.estimatedMinutes);
+    if (!Number.isInteger(duration) || duration < 5 || duration > 24 * 60) {
+      throw createWorkflowError("AI_TODO_EDIT_DURATION_INVALID", "Todo estimatedMinutes must be an integer from 5 to 1440.", 400);
+    }
+    patch.estimatedMinutes = duration;
+  }
+  if (has("planLocked")) {
+    if (typeof source.planLocked !== "boolean") {
+      throw createWorkflowError("AI_TODO_EDIT_LOCK_INVALID", "Todo planLocked must be a boolean.", 400);
+    }
+    patch.planLocked = source.planLocked;
+  }
+  if (has("scheduleState") && !["planned", "unplanned"].includes(patch.scheduleState)) {
+    throw createWorkflowError("AI_TODO_EDIT_SCHEDULE_STATE_INVALID", "Todo scheduleState must be planned or unplanned.", 400);
+  }
+  if (patch.scheduleState === "unplanned") {
+    patch.dueDate = "";
+    patch.startTime = "";
+    patch.endTime = "";
+    patch.planLocked = false;
+    patch.reminder = "none";
+  }
+  if (normalizeText(target.todoKind || "task", 20) === "group" &&
+      ["dueDate", "startTime", "endTime", "estimatedMinutes", "scheduleState", "planLocked", "reminder", "repeat"].some((key) => has(key))) {
+    throw createWorkflowError("AI_TODO_GROUP_FIELD_INVALID", "Parent todo containers cannot carry schedule, lock, reminder, or repeat fields.", 400);
+  }
+  if (target.containerTodoId && patch.repeat && patch.repeat !== "none") {
+    throw createWorkflowError("AI_TODO_CHILD_REPEAT_INVALID", "Child todos do not support repeat rules.", 400);
+  }
+  return patch;
+}
+
+function buildTodoMutationPreview(operation, target, mutation = {}) {
+  if (operation === "copy") {
+    return [
+      { label: "位置", text: "源待办之后" },
+      { label: "锁定", text: "不锁定" },
+      { label: "重复", text: "不重复" },
+    ];
+  }
+  if (operation === "edit") {
+    return Object.entries(mutation.patch || {}).slice(0, 12).map(([field, after]) => ({
+      field,
+      label: field,
+      before: target[field] ?? "",
+      after,
+      text: `${target[field] ?? "空"} → ${after === "" ? "空" : Array.isArray(after) ? after.join("、") : after}`,
+    }));
+  }
+  const structure = mutation.structure || {};
+  return [{
+    label: "结构",
+    text: structure.kind === "reparent"
+      ? structure.parentId ? `归入父待办 ${structure.parentTitle || structure.parentId}` : "移出父待办"
+      : structure.kind === "project"
+        ? `移到项目 ${structure.projectId || "未设置项目"}`
+        : `移动到 ${structure.anchorTitle || structure.anchorTodoId || "目标位置"} 之后`,
+  }, { label: "时间", text: "保持原日期和时间" }];
+}
+
+function buildTodoMutationResult(request, targetTodo) {
+  const target = normalizeObject(targetTodo);
+  const targetTodoId = normalizeText(target.id || target.todoId, 120);
+  if (!targetTodoId) throw createWorkflowError("AI_TODO_MUTATION_TARGET_REQUIRED", "Todo mutation requires one explicit target.", 400);
+  const operation = request.action === "copy_task" ? "copy" : request.action === "edit_task" ? "edit" : "move";
+  const result = {
+    schema: TODO_MUTATION_SCHEMA,
+    draftId: `todo_mutation_${request.requestId}`,
+    sourceRequestId: request.requestId,
+    operation,
+    targetTodoId,
+    targetTitle: normalizeText(target.title || "未命名待办", 160),
+    targetSnapshot: snapshotTodoForMutation(target),
+    requiresConfirmation: true,
+    assumptions: normalizeStringList(request.input.assumptions, 8, 220),
+    warnings: normalizeStringList(request.input.warnings, 8, 220),
+  };
+  if (operation === "copy") {
+    result.placement = { mode: "after_todo", anchorTodoId: targetTodoId };
+    result.summary = `复制“${result.targetTitle}”到其后；副本不锁定且不重复提醒。`;
+  } else if (operation === "edit") {
+    result.patch = normalizeTodoEditPatch(request.input, target);
+    if (!Object.keys(result.patch).length) throw createWorkflowError("AI_TODO_EDIT_EMPTY", "Todo edit contains no supported fields.", 400);
+    result.summary = `修改“${result.targetTitle}”的 ${Object.keys(result.patch).join("、")}。`;
+  } else {
+    const supplied = normalizeObject(request.input.structure || request.input.move);
+    if (supplied.parentResolution === "unresolved" || supplied.anchorResolution === "unresolved") {
+      throw createWorkflowError("AI_TODO_MOVE_TARGET_UNRESOLVED", "Todo move parent or anchor could not be resolved uniquely.", 400);
+    }
+    let kind = normalizeText(supplied.kind || request.input.structureKind, 40);
+    if (kind === "detach") kind = "reparent";
+    if (!kind) kind = Object.prototype.hasOwnProperty.call(request.input, "parentTodoId") || Object.prototype.hasOwnProperty.call(supplied, "parentId")
+      ? "reparent"
+      : Object.prototype.hasOwnProperty.call(request.input, "project") || Object.prototype.hasOwnProperty.call(supplied, "projectId")
+        ? "project"
+        : "reorder";
+    if (!["reparent", "project", "reorder"].includes(kind)) throw createWorkflowError("AI_TODO_MOVE_KIND_INVALID", "Todo move kind is invalid.", 400);
+    result.structure = {
+      kind,
+      parentId: normalizeText(supplied.parentId ?? request.input.parentTodoId, 120),
+      parentTitle: normalizeText(supplied.parentTitle ?? request.input.parentTitle, 160),
+      projectId: normalizeText(supplied.projectId ?? supplied.project ?? request.input.project, 160),
+      anchorTodoId: normalizeText(supplied.anchorTodoId ?? request.input.anchorTodoId, 120),
+      anchorTitle: normalizeText(supplied.anchorTitle ?? request.input.anchorTitle, 160),
+      order: Number.isInteger(Number(supplied.order)) ? Number(supplied.order) : undefined,
+    };
+    result.summary = `调整“${result.targetTitle}”的项目树位置，日期和时间保持不变。`;
+  }
+  result.preview = buildTodoMutationPreview(operation, target, result);
+  return result;
+}
+
 function normalizeOptionalScore(value) {
   if (value === null || value === undefined || value === "") return null;
   const normalized = String(value).trim();
@@ -1208,42 +1412,45 @@ function buildTaskParseResult(request, context, currentDate) {
       sourceText: taskInput.sourceText || text,
       understanding: normalizedGoal || `创建待办「${title}」。`,
     });
+  const item = {
+    draftTodoId: `todo_draft_${request.requestId}`,
+    title,
+    project: normalizeText(taskInput.project, 80) || inferProject(parseText),
+    category: normalizeText(taskInput.category, 80) || (taskType === "communication" || taskType === "deep_work" || taskType === "admin" ? "工作" : ""),
+    tags: normalizeStringList(taskInput.tags, 8, 40).length
+      ? normalizeStringList(taskInput.tags, 8, 40)
+      : taskType === "admin" ? ["行政"] : taskType === "deep_work" ? ["深度工作"] : [],
+    dueDate,
+    startTime,
+    endTime,
+    estimatedMinutes,
+    priority: normalizeText(taskInput.priority, 40) || inferPriority(text),
+    importance: Number.isFinite(Number(taskInput.importance)) ? Number(taskInput.importance) : taskType === "deep_work" ? 4 : 3,
+    urgency: Number.isFinite(Number(taskInput.urgency)) ? Number(taskInput.urgency) : /今天|明天|周五前|截止/.test(text) ? 4 : 3,
+    taskType,
+    energyLevel: normalizeText(taskInput.energyLevel, 40) || (taskType === "deep_work" ? "high" : "medium"),
+    splittable: typeof taskInput.splittable === "boolean" ? taskInput.splittable : estimatedMinutes >= 60,
+    minimumBlockMinutes: normalizePositiveInteger(taskInput.minimumBlockMinutes, estimatedMinutes >= 60 ? 30 : Math.min(estimatedMinutes, 30), 5, 24 * 60),
+    notes: taskNotes,
+    confidence: Number.isFinite(Number(taskInput.confidence))
+      ? Math.max(0, Math.min(1, Number(taskInput.confidence)))
+      : missingFields.length ? 0.56 : 0.82,
+    missingFields: Array.from(new Set(missingFields)),
+  };
   return {
     schema: TASK_PARSE_SCHEMA,
     sourceRequestId: request.requestId,
-    items: [
-      {
-        draftTodoId: `todo_draft_${request.requestId}`,
-        title,
-        project: normalizeText(taskInput.project, 80) || inferProject(parseText),
-        category: normalizeText(taskInput.category, 80) || (taskType === "communication" || taskType === "deep_work" || taskType === "admin" ? "工作" : ""),
-        tags: normalizeStringList(taskInput.tags, 8, 40).length
-          ? normalizeStringList(taskInput.tags, 8, 40)
-          : taskType === "admin" ? ["行政"] : taskType === "deep_work" ? ["深度工作"] : [],
-        dueDate,
-        startTime,
-        endTime,
-        estimatedMinutes,
-        priority: normalizeText(taskInput.priority, 40) || inferPriority(text),
-        importance: Number.isFinite(Number(taskInput.importance)) ? Number(taskInput.importance) : taskType === "deep_work" ? 4 : 3,
-        urgency: Number.isFinite(Number(taskInput.urgency)) ? Number(taskInput.urgency) : /今天|明天|周五前|截止/.test(text) ? 4 : 3,
-        taskType,
-        energyLevel: normalizeText(taskInput.energyLevel, 40) || (taskType === "deep_work" ? "high" : "medium"),
-        splittable: typeof taskInput.splittable === "boolean" ? taskInput.splittable : estimatedMinutes >= 60,
-        minimumBlockMinutes: normalizePositiveInteger(taskInput.minimumBlockMinutes, estimatedMinutes >= 60 ? 30 : Math.min(estimatedMinutes, 30), 5, 24 * 60),
-        notes: taskNotes,
-        confidence: Number.isFinite(Number(taskInput.confidence))
-          ? Math.max(0, Math.min(1, Number(taskInput.confidence)))
-          : missingFields.length ? 0.56 : 0.82,
-        missingFields: Array.from(new Set(missingFields)),
-      },
-    ],
+    items: [item],
+    placement: buildTodoPlacement(request.input, item),
     warnings,
   };
 }
 
 function buildTaskBreakdownResult(request) {
   const parent = resolveBreakdownParent(request.input);
+  const breakdownWarnings = parent.planLocked === true
+    ? [{ code: "locked_parent_schedule_preserved", message: "源待办已锁定；确认后保留原时间，其余新增子待办先设为未排期。" }]
+    : [];
   const parentTitle = normalizeText(parent.title || request.input.parentTitle || request.input.text || "待拆解任务", 160);
   const semanticAction = normalizeObject(request.input.semanticAction);
   const normalizedGoal = normalizeText(request.input.normalizedGoal || semanticAction.normalizedGoal, 700);
@@ -1258,12 +1465,13 @@ function buildTaskBreakdownResult(request) {
       schema: TASK_BREAKDOWN_SCHEMA,
       sourceTodoId: normalizeText(parent.id || "", 120),
       parentTitle,
+      targetSnapshot: snapshotTodoForMutation(parent),
       children: plannerChildren,
       rollup: {
         totalEstimatedMinutes: plannerChildren.reduce((sum, child) => sum + child.estimatedMinutes, 0),
         recommendedMinimumBlockMinutes: Math.min(45, Math.max(15, Math.round(plannerChildren.reduce((sum, child) => sum + child.estimatedMinutes, 0) / plannerChildren.length / 5) * 5)),
       },
-      warnings: [],
+      warnings: breakdownWarnings,
     };
   }
   const childCount = /第一步|先/.test(normalizeText(request.input.text)) ? 1 : 3;
@@ -1298,12 +1506,13 @@ function buildTaskBreakdownResult(request) {
     schema: TASK_BREAKDOWN_SCHEMA,
     sourceTodoId: normalizeText(parent.id || "", 120),
     parentTitle,
+    targetSnapshot: snapshotTodoForMutation(parent),
     children,
     rollup: {
       totalEstimatedMinutes: children.reduce((sum, child) => sum + child.estimatedMinutes, 0),
       recommendedMinimumBlockMinutes: Math.min(45, Math.max(15, base)),
     },
-    warnings: [],
+    warnings: breakdownWarnings,
   };
 }
 
@@ -1841,6 +2050,46 @@ const REGISTRY_STEP_HANDLERS = {
         writeLocalData: false,
       },
       summary: `${children.length} 个待确认子待办草稿`,
+    };
+  },
+
+  "time.step.todo.resolve_mutation_target"(state) {
+    const target = resolveCompletionTarget(state.request.input);
+    const targetTodoId = normalizeText(target.id || target.todoId, 120);
+    if (!targetTodoId) {
+      throw createWorkflowError("AI_TODO_MUTATION_TARGET_REQUIRED", "Todo mutation requires one explicit todo target.", 400);
+    }
+    state.mutationTarget = target;
+    return {
+      output: {
+        schema: "guanshi-todo-mutation-target-step-v1",
+        todoId: targetTodoId,
+        title: normalizeText(target.title || "未命名待办", 160),
+        snapshot: snapshotTodoForMutation(target),
+      },
+      summary: normalizeText(target.title || targetTodoId, 160),
+    };
+  },
+
+  "time.step.todo.normalize_mutation"(state) {
+    const result = buildTodoMutationResult(state.request, state.mutationTarget || resolveCompletionTarget(state.request.input));
+    state.result = result;
+    return {
+      output: result,
+      summary: result.summary,
+    };
+  },
+
+  "time.step.draft.create_todo_mutation"(state) {
+    return {
+      output: {
+        schema: "guanshi-pending-todo-mutation-step-v1",
+        draftId: state.result?.draftId || "",
+        operation: state.result?.operation || "",
+        requiresConfirmation: true,
+        writeLocalData: false,
+      },
+      summary: "1 个待确认待办变更草稿",
     };
   },
 

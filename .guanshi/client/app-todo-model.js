@@ -184,6 +184,7 @@
     }
 
     function normalizeTodoSortOrder(value) {
+      if (value === null || value === undefined || String(value).trim() === "") return null;
       const parsed = Number(value);
       if (!Number.isFinite(parsed)) return null;
       return Math.max(0, Math.round(parsed));
@@ -217,6 +218,8 @@
     function normalizeTodo(raw) {
       const nowIso = new Date().toISOString();
       const todo = raw || {};
+      const isGroup = todo.todoKind === "group";
+      const unplanned = !isGroup && todo.scheduleState === "unplanned";
       const id = String(todo.id || `todo_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
       const calendarSynced = Boolean(todo.calendarSynced);
       const syncState = normalizeTodoSyncState(todo.syncState, calendarSynced);
@@ -262,16 +265,20 @@
         : normalizePlanningMinutes(todo.remainingMinutes, estimatedMinutes);
       return {
         id,
+        todoKind: isGroup ? "group" : "task",
+        containerTodoId: isGroup ? null : (String(todo.containerTodoId || "").trim() || null),
+        scheduleState: isGroup ? null : (unplanned ? "unplanned" : "planned"),
+        targetDate: isGroup && isValidDateInput(todo.targetDate) ? todo.targetDate : "",
         title: String(todo.title || "未命名待办").trim(),
-        dueDate: String(todo.dueDate || "").trim(),
+        dueDate: isGroup || unplanned ? "" : String(todo.dueDate || "").trim(),
         project: normalizedProject,
         category: normalizeTodoCategoryValue(todo.category, normalizedProject),
         tags: normalizeTodoTags(todo.tags),
         note: normalizeTodoNoteValue(todo.note),
         qualityScore: parseOptionalScore(todo.qualityScore),
         happinessScore: parseOptionalScore(todo.happinessScore),
-        startTime: String(todo.startTime || "").trim(),
-        endTime: String(todo.endTime || "").trim(),
+        startTime: isGroup || unplanned ? "" : String(todo.startTime || "").trim(),
+        endTime: isGroup || unplanned ? "" : String(todo.endTime || "").trim(),
         estimatedMinutes,
         priority: normalizeTodoPriority(todo.priority),
         importance: normalizeOptionalTenScale(todo.importance),
@@ -308,11 +315,53 @@
         tagOrder: normalizeTodoSortOrder(todo.tagOrder),
         createdAt: todo.createdAt ? String(todo.createdAt) : nowIso,
         updatedAt,
+        ...(isGroup ? {
+          completed: false, completedAt: null, completionEntryId: "", planLocked: false,
+          externalCalendarId: "", externalReminderId: "", calendarSynced: true, syncState: "synced",
+          repeat: "none", reminder: "", reminderSynced: true, reminderSyncState: "synced",
+          qualityScore: null, happinessScore: null, dependencies: [], estimatedMinutes: 0, remainingMinutes: 0,
+        } : unplanned ? { planLocked: false, repeat: "none", reminder: "" } : {}),
       };
     }
 
+    function summarizeTodoGroup(group, items, entries = []) {
+      const children = items.filter((item) => String(item.containerTodoId || "") === String(group.id));
+      const completedCount = children.filter((item) => item.completed).length;
+      const childIds = new Set(children.map((item) => String(item.id)));
+      const remainingMinutes = children.filter((item) => !item.completed).reduce((sum, item) =>
+        sum + Math.max(0, Number(item.remainingMinutes ?? item.estimatedMinutes) || 0), 0);
+      const actualMinutes = entries.filter((entry) => !entry.todoPending && childIds.has(String(entry.linkedTodoId || "")))
+        .reduce((sum, entry) => sum + Math.max(0, Number(entry.duration) || 0) * 60, 0);
+      const dates = children.map((item) => item.dueDate).filter(isValidDateInput).sort();
+      return { children, completedCount, total: children.length, remainingMinutes, actualMinutes,
+        completed: children.length > 0 && completedCount === children.length,
+        unplannedCount: children.filter((item) => item.scheduleState === "unplanned").length,
+        startDate: dates[0] || "", endDate: dates.at(-1) || "" };
+    }
+
+    function validateTodoStorageSnapshot(storage) {
+      const raw = storage?.time_quality_todos_v1;
+      if (raw === undefined) return;
+      const items = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!Array.isArray(items)) throw new Error("待办备份格式无效，未覆盖原数据。");
+      validateTodoHierarchy(items);
+    }
+
+    function validateTodoHierarchy(items) {
+      const byId = new Map(items.map((item) => [String(item.id), item]));
+      for (const item of items) {
+        if (!item.containerTodoId) continue;
+        const parent = byId.get(String(item.containerTodoId));
+        if (item.todoKind === "group" || !parent || parent.todoKind !== "group" ||
+            String(item.id) === String(parent.id) || item.project !== parent.project ||
+            isRecurringTodoRepeatMode(item.repeat)) {
+          throw new Error("待办父子关系无效：请检查父项、项目归属或重复规则。");
+        }
+      }
+    }
+
     function getTodoPlannedEndDate(todo) {
-      if (!todo || todo.completed) return null;
+      if (!todo || todo.todoKind === "group" || todo.scheduleState === "unplanned" || todo.completed) return null;
       const dueDate = String(todo.dueDate || "").trim();
       if (!isValidDateInput(dueDate)) return null;
 
@@ -334,7 +383,7 @@
     }
 
     function isTodoOverdue(todo, nowDate = new Date()) {
-      if (!todo || todo.completed) return false;
+      if (!todo || todo.todoKind === "group" || todo.scheduleState === "unplanned" || todo.completed) return false;
       const current = nowDate instanceof Date && !Number.isNaN(nowDate.getTime()) ? nowDate : new Date();
       const dueDate = String(todo.dueDate || "").trim();
       if (!isValidDateInput(dueDate)) return false;
@@ -431,6 +480,9 @@
     }
 
     return {
+      summarizeTodoGroup,
+      validateTodoHierarchy,
+      validateTodoStorageSnapshot,
       createDefaultTodos,
       createTodoDraft,
       normalizeTodoSyncState,

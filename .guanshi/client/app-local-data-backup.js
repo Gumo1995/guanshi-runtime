@@ -152,6 +152,7 @@
 
     function applyStorageSnapshot(storageSnapshot, { replaceExisting = false } = {}) {
       const nextSnapshot = normalizeImportedStorage(storageSnapshot);
+      deps.validateTodoStorageSnapshot?.(nextSnapshot);
       const keys = Object.keys(nextSnapshot);
       if (!keys.length || !localStorageRef) return { restored: 0 };
       if (replaceExisting) {

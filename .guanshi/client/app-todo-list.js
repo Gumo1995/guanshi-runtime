@@ -97,6 +97,10 @@
     const moveTodoToDateOrder = requireFunction(deps, "moveTodoToDateOrder");
     const previewTodoMove = typeof deps.previewTodoMove === "function" ? deps.previewTodoMove : null;
     const applyTodoScheduleChanges = typeof deps.applyTodoScheduleChanges === "function" ? deps.applyTodoScheduleChanges : null;
+    const moveTodoStructure =
+      typeof deps.moveTodoStructure === "function" ? deps.moveTodoStructure : null;
+    const getProjectLibrary =
+      typeof deps.getProjectLibrary === "function" ? deps.getProjectLibrary : () => [];
     const moveTodosToDateOrder =
       typeof deps.moveTodosToDateOrder === "function"
         ? deps.moveTodosToDateOrder
@@ -112,7 +116,26 @@
     const toggleTodoCompleted = requireFunction(deps, "toggleTodoCompleted");
     const isTodoOverdue = requireFunction(deps, "isTodoOverdue");
 
+    const summarizeTodoGroup = deps.summarizeTodoGroup;
     const documentRef = globalScope.document || null;
+    const collapsedTodoGroups = new Set();
+    try { JSON.parse(globalScope.localStorage?.getItem("time_quality_todo_groups_collapsed_v1") || "[]").forEach((id) => collapsedTodoGroups.add(id)); } catch { /* Empty UI preference fallback. */ }
+    function showTodoInProject(id) {
+      if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true }) === false) return;
+      const todo = getTodos().find((t) => t.id === id);
+      if (!todo) return;
+      setCurrentTodoDimension("project");
+      deps.clearTodoSearch?.();
+      const parent = todo.todoKind === "group" ? todo : getTodos().find((t) => t.id === todo.containerTodoId);
+      if (parent && summarizeTodoGroup?.(parent, getTodos()).completed) setShowTodoHistoryInMainList(true);
+      setShowRecurringReminderOnlyInMainList(false);
+      syncFilterBarButtons(); setSelectedTodoId(id);
+      collapsedTodoGroups.delete(todo.containerTodoId || todo.id);
+      for (const path of [...getTodoProjectTreeCollapsedPaths()]) {
+        if (todo.project === path || String(todo.project).startsWith(path + " / ")) toggleCollapsedTodoProjectPath(path);
+      }
+      renderTodosAndFocusRow(id, { scroll: true });
+    }
 
     let eventsBound = false;
     let todoPendingScrollToTodayGroup = false;
@@ -127,6 +150,376 @@
     let todoSchedulePreviewNode = null;
     let todoScheduleNoticeNode = null;
     let todoScheduleNoticeTimer = null;
+    let todoStructureHintNode = null;
+    let todoStructureConfirmTimer = null;
+    let todoStructureConfirmKey = "";
+    let todoStructureConfirmedKey = "";
+    let todoStructureConfirmStartedAt = 0;
+    let todoRowMenuNode = null;
+    let todoRowMenuAnchorNode = null;
+    let todoRowSubmenuNode = null;
+    let todoRowSubmenuTriggerNode = null;
+    let todoRowSubmenuCloseTimer = null;
+
+    function clearTodoStructureHint() {
+      if (todoStructureConfirmTimer) globalScope.clearTimeout(todoStructureConfirmTimer);
+      todoStructureConfirmTimer = null;
+      todoStructureConfirmKey = "";
+      todoStructureConfirmedKey = "";
+      todoStructureConfirmStartedAt = 0;
+      todoStructureHintNode?.remove();
+      todoStructureHintNode = null;
+    }
+
+    function showTodoStructureHint(text) {
+      if (!documentRef) return;
+      if (!todoStructureHintNode) {
+        todoStructureHintNode = documentRef.createElement("div");
+        todoStructureHintNode.className = "todo-structure-hint";
+        todoStructureHintNode.setAttribute("role", "status");
+        documentRef.body.appendChild(todoStructureHintNode);
+      }
+      todoStructureHintNode.textContent = text;
+    }
+
+    function scheduleStructureConfirm(payload, key, text) {
+      if (todoStructureConfirmedKey === key) {
+        payload.structureConfirmed = true;
+        return true;
+      }
+      if (todoStructureConfirmKey !== key) {
+        if (todoStructureConfirmTimer) globalScope.clearTimeout(todoStructureConfirmTimer);
+        todoStructureConfirmTimer = null;
+        todoStructureConfirmKey = key;
+        todoStructureConfirmedKey = "";
+        todoStructureConfirmStartedAt = Date.now();
+        showTodoStructureHint(text);
+      } else if (!todoStructureConfirmTimer) {
+        todoStructureConfirmStartedAt = Date.now();
+      }
+      showTodoStructureHint(text);
+      const delay = Math.max(0, 400 - (Date.now() - todoStructureConfirmStartedAt));
+      if (!todoStructureConfirmTimer) {
+        todoStructureConfirmTimer = globalScope.setTimeout(() => {
+          todoStructureConfirmTimer = null;
+          todoStructureConfirmedKey = todoStructureConfirmKey;
+          const currentPayload = todoListDragState?.lastDropPayload;
+          if (currentPayload && currentPayload.structureOperation) currentPayload.structureConfirmed = true;
+        }, delay);
+      }
+      return false;
+    }
+
+    function clearTodoRowSubmenuCloseTimer() {
+      if (todoRowSubmenuCloseTimer) globalScope.clearTimeout(todoRowSubmenuCloseTimer);
+      todoRowSubmenuCloseTimer = null;
+    }
+
+    function closeTodoRowSubmenu() {
+      const submenu = todoRowSubmenuNode;
+      const trigger = todoRowSubmenuTriggerNode;
+      todoRowSubmenuNode = null;
+      todoRowSubmenuTriggerNode = null;
+      clearTodoRowSubmenuCloseTimer();
+      trigger?.setAttribute?.("aria-expanded", "false");
+      submenu?.remove();
+    }
+
+    function scheduleTodoRowSubmenuClose() {
+      clearTodoRowSubmenuCloseTimer();
+      todoRowSubmenuCloseTimer = globalScope.setTimeout(() => closeTodoRowSubmenu(), 180);
+    }
+
+    function closeTodoRowMenu() {
+      const menu = todoRowMenuNode;
+      const anchor = todoRowMenuAnchorNode;
+      todoRowMenuNode = null;
+      todoRowMenuAnchorNode = null;
+      closeTodoRowSubmenu();
+      menu?.remove();
+      anchor?.focus?.({ preventScroll: true });
+    }
+
+    function runTodoRowStructure(todoId, operation) {
+      closeTodoRowMenu();
+      if (!moveTodoStructure) { showScheduleNotice("结构操作不可用。", true); return; }
+      const result = moveTodoStructure({ todoId, ...operation });
+      if (result) { showScheduleNotice("结构已更新，可按 ⌘Z 撤销。"); renderTodos(); }
+      else renderTodos();
+    }
+
+    function showTodoRowMenu(todoId, anchor, point = null) {
+      if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true }) === false) return;
+      closeTodoRowMenu();
+      // A native context-menu gesture can arrive while Chrome still considers
+      // the row to be dragging. Remove that visual state before showing the
+      // menu so the drag ghost never covers the menu.
+      if (todoListDragState || todoDragGhost) handleGroupDragEnd();
+      const todo = getTodos().find((item) => String(item.id) === String(todoId || ""));
+      if (!todo || !documentRef) return;
+      setSelectedTodoId(todoId);
+      renderTodoDetail();
+      const parentId = todo.containerTodoId || null;
+      const siblings = getTodos()
+        .filter((item) => (item.containerTodoId || null) === parentId && String(item.project || "") === String(todo.project || ""))
+        .sort((a, b) => (Number(a.projectOrder) || 0) - (Number(b.projectOrder) || 0));
+      const index = siblings.findIndex((item) => String(item.id) === String(todoId));
+      const isGroup = todo.todoKind === "group";
+      const canCopy = !todo.completed || isGroup;
+      const recurring = ["daily", "weekly", "monthly"].includes(todo.repeat);
+      const canHaveChild = isGroup || (!parentId && !todo.completed && !recurring);
+      const menu = documentRef.createElement("div");
+      menu.className = "todo-row-menu";
+      menu.setAttribute("role", "menu");
+      const actions = [
+        ...(canCopy ? [{ label: "复制", op: { kind: "copy", todoId } }] : []),
+        ...(getCurrentTodoDimension() === "project" ? [
+          { label: "上移", op: { kind: "reorder", order: index - 1 }, disabled: index <= 0 },
+          { label: "下移", op: { kind: "reorder", order: index + 1 }, disabled: index < 0 || index >= siblings.length - 1 },
+        ] : []),
+      ];
+      if (canHaveChild) actions.push({ label: "添加子待办", op: { kind: "add-child", todoId } });
+      if (!isGroup && !recurring) {
+        if (parentId) actions.push({ label: "更换父待办", submenu: "parent" });
+        actions.push({ label: parentId ? "移出父待办" : "加入父项", op: parentId ? { kind: "reparent", parentId: "" } : null, submenu: parentId ? "" : "parent" });
+      }
+      actions.push({ label: "移动到项目", submenu: "project" });
+      if (isGroup) {
+        actions.push({ label: "解散父待办", op: { kind: "dissolve", todoId }, danger: true });
+        actions.push({ label: "删除父项及未完成子项", op: { kind: "delete-children", todoId }, danger: true });
+      } else {
+        actions.push({ label: "删除待办", op: { kind: "delete", todoId }, danger: true });
+      }
+      menu.innerHTML = `<p class="todo-row-menu-title">${escapeHtml(todo.title || "待办")}</p>${actions.map((action, itemIndex) => {
+        const className = [action.danger ? "is-danger" : "", action.submenu ? "todo-row-menu-submenu-trigger" : ""].filter(Boolean).join(" ");
+        const submenuAttrs = action.submenu ? ` data-row-submenu="${action.submenu}" aria-haspopup="menu" aria-expanded="false"` : "";
+        return `<button type="button" role="menuitem" data-row-menu-index="${itemIndex}"${submenuAttrs}${action.disabled ? " disabled" : ""}${className ? ` class="${className}"` : ""}><span>${escapeHtml(action.label)}</span>${action.submenu ? '<span class="todo-row-menu-arrow" aria-hidden="true">›</span>' : ""}</button>`;
+      }).join("")}`;
+      const operations = actions;
+
+      function showTodoRowSubmenu(trigger, mode, { focusFirst = false } = {}) {
+        if (!(trigger instanceof HTMLElement) || !["parent", "project"].includes(mode)) return;
+        if (todoRowSubmenuNode && todoRowSubmenuTriggerNode === trigger) {
+          clearTodoRowSubmenuCloseTimer();
+          if (focusFirst) todoRowSubmenuNode.querySelector("button:not([disabled])")?.focus?.();
+          return;
+        }
+        closeTodoRowSubmenu();
+        const submenu = documentRef.createElement("div");
+        submenu.className = "todo-row-submenu";
+        submenu.setAttribute("role", "menu");
+        submenu.setAttribute("aria-label", mode === "parent" ? "选择父待办" : "选择项目");
+        if (mode === "parent") {
+          const parents = getTodos()
+            .filter((item) => item.todoKind === "group" && String(item.id) !== String(todo.id) && String(item.id) !== String(parentId || ""))
+            .sort((a, b) => `${a.project || ""}\n${a.title || ""}`.localeCompare(`${b.project || ""}\n${b.title || ""}`, "zh-CN"));
+          submenu.innerHTML = `<p class="todo-row-submenu-title">选择父待办</p>${parents.length
+            ? parents.map((item) => `<button type="button" role="menuitem" data-submenu-parent-id="${escapeHtml(String(item.id))}"><strong>${escapeHtml(item.title || "未命名父待办")}</strong><small>${escapeHtml(item.project || "未设置项目")}</small></button>`).join("")
+            : '<p class="todo-row-submenu-empty">没有其他父待办</p>'}`;
+        } else {
+          const projectNames = [...new Set([
+            ...(getProjectLibrary() || []).map((item) => normalizeProjectName(item?.name || item || "")),
+            ...getTodos().map((item) => normalizeProjectName(item.project || "")),
+            "",
+          ])].sort((a, b) => a.localeCompare(b, "zh-CN"));
+          submenu.innerHTML = `<p class="todo-row-submenu-title">选择项目</p>${projectNames.map((name) => `<button type="button" role="menuitem" data-submenu-project="${escapeHtml(name)}"><strong>${escapeHtml(name || "未设置项目")}</strong>${name === normalizeProjectName(todo.project || "") ? '<small>当前项目</small>' : ""}</button>`).join("")}`;
+        }
+        submenu.style.visibility = "hidden";
+        documentRef.body.appendChild(submenu);
+        const triggerRect = trigger.getBoundingClientRect();
+        const submenuRect = submenu.getBoundingClientRect();
+        const viewportWidth = Math.max(0, Number(globalScope.innerWidth) || documentRef.documentElement?.clientWidth || 1024);
+        const viewportHeight = Math.max(0, Number(globalScope.innerHeight) || documentRef.documentElement?.clientHeight || 768);
+        const rightLeft = triggerRect.right - 2;
+        const leftLeft = triggerRect.left - submenuRect.width + 2;
+        const nextLeft = rightLeft + submenuRect.width <= viewportWidth - 8 ? rightLeft : leftLeft;
+        submenu.style.left = `${Math.max(8, Math.min(nextLeft, viewportWidth - submenuRect.width - 8))}px`;
+        submenu.style.top = `${Math.max(8, Math.min(triggerRect.top - 6, viewportHeight - submenuRect.height - 8))}px`;
+        submenu.style.visibility = "visible";
+        todoRowSubmenuNode = submenu;
+        todoRowSubmenuTriggerNode = trigger;
+        trigger.setAttribute("aria-expanded", "true");
+        submenu.addEventListener("pointerenter", clearTodoRowSubmenuCloseTimer);
+        submenu.addEventListener("pointerleave", scheduleTodoRowSubmenuClose);
+        submenu.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const option = event.target.closest?.("button[data-submenu-parent-id], button[data-submenu-project]");
+          if (!option) return;
+          if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true }) === false) return;
+          if (option.hasAttribute("data-submenu-parent-id")) {
+            runTodoRowStructure(todoId, { kind: "reparent", parentId: option.dataset.submenuParentId });
+            return;
+          }
+          const projectId = option.dataset.submenuProject || "";
+          runTodoRowStructure(todoId, parentId
+            ? { kind: "reparent", parentId: "", projectId }
+            : { kind: "project", projectId });
+        });
+        submenu.addEventListener("keydown", (event) => {
+          const buttons = Array.from(submenu.querySelectorAll("button:not([disabled])"));
+          const currentIndex = buttons.indexOf(documentRef.activeElement);
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            const previousTrigger = todoRowSubmenuTriggerNode;
+            closeTodoRowSubmenu();
+            previousTrigger?.focus?.();
+            return;
+          }
+          if (event.key === "Escape") { event.preventDefault(); closeTodoRowMenu(); return; }
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          const next = event.key === "ArrowDown"
+            ? buttons[(currentIndex + 1 + buttons.length) % buttons.length]
+            : buttons[(currentIndex - 1 + buttons.length) % buttons.length];
+          next?.focus?.();
+        });
+        if (focusFirst) submenu.querySelector("button:not([disabled])")?.focus?.();
+      }
+
+      menu.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const button = event.target.closest?.("button[data-row-menu-index]");
+        if (!button) return;
+        const action = operations[Number(button.dataset.rowMenuIndex || "-1")];
+        if (!action || action.disabled) return;
+        if (action.submenu) { showTodoRowSubmenu(button, action.submenu, { focusFirst: false }); return; }
+        if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true }) === false) return;
+        if (action.op.kind === "copy") { closeTodoRowMenu(); deps.copyTodoContent?.(todoId); return; }
+        if (action.op.kind === "add-child") { closeTodoRowMenu(); setSelectedTodoId(todoId); deps.addTodoChild?.(); return; }
+        if (action.op.kind === "delete") { closeTodoRowMenu(); setSelectedTodoId(todoId); deps.handleTodoDelete?.(); return; }
+        if (action.op.kind === "delete-children") { closeTodoRowMenu(); setSelectedTodoId(todoId); deps.deleteTodoGroupWithChildren?.(); return; }
+        if (action.op.kind === "dissolve") { closeTodoRowMenu(); setSelectedTodoId(todoId); const ok = deps.dissolveTodoGroup?.(todoId); if (ok) { showScheduleNotice("父待办已解散，可按 ⌘Z 撤销。"); renderTodos(); } else renderTodos(); return; }
+        runTodoRowStructure(todoId, action.op);
+      });
+      menu.addEventListener("pointerover", (event) => {
+        const trigger = event.target.closest?.("button[data-row-submenu]");
+        if (trigger) showTodoRowSubmenu(trigger, trigger.dataset.rowSubmenu);
+        else if (event.target.closest?.("button[data-row-menu-index]")) scheduleTodoRowSubmenuClose();
+      });
+      menu.addEventListener("pointerleave", scheduleTodoRowSubmenuClose);
+      menu.addEventListener("pointerenter", clearTodoRowSubmenuCloseTimer);
+      menu.addEventListener("keydown", (event) => {
+        const buttons = Array.from(menu.querySelectorAll("button[data-row-menu-index]:not([disabled])"));
+        const currentIndex = buttons.indexOf(documentRef.activeElement);
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          closeTodoRowMenu();
+          return;
+        }
+        if (event.key === "ArrowRight") {
+          const trigger = documentRef.activeElement?.closest?.("button[data-row-submenu]");
+          if (trigger) { event.preventDefault(); showTodoRowSubmenu(trigger, trigger.dataset.rowSubmenu, { focusFirst: true }); }
+          return;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        event.preventDefault();
+        const next = event.key === "ArrowDown"
+          ? buttons[(currentIndex + 1 + buttons.length) % buttons.length]
+          : buttons[(currentIndex - 1 + buttons.length) % buttons.length];
+        next?.focus?.();
+      });
+      menu.style.visibility = "hidden";
+      documentRef.body.appendChild(menu);
+      const anchorRect = anchor?.getBoundingClientRect?.() || { left: 0, bottom: 0, top: 0 };
+      const rect = menu.getBoundingClientRect();
+      const viewportWidth = Math.max(0, Number(globalScope.innerWidth) || documentRef.documentElement?.clientWidth || 1024);
+      const viewportHeight = Math.max(0, Number(globalScope.innerHeight) || documentRef.documentElement?.clientHeight || 768);
+      const pointerX = Number(point?.clientX);
+      const pointerY = Number(point?.clientY);
+      const hasPointer = Number.isFinite(pointerX) && Number.isFinite(pointerY);
+      const preferredLeft = hasPointer ? pointerX : anchorRect.left;
+      const preferredTop = hasPointer ? pointerY : anchorRect.bottom + 6;
+      const availableBelow = viewportHeight - preferredTop - 8;
+      const availableAbove = (hasPointer ? pointerY : anchorRect.top) - 8;
+      const nextTop = rect.height > availableBelow && availableAbove > availableBelow
+        ? (hasPointer ? pointerY : anchorRect.top) - rect.height
+        : preferredTop;
+      menu.style.left = `${Math.max(8, Math.min(preferredLeft, viewportWidth - rect.width - 8))}px`;
+      menu.style.top = `${Math.max(8, Math.min(nextTop, viewportHeight - rect.height - 8))}px`;
+      menu.style.visibility = "visible";
+      todoRowMenuNode = menu;
+      todoRowMenuAnchorNode = anchor instanceof HTMLElement ? anchor : null;
+      menu.querySelector("button:not([disabled])")?.focus?.();
+    }
+
+    function structureDropKey(payload, state) {
+      return JSON.stringify([state.todoId, payload.groupKey, payload.intent,
+        payload.rowTarget?.rowNode?.dataset?.id || "", payload.rowTarget?.insertBefore,
+        payload.rowTarget?.outdent || false, Boolean(payload.groupTarget?.isProjectHeaderTarget)]);
+    }
+
+    function previewStructureOperation(payload, state) {
+      if (payload.mode !== "project") return true;
+      const todos = getTodos();
+      const moving = todos.find((item) => String(item.id) === String(state.todoId));
+      if (!moving || state.todoIds?.length > 1) return false;
+      const key = structureDropKey(payload, state);
+      const previous = state.lastDropPayload;
+      if (previous?.structureKey === key && previous.structureOperation) {
+        payload.structureKey = key;
+        payload.structureOperation = previous.structureOperation;
+        payload.structureSnapshot = previous.structureSnapshot;
+        payload.structureText = previous.structureText;
+        if (previous.structureConfirmed) { payload.structureConfirmed = true; showTodoStructureHint(payload.structureText); return true; }
+        return scheduleStructureConfirm(payload, key, payload.structureText);
+      }
+      clearTodoStructureHint();
+      const anchor = todos.find((item) => String(item.id) === String(payload.rowTarget?.rowNode?.dataset?.id || ""));
+      const adopt = payload.intent === "reparent";
+      let parentId = adopt ? String(anchor?.id || "") : String(anchor?.containerTodoId || "");
+      if (!anchor) parentId = String(payload.groupKey).startsWith("todo-parent:") ? String(payload.groupKey).slice(12) : "";
+      if (payload.rowTarget?.outdent) parentId = "";
+      const parent = parentId ? todos.find((item) => String(item.id) === parentId && item.todoKind === "group") : null;
+      if ((parentId && !parent) || (parent && (moving.todoKind === "group" || moving.id === parent.id || ["daily", "weekly", "monthly"].includes(moving.repeat)))) {
+        showTodoStructureHint("此处不能嵌套父项或归入重复待办"); return false;
+      }
+      const project = parent ? String(parent.project || "") : anchor ? String(anchor.project || "") : getTodoProjectValueFromDragGroup(payload.groupKey);
+      const siblings = todos.filter((item) => String(item.containerTodoId || "") === parentId && String(item.project || "") === project && String(item.id) !== String(moving.id))
+        .sort((a, b) => compareTodosByDragOrder(a, b, "project"));
+      let order = siblings.length;
+      let orderAnchor = anchor;
+      if (payload.rowTarget?.outdent && anchor?.containerTodoId) orderAnchor = todos.find((item) => item.id === anchor.containerTodoId);
+      if (!adopt && orderAnchor) {
+        const index = siblings.findIndex((item) => item.id === orderAnchor.id);
+        if (index >= 0) order = index + (payload.rowTarget.insertBefore ? 0 : 1);
+        else order = Math.min(siblings.length, Number(moving.projectOrder) || 0);
+      }
+      const relationshipChanged = String(moving.containerTodoId || "") !== parentId;
+      const projectChanged = String(moving.project || "") !== project;
+      payload.structureKey = key;
+      payload.structureOperation = { kind: relationshipChanged ? "reparent" : projectChanged ? "project" : "reorder", todoId: moving.id, parentId, projectId: project, order };
+      const snapshot = (item) => ({ id: item.id, parent: item.containerTodoId || null, project: item.project || "", kind: item.todoKind || "task", order: Number(item.projectOrder) || 0 });
+      payload.structureSnapshot = { source: snapshot(moving), target: parent ? snapshot(parent) : anchor ? snapshot(anchor) : { kind: "project", project } };
+      payload.structureText = relationshipChanged ? (parent ? `作为“${parent.title}”的子待办` : "移出父待办") : "调整同级顺序";
+      if (projectChanged) payload.structureText += ` · 项目改为 ${project || "未设置项目"}，时间不变`;
+      showTodoStructureHint(payload.structureText);
+      if (adopt || relationshipChanged || projectChanged || payload.groupTarget?.isProjectHeaderTarget) return scheduleStructureConfirm(payload, key, payload.structureText);
+      payload.structureConfirmed = true;
+      return true;
+    }
+
+    function verifyStructureSnapshot(payload) {
+      const snapshot = payload?.structureSnapshot;
+      if (!snapshot) return true;
+      const todos = getTodos();
+      const source = todos.find((item) => String(item.id || "") === String(snapshot.source.id || ""));
+      if (!source) return false;
+      if (String(source.containerTodoId || "") !== String(snapshot.source.parent || "") ||
+          String(source.project || "") !== String(snapshot.source.project || "") ||
+          String(source.todoKind || "task") !== String(snapshot.source.kind || "task") ||
+          (Number(source.projectOrder) || 0) !== snapshot.source.order) return false;
+      if (snapshot.target?.kind === "project") {
+        return normalizeProjectName(snapshot.target.project || "") === normalizeProjectName(getTodoProjectValueFromDragGroup(payload.groupKey));
+      }
+      const target = snapshot.target?.id
+        ? todos.find((item) => String(item.id) === String(snapshot.target.id))
+        : null;
+      if (!target) return false;
+      return String(target.containerTodoId || "") === String(snapshot.target.parent || "") &&
+        String(target.project || "") === String(snapshot.target.project || "") &&
+        String(target.todoKind || "group") === String(snapshot.target.kind || "group") &&
+        (Number(target.projectOrder) || 0) === snapshot.target.order;
+    }
 
     function clearSchedulePreview() {
       todoSchedulePreviewNode?.remove();
@@ -221,7 +614,9 @@
       }
       if (todoGroups) {
         todoGroups.addEventListener("click", handleGroupClick);
+        todoGroups.addEventListener("contextmenu", handleGroupContextMenu);
         todoGroups.addEventListener("dragstart", handleGroupDragStart);
+        todoGroups.addEventListener("dragenter", handleGroupDragOver);
         todoGroups.addEventListener("dragover", handleGroupDragOver);
         todoGroups.addEventListener("drop", handleGroupDrop);
         todoGroups.addEventListener("dragend", handleGroupDragEnd);
@@ -249,6 +644,7 @@
     }
 
     function handleToolbarDocumentClick(event) {
+      if (todoRowMenuNode && !todoRowMenuNode.contains(event.target) && !todoRowSubmenuNode?.contains?.(event.target)) closeTodoRowMenu();
       const target = event.target;
       if (todoSortMenu && todoSortMenu.open && !todoSortMenu.contains(target)) {
         closeToolbarMenu(todoSortMenu);
@@ -259,9 +655,31 @@
     }
 
     function handleToolbarDocumentKeydown(event) {
+      if ((event.shiftKey && event.key === "F10") || event.key === "…") {
+        const rowNode = event.target.closest?.(".todo-item[data-id]");
+        const id = String(rowNode?.dataset?.id || "");
+        if (id) {
+          event.preventDefault();
+          showTodoRowMenu(id, rowNode);
+        }
+        return;
+      }
       if (event.key !== "Escape") return;
+      closeTodoRowMenu();
+      if (todoListDragState) handleGroupDragEnd();
+      clearTodoStructureHint();
       closeToolbarMenu(todoSortMenu);
       closeToolbarMenu(todoScopeMenu);
+    }
+
+    function handleGroupContextMenu(event) {
+      const rowNode = event.target.closest?.(".todo-item[data-id]");
+      if (!rowNode) return;
+      event.preventDefault();
+      showTodoRowMenu(rowNode.dataset.id, rowNode, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
     }
 
     function getTodoScope() {
@@ -402,10 +820,12 @@
     }
 
     function getTodoProjectDragGroupKey(todo) {
+      if (todo?.containerTodoId) return `todo-parent:${todo.containerTodoId}`;
       return normalizeProjectName(todo?.project || "") || TODO_UNSET_PROJECT_LABEL;
     }
 
     function getTodoProjectValueFromDragGroup(groupKey) {
+      if (String(groupKey).startsWith("todo-parent:")) return getTodos().find((t) => t.id === String(groupKey).slice(12))?.project || "";
       const normalized = normalizeProjectName(groupKey);
       if (!normalized || normalized === TODO_UNSET_PROJECT_LABEL || normalized === "未分组项目") return "";
       return normalized;
@@ -444,6 +864,7 @@
     }
 
     function getFiniteOrderValue(value) {
+      if (value === null || value === undefined || String(value).trim() === "") return null;
       const parsed = Number(value);
       return Number.isFinite(parsed) ? parsed : null;
     }
@@ -559,7 +980,7 @@
       if (mode !== "project" && mode !== "tag") return [];
       return sortTodosByDragOrder(
         getTodos().filter((todo) => {
-          if (!todo || todo.completed) return false;
+          if (!todo || (mode !== "project" && todo.completed) || (mode === "tag" && todo.todoKind === "group")) return false;
           if (excludedId && String(todo.id || "") === excludedId) return false;
           return getTodoDragGroupKey(todo, mode) === normalizedGroupKey;
         }),
@@ -569,6 +990,42 @@
 
     function getTodoDragGroupItemCount(mode, groupKey) {
       return getTodoDragGroupItems(mode, groupKey).length;
+    }
+
+    function prepareTodoInsertionContext(todo, anchor, { isCopy = false } = {}) {
+      if (!anchor) return {};
+      const mode = getCurrentTodoDimension();
+      if (!isCopy) {
+        todo.project = anchor.project;
+        todo.category = anchor.category;
+        todo.tags = [...(anchor.tags || [])];
+      }
+      if (todo.containerTodoId) todo.project = anchor.project;
+      if (mode !== "project" && mode !== "tag") {
+        const siblings = getTodos().filter((t) => t.project === anchor.project && (t.containerTodoId || null) === (anchor.containerTodoId || null));
+        const ids = sortTodosByDragOrder(siblings, "project").map((t) => t.id);
+        ids.splice(ids.indexOf(anchor.id) + 1, 0, todo.id);
+        return { prepareGroupOrder(next) { ids.forEach((id, index) => { const t = next.find((item) => item.id === id); if (t) t.projectOrder = index; }); } };
+      }
+      const key = getTodoDragGroupKey(anchor, mode);
+      if (mode === "project") todo.project = getTodoProjectValueFromDragGroup(key);
+      else todo.tags = getTodoTagsForDragGroup(todo.tags, key);
+      const field = getTodoDragOrderField(mode);
+      const orderedIds = getTodoDragGroupItems(mode, key).map((item) => String(item.id));
+      const index = orderedIds.indexOf(String(anchor.id));
+      orderedIds.splice(index + 1, 0, String(todo.id));
+      // Apply group order to cloned Todos inside the same save as scheduling.
+      return { prepareGroupOrder(nextTodos) {
+        const byId = new Map(nextTodos.map((item) => [String(item.id), item]));
+        const nowIso = new Date().toISOString();
+        orderedIds.forEach((id, order) => {
+          const item = byId.get(id);
+          if (item && item[field] !== order) {
+            item[field] = order;
+            markTodoPlanningDirty(item, nowIso);
+          }
+        });
+      } };
     }
 
     function assignTodoDragOrder(items, orderField, timestampIso) {
@@ -600,6 +1057,13 @@
         .map((id) => todoById.get(id))
         .filter((todo) => todo && !todo.completed);
       if (!movingTodos.length) return false;
+      if (mode === "project") {
+        const targetParent = String(targetGroupKey).startsWith("todo-parent:") ? String(targetGroupKey).slice(12) : null;
+        if (movingTodos.some((t) => (t.containerTodoId || null) !== targetParent)) {
+          showScheduleNotice("请在详情中调整所属待办；拖动仅调整同级顺序。", true); return false;
+        }
+      }
+      const before = todos.map((todo) => JSON.parse(JSON.stringify(todo)));
       const movingTodoIds = new Set(movingTodos.map((todo) => String(todo.id)));
 
       const orderField = getTodoDragOrderField(mode);
@@ -616,6 +1080,10 @@
           const nextProject = getTodoProjectValueFromDragGroup(targetGroupKey);
           if (normalizeProjectName(todo.project || "") !== normalizeProjectName(nextProject)) {
             todo.project = nextProject;
+            if (todo.todoKind === "group") for (const child of todos.filter((t) => t.containerTodoId === todo.id)) {
+              child.project = nextProject; child.updatedAt = timestampIso;
+              if (!child.completed) markTodoPlanningDirty(child, timestampIso);
+            }
             markTodoPlanningDirty(todo, timestampIso);
             changed = true;
           }
@@ -650,7 +1118,11 @@
 
       changed = assignTodoDragOrder(reorderedTargetItems, orderField, timestampIso) || changed;
       if (!changed) return false;
-      saveTodos(todos);
+      try { saveTodos(todos, { undoBoundary: true }); } catch (error) {
+        todos.forEach((todo, index) => Object.assign(todo, before[index]));
+        showScheduleNotice(`保存失败，排序未修改：${error.message}`, true);
+        return false;
+      }
       renderTodos();
       return true;
     }
@@ -677,10 +1149,13 @@
 
     function clearDragVisualState({ keepDragging = true } = {}) {
       clearSchedulePreview();
+      if (!keepDragging) clearTodoStructureHint();
       if (!todoGroups) return;
-      const dropTargets = todoGroups.querySelectorAll(".todo-item.is-drop-before, .todo-item.is-drop-after");
+      const dropTargets = todoGroups.querySelectorAll(
+        ".todo-item.is-drop-before, .todo-item.is-drop-after, .todo-item.is-drop-parent, .todo-project-tree-node.is-drop-project",
+      );
       for (const node of dropTargets) {
-        node.classList.remove("is-drop-before", "is-drop-after");
+        node.classList.remove("is-drop-before", "is-drop-after", "is-drop-parent", "is-drop-project");
       }
       clearTodoDropLine();
       if (!keepDragging) {
@@ -850,9 +1325,11 @@
 
       const listRect = todoGroups.getBoundingClientRect();
       let top = null;
+      let left = null;
       if (dropPayload.rowTarget?.rowNode instanceof HTMLElement) {
         const rowRect = dropPayload.rowTarget.rowNode.getBoundingClientRect();
         top = dropPayload.rowTarget.insertBefore ? rowRect.top : rowRect.bottom;
+        left = Math.max(listRect.left + 8, rowRect.left - (dropPayload.rowTarget.outdent ? 26 : 0));
       } else if (dropPayload.groupTarget?.groupNode instanceof HTMLElement) {
         top = getDropLineTopForGroup(dropPayload.groupTarget.groupNode, dropPayload);
       }
@@ -866,14 +1343,17 @@
         todoDropLine.className = "todo-drop-line";
         documentRef.body.appendChild(todoDropLine);
       }
-      const horizontalInset = Math.min(16, Math.max(8, listRect.width * 0.02));
-      todoDropLine.style.left = `${listRect.left + horizontalInset}px`;
+      const horizontalInset = left === null ? Math.min(16, Math.max(8, listRect.width * 0.02)) : 0;
+      const resolvedLeft = left ?? (listRect.left + horizontalInset);
+      todoDropLine.style.left = `${resolvedLeft}px`;
       todoDropLine.style.top = `${top - 1}px`;
-      todoDropLine.style.width = `${Math.max(24, listRect.width - horizontalInset * 2)}px`;
+      todoDropLine.style.width = `${Math.max(24, listRect.right ? listRect.right - resolvedLeft - 8 : listRect.width - horizontalInset * 2)}px`;
     }
 
     function getDragExpandCollapseKey(event) {
       if (!(event.target instanceof Element) || !todoGroups) return "";
+      const parentRow = event.target.closest(".todo-item.is-todo-group[data-id]");
+      if (parentRow && collapsedTodoGroups.has(parentRow.dataset.id)) return `todo-parent:${parentRow.dataset.id}`;
       const groupNode = event.target.closest(".todo-group");
       if (groupNode instanceof HTMLElement && todoGroups.contains(groupNode)) {
         const toggleNode = groupNode.querySelector("button.todo-group-toggle.is-collapsed[data-group-collapse-key]");
@@ -904,6 +1384,21 @@
         const pendingKey = todoDragExpandKey;
         todoDragExpandKey = "";
         if (!todoListDragState || !pendingKey) return;
+        if (pendingKey.startsWith("todo-parent:")) {
+          collapsedTodoGroups.delete(pendingKey.slice(12));
+          try { globalScope.localStorage?.setItem("time_quality_todo_groups_collapsed_v1", JSON.stringify([...collapsedTodoGroups])); } catch { /* optional preference */ }
+          const id = pendingKey.slice(12);
+          const parent = getTodos().find((item) => String(item.id) === id);
+          const row = Array.from(todoGroups?.querySelectorAll(".todo-item[data-id]") || []).find((item) => item.dataset.id === id);
+          // Preserve the connected drag source: replacing the whole list here
+          // can cancel a native browser drag before the user releases it.
+          if (row && parent) {
+            row.insertAdjacentHTML("afterend", renderTodoChildrenHtml(parent, getVisibleTodos()));
+            const toggle = row.querySelector("button[data-todo-group-toggle]");
+            if (toggle) { toggle.textContent = "▾"; toggle.setAttribute("aria-expanded", "true"); }
+          }
+          return;
+        }
         if (!getTodoProjectTreeCollapsedPaths().has(pendingKey)) return;
         toggleCollapsedTodoProjectPath(pendingKey);
         renderTodos();
@@ -924,7 +1419,15 @@
       const dueDate = String(rowNode.dataset.date || "");
       if (mode === "time" && !isValidDateInput(dueDate)) return null;
       const rect = rowNode.getBoundingClientRect();
-      const insertBefore = event.clientY < rect.top + rect.height / 2;
+      const centerY = rect.top + rect.height / 2;
+      const isGroupRow = rowNode.classList.contains("is-todo-group");
+      const canAdopt = mode === "project" && isGroupRow &&
+        String(state?.todoId || "") !== String(rowNode.dataset.id || "") &&
+        getTodos().find((item) => String(item.id) === String(state?.todoId || ""))?.todoKind !== "group";
+      const isCentral = event.clientY > rect.top + rect.height * 0.3 &&
+        event.clientY < rect.bottom - rect.height * 0.3;
+      const insertBefore = event.clientY < centerY;
+      const outdent = mode === "project" && Number.isFinite(event.clientX) && event.clientX < rect.left - 16;
       return {
         rowNode,
         mode,
@@ -932,6 +1435,9 @@
         dueDate,
         orderIndex,
         insertBefore,
+        canAdopt,
+        isCentral,
+        outdent,
       };
     }
 
@@ -966,6 +1472,7 @@
         groupKey,
         dueDate,
         isHeaderTarget,
+        isProjectHeaderTarget: groupMode === "project" && isHeaderTarget,
         isBeforeFirstItem,
       };
     }
@@ -1036,6 +1543,20 @@
       if (!state) return null;
       const rowTarget = getDragTargetMeta(event, state);
       if (rowTarget) {
+        const adopt = rowTarget.canAdopt && rowTarget.isCentral;
+        if (adopt) {
+          return {
+            mode: rowTarget.mode,
+            groupKey: rowTarget.groupKey,
+            dueDate: rowTarget.dueDate,
+            nextOrder: null,
+            slotIndex: null,
+            rowTarget,
+            groupTarget: null,
+            intent: "reparent",
+            parentId: String(rowTarget.rowNode.dataset.id || ""),
+          };
+        }
         const slotIndex = rowTarget.insertBefore ? rowTarget.orderIndex : rowTarget.orderIndex + 1;
         const nextOrder = getDragDropOrder(
           state.fromOrder,
@@ -1051,6 +1572,7 @@
             slotIndex,
             rowTarget,
             groupTarget: null,
+            intent: "order",
           };
         }
       }
@@ -1076,6 +1598,7 @@
         slotIndex,
         rowTarget: null,
         groupTarget,
+        intent: "order",
       };
     }
 
@@ -1090,7 +1613,9 @@
       const fromOrder = Number.parseInt(String(rowNode.dataset.orderIndex || "-1"), 10);
       if (!todoId || !mode || !groupKey || !Number.isInteger(fromOrder) || fromOrder < 0) return;
       if (mode === "time" && !isValidDateInput(dueDate)) return;
+      if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true, skipRender: true }) === false) { event.preventDefault(); return; }
       const todoIds = getTodoDragIdsForRow(rowNode, mode);
+      if (mode === "project" && todoIds.length > 1) { event.preventDefault(); showScheduleNotice("项目结构拖拽请一次选择一个待办或父项。", true); return; }
       if (todoScheduleNoticeTimer) globalScope.clearTimeout(todoScheduleNoticeTimer);
       todoScheduleNoticeNode?.remove();
       todoScheduleNoticeNode = null;
@@ -1133,6 +1658,7 @@
       if (!dropPayload) {
         clearDragVisualState({ keepDragging: true });
         todoListDragState.lastDropPayload = null;
+        clearTodoStructureHint();
         return;
       }
 
@@ -1142,7 +1668,20 @@
       }
 
       clearDragVisualState({ keepDragging: true });
-      showTodoDropLine(dropPayload);
+      const structureConfirmed = previewStructureOperation(dropPayload, todoListDragState);
+      if (dropPayload.intent === "reparent") {
+        dropPayload.rowTarget.rowNode.classList.add("is-drop-parent");
+      } else if (dropPayload.groupTarget?.isProjectHeaderTarget) {
+        dropPayload.groupTarget.groupNode.classList.add("is-drop-project");
+      } else {
+        if (dropPayload.mode !== "project") clearTodoStructureHint();
+        showTodoDropLine(dropPayload);
+      }
+      if (!structureConfirmed) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+        todoListDragState.lastDropPayload = dropPayload;
+        return;
+      }
       todoListDragState.targetMode = dropPayload.mode;
       todoListDragState.targetGroupKey = dropPayload.groupKey;
       todoListDragState.targetDueDate = dropPayload.dueDate;
@@ -1167,11 +1706,18 @@
         fromOrder,
         lastDropPayload,
       } = todoListDragState;
+      const releasedPayload = getDragDropPayload(event, todoListDragState);
+      const sameTarget = releasedPayload && lastDropPayload && structureDropKey(releasedPayload, todoListDragState) === structureDropKey(lastDropPayload, todoListDragState);
       clearDragVisualState({ keepDragging: false });
       todoListDragState = null;
 
-      const dropPayload = lastDropPayload;
+      const dropPayload = sameTarget ? lastDropPayload : null;
       if (!dropPayload || dropPayload.mode !== mode) return;
+      if (dropPayload.structureOperation &&
+          (dropPayload.structureConfirmed !== true || !verifyStructureSnapshot(dropPayload))) {
+        showScheduleNotice("目标关系已变化，请重新拖动。", true);
+        return;
+      }
       const targetGroupKey = dropPayload.groupKey;
       const targetDueDate = dropPayload.dueDate;
       const normalizedTodoIds = normalizeTodoIdList(todoIds);
@@ -1181,6 +1727,15 @@
         ? getDragDropBlockOrder(dropPayload, movedTodoIds)
         : dropPayload.nextOrder;
       if (mode !== "time") {
+        if (mode === "project") {
+          if (movedTodoIds.length > 1) {
+            showScheduleNotice("混合多选不能执行结构变更。", true);
+            return;
+          }
+          const result = moveTodoStructure?.(dropPayload.structureOperation || {});
+          if (result) { showScheduleNotice("结构已更新，可按 ⌘Z 撤销。"); renderTodos(); }
+          return;
+        }
         if (!targetGroupKey || !Number.isInteger(targetOrder)) return;
         if (!isMultiTodoDrag && targetGroupKey === groupKey && targetOrder === fromOrder) return;
         if (mode === "project") {
@@ -1222,6 +1777,7 @@
 
     function handleGroupDragEnd() {
       clearTodoDragExpandTimer();
+      clearTodoStructureHint();
       clearDragVisualState({ keepDragging: false });
       todoListDragState = null;
       scheduleTodoListRefreshAfterDrag();
@@ -1232,10 +1788,12 @@
       const nextTarget = event.relatedTarget;
       if (nextTarget instanceof Node && todoGroups.contains(nextTarget)) return;
       clearTodoDragExpandTimer();
+      clearTodoStructureHint();
+      todoListDragState.lastDropPayload = null;
       clearDragVisualState({ keepDragging: true });
     }
 
-    function renderTodosAndFocusRow(todoId) {
+    function renderTodosAndFocusRow(todoId, { scroll = false } = {}) {
       renderTodos();
       const id = String(todoId || "").trim();
       if (!id || !todoGroups) return;
@@ -1246,12 +1804,29 @@
         const row = Array.from(todoGroups.querySelectorAll(".todo-item[data-id]"))
           .find((item) => String(item.dataset.id || "") === id);
         if (row && typeof row.focus === "function") {
+          if (scroll) row.scrollIntoView?.({ block: "nearest" });
           row.focus({ preventScroll: true });
         }
       });
     }
 
     function handleGroupClick(event) {
+      const rowMenuButton = event.target.closest("button[data-todo-row-menu]");
+      if (rowMenuButton) {
+        event.stopPropagation();
+        const id = String(rowMenuButton.dataset.todoRowMenu || "");
+        if (id) showTodoRowMenu(id, rowMenuButton);
+        return;
+      }
+      const groupToggle = event.target.closest("button[data-todo-group-toggle]");
+      if (groupToggle) {
+        const id = groupToggle.dataset.todoGroupToggle;
+        if (collapsedTodoGroups.has(id)) collapsedTodoGroups.delete(id); else collapsedTodoGroups.add(id);
+        try { globalScope.localStorage?.setItem("time_quality_todo_groups_collapsed_v1", JSON.stringify([...collapsedTodoGroups])); } catch { /* UI preferences are optional. */ }
+        renderTodos(); return;
+      }
+      const add = event.target.closest("button[data-add-todo-child]");
+      if (add) { if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true }) === false) return; setSelectedTodoId(add.dataset.addTodoChild); deps.addTodoChild?.(); return; }
       const projectTreeToggleBtn = event.target.closest("button.todo-project-tree-toggle[data-project-path]");
       if (projectTreeToggleBtn) {
         const path = String(projectTreeToggleBtn.dataset.projectPath || "");
@@ -1313,6 +1888,7 @@
       if (!itemNode) return;
       const id = String(itemNode.dataset.id || "");
       if (!id) return;
+      if (deps.commitTodoDetailIfDirty?.({ showValidationAlert: true, skipRender: true }) === false) return;
       const isRangeSelect = event.shiftKey === true;
       const isMultiSelect = event.metaKey === true || event.ctrlKey === true;
       if (isRangeSelect) {
@@ -1380,13 +1956,18 @@
         overdueDragSource = false,
       } = {},
     ) {
+      const isGroup = todo.todoKind === "group";
+      const summary = isGroup ? summarizeTodoGroup(todo, getTodos()) : null;
+      const parent = todo.containerTodoId ? getTodos().find((t) => t.id === todo.containerTodoId) : null;
       const selectedIds = new Set(getSelectedTodoIds().map((id) => String(id)));
       const selectedClass = selectedIds.has(String(todo.id)) ? " is-selected" : "";
       const aiHighlightClass = isTodoAiHighlighted(todo.id) ? " is-ai-highlighted" : "";
       const completedClass = todo.completed ? " is-completed" : "";
       const lockedClass = todo.planLocked && !todo.completed ? " is-plan-locked" : "";
       const checkClass = todo.completed ? " is-completed" : "";
-      const dateBadge = buildDueBadge(todo);
+      const dateBadge = isGroup
+        ? `<span class="todo-badge due-future">${summary.startDate ? `${escapeHtml(summary.startDate.slice(5).replace("-", "/"))}${summary.startDate !== summary.endDate ? `—${escapeHtml(summary.endDate.slice(5).replace("-", "/"))}` : ""}` : (summary.total ? "未排期" : "待拆分")}${summary.unplannedCount ? ` · ${summary.unplannedCount} 项未排期` : ""}${todo.targetDate ? ` · 目标 ${escapeHtml(todo.targetDate.slice(5))}` : ""}</span>`
+        : buildDueBadge(todo);
       const contextTagBadges = (todo.tags || [])
         .slice(0, 2)
         .map((tag) => `<span class=\"todo-badge tag\">#${escapeHtml(tag)}</span>`)
@@ -1438,7 +2019,7 @@
       const hasDragOrder = Number.isInteger(reorderIndex) && effectiveDragMode && effectiveDragGroupKey;
       const canDragReorder =
         hasDragOrder &&
-        !todo.completed &&
+        (!todo.completed || effectiveDragMode === "project") &&
         (effectiveDragMode !== "time" || !todo.planLocked);
       const rowDragClass = canDragReorder ? " is-draggable" : "";
       const rowOrderAttrs = hasDragOrder
@@ -1451,8 +2032,9 @@
         : "";
 
       return `
-    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${lockedClass}${rowDragClass}${rowContextClass}\" data-id=\"${escapeHtml(String(todo.id))}\" tabindex=\"0\"${rowOrderAttrs}${rowDragAttrs}${overdueDragSourceAttr}>
-      <button class=\"todo-check${checkClass}\" data-id=\"${escapeHtml(String(todo.id))}\" type=\"button\">${todo.completed ? "✓" : ""}</button>
+    <li class=\"todo-item${selectedClass}${aiHighlightClass}${completedClass}${lockedClass}${rowDragClass}${rowContextClass}${isGroup ? " is-todo-group" : ""}\" data-id=\"${escapeHtml(String(todo.id))}\" tabindex=\"0\"${rowOrderAttrs}${rowDragAttrs}${overdueDragSourceAttr}>
+      ${canDragReorder ? `<span class="todo-drag-handle" title="拖动调整顺序或归属" aria-hidden="true">⠿</span>` : ""}
+      ${isGroup ? `<span class="todo-subtask-control"><button class="todo-subtask-toggle" type="button" data-todo-group-toggle="${escapeHtml(todo.id)}" aria-expanded="${!collapsedTodoGroups.has(todo.id) || Boolean(getGlobalSearchTerm())}" aria-label="展开或收起子待办">${collapsedTodoGroups.has(todo.id) && !getGlobalSearchTerm() ? "▸" : "▾"}</button><span class="todo-subtask-progress" aria-label="子待办完成数">${summary.completedCount}/${summary.total}</span></span>` : `<button class="todo-check${checkClass}" data-id="${escapeHtml(String(todo.id))}" type="button" aria-label="完成或恢复待办">${todo.completed ? "✓" : ""}</button>`}
       <div class=\"todo-item-main\">
         <p class=\"todo-item-title\">
           <span class=\"todo-item-title-text\"${lockedTitleAttrs}>${escapeHtml(todo.title)}</span>
@@ -1460,7 +2042,7 @@
         </p>
       </div>
       ${contextHtml}
-      <div class=\"todo-badges\">${durationBadge}${startTimeBadge}${dateBadge}${syncedBadge}</div>
+      <div class=\"todo-badges\">${isGroup ? "" : durationBadge + startTimeBadge}${dateBadge}${isGroup ? "" : syncedBadge}<button class="todo-row-menu-btn" type="button" data-todo-row-menu="${escapeHtml(String(todo.id))}" aria-label="更多操作" title="更多操作">…</button></div>
     </li>
   `;
     }
@@ -1551,11 +2133,20 @@
         return chain;
       };
 
+      const presentIds = new Set(todoList.map((t) => t.id));
+      todoList = [...todoList];
+      for (const item of todoList) {
+        if (item.containerTodoId && !presentIds.has(item.containerTodoId)) {
+          const parent = getTodos().find((t) => t.id === item.containerTodoId);
+          if (parent) { todoList.push(parent); presentIds.add(parent.id); }
+        }
+      }
       for (const todo of todoList) {
         const chain = ensureChain(todo.project || "未设置项目", "未设置项目");
         const leaf = chain[chain.length - 1];
         leaf.todos.push(todo);
         for (const node of chain) {
+          if (todo.todoKind === "group") continue;
           node.totalTodoCount += 1;
           if (!todo.completed) {
             node.pendingTodoCount += 1;
@@ -1600,17 +2191,22 @@
       return roots;
     }
 
+    function renderTodoChildrenHtml(todo, items) {
+      const children = sortTodosByDragOrder(items.filter((t) => t.containerTodoId === todo.id), "project");
+      return `<li class="todo-subtree todo-project-tree-node" data-group-dimension="project" data-drag-group-key="todo-parent:${escapeHtml(todo.id)}"><ul class="todo-list">${children.map((child, order) => renderTodoRowHtml(child, { dragMode: "project", dragGroupKey: `todo-parent:${todo.id}`, groupOrderIndex: order })).join("")}</ul><button class="todo-subtask-add" type="button" data-add-todo-child="${escapeHtml(todo.id)}">＋ 添加子待办</button></li>`;
+    }
+
     function renderProjectTreeNode(node, { includeHistory = false } = {}) {
       const level = Math.max(1, Math.min(3, Number(node.level) || 1));
       const hasChildren = Array.isArray(node.children) && node.children.length > 0;
       const totalCount = node.totalTodoCount + (includeHistory ? node.totalHistoryCount : 0);
-      const todoRows = node.todos
-        .map((todo, index) => renderTodoRowHtml(todo, {
-          dragMode: "project",
-          dragGroupKey: node.path,
-          groupOrderIndex: index,
-        }))
-        .join("");
+      const roots = node.todos.filter((t) => !t.containerTodoId);
+      const todoRows = roots.map((todo, index) => {
+        let html = renderTodoRowHtml(todo, { dragMode: "project", dragGroupKey: node.path, groupOrderIndex: index });
+        if (todo.todoKind !== "group" || (collapsedTodoGroups.has(todo.id) && !getGlobalSearchTerm())) return html;
+        html += renderTodoChildrenHtml(todo, node.todos);
+        return html;
+      }).join("");
       const historyRows = includeHistory
         ? node.history.map((item) => renderTodoHistoryRowHtml(item)).join("")
         : "";
@@ -1764,7 +2360,8 @@
         })
         : [];
       if (effectiveDimension === "project") {
-        renderProjectTreeView(visibleTodos, historyRecords);
+        const nestedIds = new Set(getTodos().filter((t) => t.containerTodoId).map((t) => t.id));
+        renderProjectTreeView(visibleTodos, historyRecords.filter((r) => !nestedIds.has(r.todoId)));
         return;
       }
       const grouped = groupTodosByDimension(visibleTodos, effectiveDimension);
@@ -1979,7 +2576,7 @@
       return Boolean(todoGroups.querySelector(".todo-item.is-selected[data-id]"));
     }
 
-    return {
+      return {
       bindEvents,
       syncFilterBarButtons,
       syncHistoryToggleButton,
@@ -2009,6 +2606,10 @@
       renderProjectTreeNode,
       renderProjectTreeView,
       renderTodos,
+      showTodoInProject,
+      renderTodosAndFocusRow,
+      prepareTodoInsertionContext,
+      moveTodoIdsToProjectGroup,
       groupTodosByDimension,
       getTodoGroupOrder,
       getTodoGroupLabel,
@@ -2020,8 +2621,9 @@
       buildDueBadge,
       buildSyncBadge,
       hasSelectedListItem,
-    };
-  }
+      showTodoRowMenu,
+      };
+    }
 
   globalScope.TimeQualityTodoListModule = {
     createTodoListModule,

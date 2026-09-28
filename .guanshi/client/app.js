@@ -530,6 +530,7 @@ const MOTIVATION_QUOTES = [
 ];
 
 const localDataBackupModule = createLocalDataBackupModule({
+  validateTodoStorageSnapshot: (storage) => todoModelModule.validateTodoStorageSnapshot(storage),
   DATA_EXPORT_SCHEMA,
   DATA_EXPORT_STORAGE_PREFIX,
   LOCAL_DATA_BACKUP_URL,
@@ -551,6 +552,7 @@ const localDataBackupModule = createLocalDataBackupModule({
 });
 
 const settingsModule = createSettingsModule({
+  validateTodoStorageSnapshot: (storage) => todoModelModule.validateTodoStorageSnapshot(storage),
   CATEGORY_STORAGE_KEY,
   QUOTE_POOL_KEY,
   QUOTE_LIBRARY_KEY,
@@ -706,6 +708,7 @@ const aiUiReactionsModule = createAiUiReactionsModule({
 });
 const aiSidebarModule = createAiSidebarModule({
   applyTodoScheduleDraft: (draft, options) => todoPlanModule.applyTodoScheduleDraft(draft, options),
+  applyAiTodoMutationDraft: (draft) => todoActionsModule.applyAiTodoMutationDraft(draft),
   documentRef: document,
   windowRef: window,
   sidebar,
@@ -717,9 +720,6 @@ const aiSidebarModule = createAiSidebarModule({
   sidebarAiStatus,
   sidebarAiActionButtons,
   getTodos: () => todos,
-  setTodos: (value) => {
-    todos = Array.isArray(value) ? value : [];
-  },
   getEntries: () => entries,
   getSelectedTodo,
   getLiuyaoCurrentReading: () => liuyaoModule?.getCurrentReading?.() || null,
@@ -729,17 +729,11 @@ const aiSidebarModule = createAiSidebarModule({
   getViewContext: getAiViewContext,
   setSettingsTab: (tab, options) => settingsModule.setActiveSettingsTab(tab, options),
   setSelectedTodoId,
+  showTodoInProject: (id) => todoListModule.showTodoInProject(id),
   setAiHighlightedTodoIds: (todoIds) => {
     aiHighlightedTodoIds = new Set(Array.isArray(todoIds) ? todoIds.map((id) => String(id)).filter(Boolean) : []);
   },
-  getCategories: () => categories,
   getTodayDateInputValue,
-  createTodoDraft,
-  normalizeTodo,
-  getNextTodoOrderForDate,
-  markTodoPlanningDirty,
-  normalizeTodoOrderByClockForDate,
-  saveTodos,
   toggleTodoCompleted,
   setActiveView,
   render,
@@ -889,6 +883,13 @@ const todoPlanModule = createTodoPlanModule({
 });
 
 const todoDetailModule = createTodoDetailModule({
+  summarizeTodoGroup: (group) => todoModelModule.summarizeTodoGroup(group, todos, entries),
+  addTodoChild: () => todoActionsModule.addTodoChild(),
+  deleteTodoGroupWithChildren: () => todoActionsModule.deleteTodoGroupWithChildren(),
+  setTodoParent: (id) => todoActionsModule.setTodoParent(id),
+  moveTodoStructure: (operation) => todoActionsModule.moveTodoStructure(operation),
+  showTodoInProject: (id) => todoListModule.showTodoInProject(id),
+  showTodoRowMenu: (id, anchor) => todoListModule.showTodoRowMenu(id, anchor),
   TODO_NOTE_HELPER_TEXT,
   documentRef: document,
   windowRef: window,
@@ -951,6 +952,10 @@ const todoDetailModule = createTodoDetailModule({
   getProjectLibrary: () => projectLibrary,
   getTagLibrary: () => tagLibrary,
 });
+
+function openTodoStructurePicker(todoId, mode) {
+  return todoDetailModule.openTodoStructurePicker(todoId, mode);
+}
 
 const searchModule = createSearchModule({
   GLOBAL_SEARCH_RESULT_LIMIT,
@@ -1026,6 +1031,7 @@ liuyaoModule = createLiuyaoModule({
 let undoRuntimeModule = null;
 
 const dataStoreModule = createDataStoreModule({
+  validateTodoHierarchy: (items) => todoModelModule.validateTodoHierarchy(items),
   STORAGE_KEY,
   TODO_STORAGE_KEY,
   TODO_REMINDER_DISABLE_QUEUE_STORAGE_KEY,
@@ -1148,6 +1154,9 @@ const sidebarTaxonomyModule = createSidebarTaxonomyModule({
   renderProjectTagSuggestions,
 });
 const todoListModule = createTodoListModule({
+  clearTodoSearch: () => { searchModule.setTerm("", { updateInput: true }); searchModule.closeDropdown(); },
+  summarizeTodoGroup: (...args) => todoModelModule.summarizeTodoGroup(...args),
+  addTodoChild: () => todoActionsModule.addTodoChild(),
   TODO_PROJECT_MAX_LEVEL,
   TODO_PLAN_NEW_TODO_DURATION_MINUTES,
   TODO_PROJECT_LEVEL_SEPARATOR,
@@ -1214,6 +1223,16 @@ const todoListModule = createTodoListModule({
   moveTodosToDateOrder,
   previewTodoMove: (...args) => todoPlanModule.previewTodoMove(...args),
   applyTodoScheduleChanges: (...args) => todoPlanModule.applyTodoScheduleChanges(...args),
+  moveTodoStructure: (operation) => todoActionsModule.moveTodoStructure(operation),
+  getProjectLibrary: () => projectLibrary,
+  openTodoParentPicker: (todoId, projectPicker) => openTodoStructurePicker(todoId, projectPicker ? "project" : "parent"),
+  commitTodoDetailIfDirty,
+  copyTodoContent,
+  dissolveTodoGroup: (id) => todoActionsModule.dissolveTodoGroup(id),
+  addTodoChild: () => todoActionsModule.addTodoChild(),
+  deleteTodoGroupWithChildren: () => todoActionsModule.deleteTodoGroupWithChildren(),
+  handleTodoDelete,
+
   restoreHistoryItemToTodo,
   openTodoHistoryRecord,
   toggleTodoCompleted,
@@ -1469,6 +1488,16 @@ const calendarActionsModule = createCalendarActionsModule({
 });
 
 const todoActionsModule = createTodoActionsModule({
+  validateTodoEdit: (...args) => todoPlanModule.validateTodoEdit(...args),
+  validateTodoScheduleChanges: (...args) => todoPlanModule.validateTodoScheduleChanges(...args),
+  showTodoInProject: (...args) => todoListModule.showTodoInProject(...args),
+  insertTodoAfterAnchor: (...args) => todoPlanModule.insertTodoAfterAnchor(...args),
+  prepareTodoInsertionContext: (...args) => todoListModule.prepareTodoInsertionContext(...args),
+  showTodoNotice: (...args) => todoListModule.showScheduleNotice(...args),
+  focusCreatedTodo: (id, { editTitle }) => {
+    todoListModule.renderTodosAndFocusRow(id, { scroll: true });
+    if (editTitle) requestAnimationFrame(() => { todoTitleInput?.focus(); todoTitleInput?.select(); });
+  },
   runDataTransaction: (operation, collections) => dataStoreModule.runDataTransaction(operation, collections),
   deferDataEffect: (effect) => dataStoreModule.deferDataEffect(effect),
   TODO_PLAN_NEW_TODO_DURATION_MINUTES,
@@ -1896,6 +1925,8 @@ function bindEvents() {
   document.addEventListener("keydown", handleSyncErrorModalKeydown);
   document.addEventListener("keydown", handleGlobalUndoKeydown);
   document.addEventListener("keydown", handleGlobalTodoCalendarShortcutKeydown);
+  document.addEventListener("copy", handleTodoClipboardCopy);
+  document.addEventListener("paste", handleTodoClipboardPaste);
 
   layoutShellModule.bindEvents();
   calendarModalModule.bindEvents({ onSubmit: handleCalendarEventFormSubmit });
@@ -2555,14 +2586,21 @@ function getVisibleTodos() {
   pruneRecentlyCompletedTodoDisplayMap(nowMs);
   const includeRecentlyCompleted = !showTodoHistoryInMainList;
   const searchTerm = getGlobalSearchTerm();
-  const normalized = todos.map(normalizeTodo);
+  const allNormalized = todos.map(normalizeTodo);
+  const isProject = currentTodoDimension === "project";
+  const groups = new Map(allNormalized.filter((t) => t.todoKind === "group").map((t) =>
+    [t.id, { ...t, ...todoModelModule.summarizeTodoGroup(t, allNormalized) }]));
+  const normalized = allNormalized.map((t) => t.todoKind === "group" ? { ...t, completed: groups.get(t.id).completed } : t);
+  const matchesSearch = (t) => `${t.title} ${t.project} ${t.tags.join(" ")} ${t.note}`.toLowerCase().includes(searchTerm);
   const filtered = normalized
     .filter((todo) => {
-      if (searchTerm) {
-        const haystack = `${todo.title} ${todo.project} ${todo.tags.join(" ")} ${todo.note}`.toLowerCase();
-        if (!haystack.includes(searchTerm)) {
-          return false;
-        }
+      if (todo.todoKind === "group" && !isProject) return false;
+      if (searchTerm && !matchesSearch(todo) && !(
+        todo.containerTodoId && groups.has(todo.containerTodoId) && matchesSearch(groups.get(todo.containerTodoId))
+      ) && !(isProject && todo.todoKind === "group" && groups.get(todo.id).children.some(matchesSearch))) return false;
+      if (isProject && !showRecurringReminderOnlyInMainList) {
+        const group = todo.todoKind === "group" ? groups.get(todo.id) : groups.get(todo.containerTodoId);
+        if (group) return !group.completed || showTodoHistoryInMainList;
       }
       if (showRecurringReminderOnlyInMainList && !isRecurringTodoRepeatMode(todo.repeat)) {
         return false;
@@ -2596,9 +2634,8 @@ function getVisibleTodos() {
     if (dateA !== dateB) return dateA.localeCompare(dateB);
 
     if (!aDisplayCompleted && !bDisplayCompleted) {
-      const orderA = Number.isFinite(Number(a.orderInDay)) ? Number(a.orderInDay) : Number.MAX_SAFE_INTEGER;
-      const orderB = Number.isFinite(Number(b.orderInDay)) ? Number(b.orderInDay) : Number.MAX_SAFE_INTEGER;
-      if (orderA !== orderB) return orderA - orderB;
+      const dayOrder = window.TimeQualityScheduleConstraints.compareTodoDayOrder(a, b);
+      if (dayOrder) return dayOrder;
       if (Boolean(a.__recentlyCompleted) !== Boolean(b.__recentlyCompleted)) {
         return a.__recentlyCompleted ? -1 : 1;
       }
@@ -3674,6 +3711,67 @@ function isTodoListShortcutTarget(target) {
   if (!(target instanceof Element)) return false;
   if (todoGroups && todoGroups.contains(target)) return true;
   return target === document.body || target === document.documentElement;
+}
+
+function canHandleTodoClipboard(event) {
+  if (event.defaultPrevented || activeView !== "todo" || !event.clipboardData) return false;
+  if (document.body.classList.contains("modal-open") || syncRuntimeModule.isSyncRunning()) return false;
+  if (isNativeUndoEditableTarget(event.target) || isInteractiveShortcutTarget(event.target)) return false;
+  if (!isTodoListShortcutTarget(event.target)) return false;
+  return !String(window.getSelection?.() || "");
+}
+
+async function copyTodoContent(todoId) {
+  if (!commitTodoDetailIfDirty()) return false;
+  if (String(getSelectedTodo()?.id || "") !== String(todoId || "")) return false;
+  const payload = todoActionsModule.serializeSelectedTodo();
+  if (!payload) return false;
+  const todo = JSON.parse(payload).todo;
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([`<span data-guanshi-todo="${encodeURIComponent(payload)}">${escapeHtml(todo.title)}</span>`], { type: "text/html" }),
+      "text/plain": new Blob([todo.title], { type: "text/plain" }),
+    })]);
+    todoListModule.showScheduleNotice(todo.todoKind === "group" ? "已复制父待办内容，不含子待办。" : "已复制待办，可用 ⌘V 粘贴。");
+    if (String(getSelectedTodo()?.id || "") === String(todoId)) todoListModule.renderTodosAndFocusRow(todoId);
+    return true;
+  } catch {
+    todoListModule.showScheduleNotice("无法访问剪贴板，请选中待办后按 ⌘C 复制。", true);
+    return false;
+  }
+}
+
+function handleTodoClipboardCopy(event) {
+  if (!canHandleTodoClipboard(event) || !hasSelectedTodoListItem()) return;
+  const payload = todoActionsModule.serializeSelectedTodo();
+  if (!payload) return;
+  const title = JSON.parse(payload).todo.title;
+  try {
+    event.clipboardData.setData("application/x-guanshi-todo+json", payload);
+    // HTML is a portable fallback when the OS drops a browser custom format.
+    event.clipboardData.setData("text/html", `<span data-guanshi-todo="${encodeURIComponent(payload)}">${escapeHtml(title)}</span>`);
+    event.clipboardData.setData("text/plain", title);
+    event.preventDefault();
+    todoListModule.showScheduleNotice(JSON.parse(payload).todo.todoKind === "group" ? "已复制父待办内容，不含子待办。" : "已复制待办。");
+  } catch {
+    todoListModule.showScheduleNotice("复制失败，请重试。", true);
+  }
+}
+
+function handleTodoClipboardPaste(event) {
+  if (!canHandleTodoClipboard(event)) return;
+  let payload = event.clipboardData.getData("application/x-guanshi-todo+json");
+  if (!payload) {
+    const html = event.clipboardData.getData("text/html");
+    if (html.length > 1000000) return;
+    const encoded = /data-guanshi-todo="([^"]+)"/.exec(html)?.[1];
+    if (encoded) {
+      try { payload = decodeURIComponent(encoded); } catch { return; }
+    }
+  }
+  if (!todoActionsModule.parseTodoClipboard(payload)) return;
+  event.preventDefault();
+  todoActionsModule.pasteTodoClipboard(payload);
 }
 
 function handleGlobalTodoCalendarShortcutKeydown(event) {

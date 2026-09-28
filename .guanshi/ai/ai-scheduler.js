@@ -104,6 +104,7 @@ function normalizeTodo(todo, index) {
   return {
     id,
     title: normalizeText(source.title || id, 200),
+    ...(source.todoKind !== undefined ? { todoKind: source.todoKind, containerTodoId: source.containerTodoId || null, scheduleState: source.scheduleState } : {}),
     category: normalizeText(source.category, 80),
     dueDate: normalizeText(source.dueDate, 20),
     startTime: normalizeText(source.startTime, 8),
@@ -356,6 +357,7 @@ function buildChange(todo, block, reason, blockIndex = 0, blockCount = 1) {
       ...(todo.hasEstimatedMinutes ? { estimatedMinutes: todo.estimatedMinutes } : {}),
       ...(todo.hasRemainingMinutes ? { remainingMinutes: todo.remainingMinutes } : {}),
       dependencies: todo.dependencies,
+      ...(todo.todoKind !== undefined ? { todoKind: todo.todoKind, containerTodoId: todo.containerTodoId, scheduleState: todo.scheduleState } : {}),
     },
     after: {
       dueDate: block.date,
@@ -437,10 +439,10 @@ function createScheduleDraft(input = {}, options = {}) {
     .filter(Boolean);
   busyBlocks.push(...buildFixedBreakBlocks(memoryProjections, dates, usedMemoryIds));
 
-  const allInputTodos = (Array.isArray(request.todos) ? request.todos : []).map(normalizeTodo);
+  const allInputTodos = (Array.isArray(request.todos) ? request.todos : []).filter((todo) => todo?.todoKind !== "group").map(normalizeTodo);
   const todos = allInputTodos.filter((todo) => !todo.completed)
     .filter((todo) => action === "reflow_unfinished" || !todo.dueDate || dates.includes(todo.dueDate));
-  const fixedTodos = (Array.isArray(request.fixedTodos) ? request.fixedTodos : []).map(normalizeTodo);
+  const fixedTodos = (Array.isArray(request.fixedTodos) ? request.fixedTodos : []).filter((todo) => todo?.todoKind !== "group").map(normalizeTodo);
   const movable = todos.filter((todo) => !todo.planLocked && (request.options?.allowMoveExistingUnlocked !== false || !getTodoRange(todo)));
   const movableIds = new Set(movable.map((todo) => todo.id));
   const knownTodos = new Map([...fixedTodos, ...allInputTodos].map((todo) => [todo.id, todo]));

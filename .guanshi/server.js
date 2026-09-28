@@ -1773,6 +1773,7 @@ function parseTimeQualityMeta(noteText, urlText = "") {
 }
 
 function sanitizeTodoForMerge(rawTodo) {
+  if (rawTodo?.todoKind === "group" || rawTodo?.scheduleState === "unplanned") return null;
   const id = String(rawTodo?.id || rawTodo?.taskId || "").trim();
   if (!id) return null;
 

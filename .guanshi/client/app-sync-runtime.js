@@ -627,7 +627,7 @@
         .filter(
           (todo) =>
             !todo?.completed &&
-            isTodoOverdue(todo) &&
+            (isTodoOverdue(todo) || todo.scheduleState === "unplanned") &&
             String(todo.externalCalendarId || "").trim(),
         )
         .map((todo) => ({
@@ -1069,7 +1069,7 @@
       const overdueCleanup = stageOverdueCalendarCleanup();
       const candidates = todos.filter(
         (todo) =>
-          !todo.completed &&
+          !todo.completed && todo.todoKind !== "group" && todo.scheduleState !== "unplanned" &&
           !isTodoOverdue(todo) &&
           String(todo.syncState || "").trim() === "dirty" &&
           String(todo.dueDate || "").trim(),

@@ -52,7 +52,7 @@
     function countRemoteDeleteEligibleTodos(todos) {
       return todos.filter((todo) => {
         if (!todo || typeof todo !== "object") return false;
-        if (todo.completed) return false;
+        if (todo.completed || todo.todoKind === "group" || todo.scheduleState === "unplanned") return false;
         if (isTodoOverdue(todo)) return false;
         if (String(todo.syncState || "").trim() !== "synced") return false;
         if (!String(todo.externalCalendarId || "").trim()) return false;
@@ -94,7 +94,7 @@
 
     async function pullTodosFromMacCalendar({ manual = false, triggerExport = true } = {}) {
       const todos = getTodos();
-      const activeTodos = todos.filter((todo) => !todo?.completed && !isTodoOverdue(todo));
+      const activeTodos = todos.filter((todo) => !todo?.completed && todo?.todoKind !== "group" && todo?.scheduleState !== "unplanned" && !isTodoOverdue(todo));
       const fetchFn = resolveFetch();
       let response = null;
       try {
@@ -148,7 +148,7 @@
       for (const item of updates) {
         const todo = todos.find((entry) => String(entry.id) === String(item.taskId || ""));
         if (!todo) continue;
-        if (todo.completed) continue;
+        if (todo.completed || todo.todoKind === "group" || todo.scheduleState === "unplanned") continue;
         if (isTodoOverdue(todo)) continue;
 
         const remote = item.remote || {};
@@ -202,7 +202,7 @@
       for (const item of conflicts) {
         const todo = todos.find((entry) => String(entry.id) === String(item.taskId || ""));
         if (!todo) continue;
-        if (todo.completed) continue;
+        if (todo.completed || todo.todoKind === "group" || todo.scheduleState === "unplanned") continue;
         if (isTodoOverdue(todo)) continue;
         todo.calendarSynced = false;
         todo.syncState = "conflict";
@@ -217,7 +217,7 @@
           const todo = todos.find((entry) => String(entry.id) === taskId);
           if (!todo) continue;
           if (isTodoOverdue(todo)) continue;
-          if (todo.completed) continue;
+          if (todo.completed || todo.todoKind === "group" || todo.scheduleState === "unplanned") continue;
           if (todo.syncState !== "synced") continue;
           if (hasDirtyLocalChanges(todo)) continue;
           const removed = deleteTodoByTaskId(taskId, { queueRemoteDelete: false, timestampIso: pulledAt });
