@@ -965,6 +965,42 @@
       return compareTodosByFallbackOrder(a, b);
     }
 
+    function compareTodosByProjectTime(a, b) {
+      const aCompleted = Boolean(a?.completed && !a?.__recentlyCompleted);
+      const bCompleted = Boolean(b?.completed && !b?.__recentlyCompleted);
+      if (aCompleted !== bCompleted) return aCompleted ? 1 : -1;
+
+      const aDate = isValidDateInput(a?.dueDate) ? String(a.dueDate) : "9999-12-31";
+      const bDate = isValidDateInput(b?.dueDate) ? String(b.dueDate) : "9999-12-31";
+      if (aDate !== bDate) return aDate.localeCompare(bDate);
+
+      const clockValue = (value) => {
+        const match = String(value || "").match(/^(\d{2}):(\d{2})$/);
+        if (!match) return Number.MAX_SAFE_INTEGER;
+        const hour = Number(match[1]);
+        const minute = Number(match[2]);
+        return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+          ? hour * 60 + minute
+          : Number.MAX_SAFE_INTEGER;
+      };
+      const aStart = clockValue(a?.startTime);
+      const bStart = clockValue(b?.startTime);
+      if (aStart !== bStart) return aStart - bStart;
+      const aEnd = clockValue(a?.endTime);
+      const bEnd = clockValue(b?.endTime);
+      if (aEnd !== bEnd) return aEnd - bEnd;
+
+      const aDayOrder = getFiniteOrderValue(a?.orderInDay);
+      const bDayOrder = getFiniteOrderValue(b?.orderInDay);
+      const safeADayOrder = aDayOrder === null ? Number.MAX_SAFE_INTEGER : aDayOrder;
+      const safeBDayOrder = bDayOrder === null ? Number.MAX_SAFE_INTEGER : bDayOrder;
+      if (safeADayOrder !== safeBDayOrder) return safeADayOrder - safeBDayOrder;
+      const aCreated = String(a?.createdAt || "");
+      const bCreated = String(b?.createdAt || "");
+      if (aCreated !== bCreated) return aCreated.localeCompare(bCreated);
+      return String(a?.id || "").localeCompare(String(b?.id || ""));
+    }
+
     function sortTodosByDragOrder(list, mode) {
       return [...(Array.isArray(list) ? list : [])].sort((a, b) => compareTodosByDragOrder(a, b, mode));
     }
@@ -2172,10 +2208,11 @@
       }
 
       const sorter = (a, b) => {
-        if (b.pendingTodoCount !== a.pendingTodoCount) return b.pendingTodoCount - a.pendingTodoCount;
-        if (b.totalTodoCount !== a.totalTodoCount) return b.totalTodoCount - a.totalTodoCount;
-        if (b.totalHistoryCount !== a.totalHistoryCount) return b.totalHistoryCount - a.totalHistoryCount;
-        return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+        const aUnset = !a.parentPath && a.path === TODO_UNSET_PROJECT_LABEL;
+        const bUnset = !b.parentPath && b.path === TODO_UNSET_PROJECT_LABEL;
+        if (aUnset !== bUnset) return aUnset ? 1 : -1;
+        return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN") ||
+          String(a.path || "").localeCompare(String(b.path || ""), "zh-CN");
       };
       const roots = Array.from(nodeMap.values()).filter((node) => !node.parentPath);
       const sortChildren = (items) => {
@@ -2185,14 +2222,14 @@
         }
       };
       for (const node of nodeMap.values()) {
-        node.todos = sortTodosByDragOrder(node.todos, "project");
+        node.todos = [...node.todos].sort(compareTodosByProjectTime);
       }
       sortChildren(roots);
       return roots;
     }
 
     function renderTodoChildrenHtml(todo, items) {
-      const children = sortTodosByDragOrder(items.filter((t) => t.containerTodoId === todo.id), "project");
+      const children = items.filter((t) => t.containerTodoId === todo.id).sort(compareTodosByProjectTime);
       return `<li class="todo-subtree todo-project-tree-node" data-group-dimension="project" data-drag-group-key="todo-parent:${escapeHtml(todo.id)}"><ul class="todo-list">${children.map((child, order) => renderTodoRowHtml(child, { dragMode: "project", dragGroupKey: `todo-parent:${todo.id}`, groupOrderIndex: order })).join("")}</ul><button class="todo-subtask-add" type="button" data-add-todo-child="${escapeHtml(todo.id)}">＋ 添加子待办</button></li>`;
     }
 
@@ -2285,7 +2322,7 @@
 
       if (dimension === "project" || dimension === "tag") {
         for (const [key, items] of grouped) {
-          grouped.set(key, sortTodosByDragOrder(items, dimension));
+          grouped.set(key, dimension === "project" ? [...items].sort(compareTodosByProjectTime) : sortTodosByDragOrder(items, dimension));
         }
       }
 
@@ -2295,6 +2332,14 @@
     function getTodoGroupOrder(dimension, grouped) {
       const keys = Array.from(grouped.keys());
       if (dimension !== "time") {
+        if (dimension === "project") {
+          return keys.sort((a, b) => {
+            const aUnset = a === TODO_UNSET_PROJECT_LABEL || a === "未分组项目";
+            const bUnset = b === TODO_UNSET_PROJECT_LABEL || b === "未分组项目";
+            if (aUnset !== bUnset) return aUnset ? 1 : -1;
+            return String(a).localeCompare(String(b), "zh-CN");
+          });
+        }
         if (dimension === "tag") {
           return keys.sort((a, b) => {
             if (a === "未标记" && b !== "未标记") return -1;

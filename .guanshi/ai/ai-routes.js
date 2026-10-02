@@ -742,6 +742,13 @@ function createAiRoutes(options = {}) {
         if (["need_more_context", "need_context_recompose"].includes(plannerResult.decision.type)) {
           result = buildAssistantResultFromPlan(plannerResult, null, { stream: false, now: options.now });
           await emitAssistantTurnResult(res, result);
+        } else if (plannerResult.decision.type === "answer" && plannerResult.decision.deterministicAnswer === true) {
+          result = buildAssistantResultFromPlan(plannerResult, null, {
+            answer: plannerResult.decision.handoff,
+            stream: false,
+            now: options.now,
+          });
+          await emitAssistantTurnResult(res, result);
         } else if (plannerResult.decision.type === "answer") {
           result = await emitAssistantAnswerWriterStream(res, plannerResult, runId, { signal: clientAbort.signal });
         } else {

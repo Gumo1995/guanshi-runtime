@@ -34,6 +34,7 @@
       showTodoNotice = () => {},
       validateTodoEdit = () => ({ feasible: true }),
       validateTodoScheduleChanges = () => ({ feasible: true }),
+      alignPastTodoEditToCurrentTime = () => ({ feasible: true, adjusted: false }),
       showTodoInProject = () => {},
       runDataTransaction,
       deferDataEffect = () => false,
@@ -1502,6 +1503,7 @@
         !selected.completed && isValidDateInput(oldDueDate)
           ? getIncompleteTodosByDate(oldDueDate).findIndex((item) => String(item.id) === String(selected.id))
           : -1;
+      const scheduleSnapshot = !selected.completed ? JSON.parse(JSON.stringify(todos)) : null;
       const resolvedTime = resolveTodoTimeInputForSubmit(selected, next);
       if (!resolvedTime.ok) {
         if (showValidationAlert) {
@@ -1578,6 +1580,22 @@
         reminderCompletedAt: null,
       });
 
+      const timeChanged =
+        oldStartTime !== selected.startTime ||
+        oldEndTime !== selected.endTime ||
+        Number(oldEstimate) !== Number(selected.estimatedMinutes);
+      const pastAdjustment = !selected.completed && timeChanged
+        ? alignPastTodoEditToCurrentTime(selected, scheduleSnapshot, {
+          markDirty: true,
+          timestampIso: nowIso,
+        })
+        : { feasible: true, adjusted: false };
+      if (!pastAdjustment.feasible) {
+        todos.splice(0, todos.length, ...scheduleSnapshot);
+        showTodoNotice(pastAdjustment.message || "今天没有足够空间重新安排该待办。", true);
+        return false;
+      }
+
       if (selected.completed && changedForSync) {
         const completionSnapshot = buildTodoCompletionSnapshot(selected);
         if (completionSnapshot) {
@@ -1610,14 +1628,13 @@
         reflowTodoDayFromIndex(oldDueDate, oldDayIndex, { markDirty: true, timestampIso: nowIso });
       }
 
-      const timeChanged =
-        oldStartTime !== selected.startTime ||
-        oldEndTime !== selected.endTime ||
-        Number(oldEstimate) !== Number(selected.estimatedMinutes);
-
       // A lock toggle only changes protection; it must not reschedule the day.
-      if (!selected.completed && timeChanged && isValidDateInput(selected.dueDate)) {
-        reflowTodoDayAfterAnchor(selected.dueDate, selected.id, { markDirty: true, timestampIso: nowIso });
+      if (!selected.completed && timeChanged && !pastAdjustment.adjusted && isValidDateInput(selected.dueDate)) {
+        reflowTodoDayAfterAnchor(selected.dueDate, selected.id, {
+          markDirty: true,
+          timestampIso: nowIso,
+          preserveExistingTimes: true,
+        });
       } else if (selected.completed && timeChanged && isValidDateInput(selected.dueDate)) {
         const completedEndMinutes = parseClockToMinutes(selected.endTime);
         if (Number.isInteger(completedEndMinutes)) {
@@ -1629,8 +1646,30 @@
         }
       }
 
+      if (scheduleSnapshot && timeChanged) {
+        const currentById = new Map(todos.map((todo) => [String(todo.id), todo]));
+        const scheduleChanges = scheduleSnapshot.flatMap((before) => {
+          const after = currentById.get(String(before.id));
+          if (!after || ["dueDate", "startTime", "endTime"].every((key) => String(before[key] || "") === String(after[key] || ""))) return [];
+          return [{
+            operation: "schedule_todo_block",
+            todoId: before.id,
+            after: { dueDate: after.dueDate, startTime: after.startTime, endTime: after.endTime },
+          }];
+        });
+        const scheduleValidation = validateTodoScheduleChanges(scheduleSnapshot, scheduleChanges, { allowPast: true });
+        if (!scheduleValidation.feasible) {
+          todos.splice(0, todos.length, ...scheduleSnapshot);
+          showTodoNotice(scheduleValidation.message || "时间调整与锁定任务或忙碌时间冲突，未保存。", true);
+          return false;
+        }
+      }
+
       if (changedForSync || lockChanged) {
-        saveTodos(todos);
+        saveTodos(todos, { undoBoundary: timeChanged });
+      }
+      if (pastAdjustment.adjusted) {
+        showTodoNotice(`开始时间早于当前时间，已从可用时间 ${pastAdjustment.scheduledStartTime} 起重新安排。`);
       }
       todoDetailModule.clearSubmitState();
       if (!skipRender) {

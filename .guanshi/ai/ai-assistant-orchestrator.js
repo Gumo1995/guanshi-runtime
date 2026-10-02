@@ -56,6 +56,7 @@ const AI_GLOBAL_BACKGROUND_CONTEXT_SCHEMA = "guanshi-ai-global-background-contex
 const AI_TURN_CONTEXT_SCHEMA = "guanshi-ai-turn-context-v1";
 const AI_CONTEXT_CANDIDATES_SCHEMA = "guanshi-ai-context-candidates-v1";
 const LIUYAO_INTERPRETATION_SCHEMA = "guanshi-liuyao-interpretation-v1";
+const AI_CONTEXT_RERUN_HARD_MAX = 2;
 
 const GUANSHI_PERSONA_PROMPT = [
   `persona_schema: ${GUANSHI_PERSONA_PROMPT_SCHEMA}`,
@@ -644,6 +645,7 @@ function normalizeContextAccessPolicy(value) {
   const rawMode = normalizeText(source.mode || "ask_each_time", 80);
   const allowedModes = new Set(["ask_each_time", "allow_conversation", "auto_allow", "no_reference"]);
   const mode = allowedModes.has(rawMode) ? rawMode : "ask_each_time";
+  const parsedMaxAutoReruns = Number.parseInt(String(source.maxAutoReruns), 10);
   return {
     schema: AI_CONTEXT_ACCESS_POLICY_SCHEMA,
     mode,
@@ -665,7 +667,9 @@ function normalizeContextAccessPolicy(value) {
         "calendarBusyBlocks",
         "selectedReading",
       ].includes(item)),
-    maxAutoReruns: Math.max(0, Math.min(2, Number.parseInt(String(source.maxAutoReruns || 2), 10) || 2)),
+    maxAutoReruns: Number.isFinite(parsedMaxAutoReruns)
+      ? Math.max(0, Math.min(AI_CONTEXT_RERUN_HARD_MAX, parsedMaxAutoReruns))
+      : AI_CONTEXT_RERUN_HARD_MAX,
   };
 }
 
@@ -2008,22 +2012,10 @@ function getDecisionMinimumContext(decision, toolCatalog) {
   const action = getDecisionRegistryAction(decision, toolCatalog);
   if (!action) return normalizeMinimumContext(null);
   try {
-    const minimum = normalizeMinimumContext(action?.minimum_context);
-    const argumentsSource = normalizeObject(decision?.arguments);
-    const explicitTodoRefs = normalizeIdList(
-      argumentsSource.contextRefs
-        || argumentsSource.todoRefs
-        || argumentsSource.todoIds
-        || argumentsSource.sourceTodoId,
-      20,
-    );
-    if (minimum.requiredCapabilities.includes("selectedTodo") && explicitTodoRefs.length) {
-      return {
-        ...minimum,
-        requiredCapabilities: minimum.requiredCapabilities.map((item) => item === "selectedTodo" ? "todos" : item),
-      };
-    }
-    return minimum;
+    // An explicit reference identifies the target; it does not downgrade the
+    // selected-object capability to a list summary. Keep the Action contract
+    // additive so full selected details and broader occupancy can coexist.
+    return normalizeMinimumContext(action?.minimum_context);
   } catch {
     return normalizeMinimumContext(null);
   }
@@ -2256,8 +2248,204 @@ function createContextResolution(status, requirement, details = {}) {
     targetView: normalizeText(details.targetView, 80),
     authorization: status === "authorization_required" ? "per_turn_required" : "not_required",
     resolutionId: normalizeText(details.resolutionId, 120),
-    rerunCount: Math.max(0, Math.min(1, Number(details.rerunCount || 0) || 0)),
+    rerunCount: Math.max(0, Math.min(AI_CONTEXT_RERUN_HARD_MAX, Number(details.rerunCount || 0) || 0)),
     previousAction: normalizeText(details.previousAction, 120),
+  };
+}
+
+function buildContextRequestFingerprint(value) {
+  const request = normalizeContextRequest(value);
+  if (!request) return "";
+  return JSON.stringify({
+    requestType: request.requestType,
+    target: request.target,
+    detailLevel: request.detailLevel,
+    todoIds: [...request.todoIds].sort(),
+    project: request.project,
+    category: request.category,
+    tag: request.tag,
+    status: request.status,
+    range: {
+      start: request.range.start,
+      end: request.range.end || request.range.start,
+    },
+    capabilities: [...normalizeContextCapabilities(request.include)].sort(),
+    maxItems: request.maxItems,
+  });
+}
+
+function buildRequirementContextRequest(requirement) {
+  if (requirement.contextRequest) return requirement.contextRequest;
+  return normalizeContextRequest({
+    requestType: requirement.detailLevel ? "todo_detail_expand" : "time_window_expand",
+    target: requirement.detailLevel ? "todo_detail" : "time_window",
+    detailLevel: requirement.detailLevel,
+    reason: requirement.reason,
+    range: requirement.range,
+    include: requirement.requiredCapabilities,
+    maxItems: 80,
+  });
+}
+
+function compareContextRequestCoverage(grantedValue, requestedValue) {
+  const granted = normalizeContextRequest(grantedValue);
+  const requested = normalizeContextRequest(requestedValue);
+  if (!granted || !requested) {
+    return {
+      covered: false,
+      grantedFingerprint: buildContextRequestFingerprint(granted),
+      requestedFingerprint: buildContextRequestFingerprint(requested),
+      missingCapabilities: requested ? normalizeContextCapabilities(requested.include) : [],
+      missingTodoIds: requested?.todoIds || [],
+      changedSelectors: [],
+      rangeExpanded: Boolean(requested?.range?.start),
+      maxItemsExpanded: false,
+    };
+  }
+  const grantedCapabilities = new Set(normalizeContextCapabilities(granted.include));
+  const requestedCapabilities = normalizeContextCapabilities(requested.include);
+  const grantedTodoIds = new Set(granted.todoIds);
+  const selectorKeys = ["target", "detailLevel", "project", "category", "tag", "status"];
+  const changedSelectors = selectorKeys.filter((key) => {
+    const requestedValue = normalizeText(requested[key], 160);
+    if (!requestedValue) return false;
+    return normalizeText(granted[key], 160) !== requestedValue;
+  });
+  const requestedStart = requested.range.start;
+  const requestedEnd = requested.range.end || requestedStart;
+  const grantedStart = granted.range.start;
+  const grantedEnd = granted.range.end || grantedStart;
+  const rangeExpanded = Boolean(requestedStart) && (
+    !grantedStart
+    || requestedStart < grantedStart
+    || requestedEnd > grantedEnd
+  );
+  const missingCapabilities = requestedCapabilities.filter((capability) => !grantedCapabilities.has(capability));
+  const missingTodoIds = requested.todoIds.filter((todoId) => !grantedTodoIds.has(todoId));
+  const maxItemsExpanded = requested.maxItems > granted.maxItems;
+  return {
+    covered: !missingCapabilities.length
+      && !missingTodoIds.length
+      && !changedSelectors.length
+      && !rangeExpanded
+      && !maxItemsExpanded,
+    grantedFingerprint: buildContextRequestFingerprint(granted),
+    requestedFingerprint: buildContextRequestFingerprint(requested),
+    missingCapabilities,
+    missingTodoIds,
+    changedSelectors,
+    rangeExpanded,
+    maxItemsExpanded,
+  };
+}
+
+function findContextMissingTargets(currentContext, requestedContext) {
+  const request = normalizeContextRequest(requestedContext);
+  if (!request) return [];
+  const requestedCapabilities = new Set(normalizeContextCapabilities(request.include));
+  const missingTargets = [];
+  const selectedTodos = Array.isArray(currentContext.selectedObjects?.todos) ? currentContext.selectedObjects.todos : [];
+  const pageTodos = Array.isArray(currentContext.pageWorkContext?.todos) ? currentContext.pageWorkContext.todos : [];
+  if (requestedCapabilities.has("selectedTodo") && !selectedTodos.length) {
+    missingTargets.push("selectedTodo");
+  }
+  if (requestedCapabilities.has("selectedReading") && !currentContext.selectedObjects?.reading) {
+    missingTargets.push("selectedReading");
+  }
+  const availableTodoIds = new Set([
+    ...selectedTodos,
+    ...pageTodos,
+  ].map((todo) => normalizeText(todo?.id, 120)).filter(Boolean));
+  if (request.todoIds.some((todoId) => !availableTodoIds.has(todoId))) {
+    missingTargets.push("todoIds");
+  }
+  return Array.from(new Set(missingTargets));
+}
+
+function createContextTerminalResult(request, decision, requirement, currentContext, details = {}) {
+  const requestedContext = details.requestedContext || buildRequirementContextRequest(requirement);
+  const rerunCount = Math.max(0, Math.min(
+    AI_CONTEXT_RERUN_HARD_MAX,
+    Number(request?.contextGrant?.rerunCount || 0) || 0,
+  ));
+  const maxAutoReruns = Math.max(0, Math.min(
+    AI_CONTEXT_RERUN_HARD_MAX,
+    Number(request?.contextAccessPolicy?.maxAutoReruns ?? AI_CONTEXT_RERUN_HARD_MAX) || 0,
+  ));
+  const requestedCapabilities = normalizeContextCapabilities(requestedContext?.include || requirement.requiredCapabilities);
+  const grantedCapabilities = normalizeContextCapabilities(request?.contextGrant?.request?.include);
+  const alreadyGrantedCapabilities = requestedCapabilities.filter((capability) => grantedCapabilities.includes(capability));
+  const missingCapabilities = requestedCapabilities.filter((capability) => !currentContext.capabilities.includes(capability));
+  const missingTargets = findContextMissingTargets(currentContext, requestedContext);
+  const requestedReasonCode = normalizeText(details.reasonCode, 80) || "no_new_scope";
+  const reasonCode = ["limit_reached", "unsupported_context"].includes(requestedReasonCode)
+    ? requestedReasonCode
+    : missingTargets.length ? "target_missing" : requestedReasonCode;
+  const detail = sanitizeUserVisibleTaskText(
+    decision?.contextRequest?.reason || requirement.reason || "当前资料仍不足以可靠完成这个请求。",
+    360,
+  );
+  const answer = reasonCode === "target_missing"
+    ? `本轮已经读取了允许的资料，但没有找到明确的目标对象，因此不能继续执行。${detail ? `当前缺口：${detail}` : ""} 请先选择或明确指定目标；如果只需要一般建议，也可以直接说明。`
+    : reasonCode === "limit_reached"
+      ? `本轮已经完成 ${rerunCount} 次补充资料读取，仍不足以可靠完成这个请求，因此我不会继续重复申请。${detail ? `当前缺口：${detail}` : ""} 你可以补充缺失资料，或让我只基于现有资料给出有限建议。`
+      : reasonCode === "unsupported_context"
+        ? `这个请求依赖当前尚未接入的资料类型，切换页面或重复申请都无法补足，因此我已停止继续读取。${detail ? `当前缺口：${detail}` : ""} 你可以补充这些资料，或让我只基于现有资料给出有限建议。`
+      : `这次继续申请的范围与本轮已经允许的范围相同，不会带来新资料，因此我已停止重复申请。${detail ? `当前缺口：${detail}` : ""} 你可以补充缺失资料，或让我只基于现有资料给出有限建议。`;
+  const contextResolution = {
+    ...createContextResolution("authorization_required", requirement, {
+      request,
+      currentSurface: currentContext.surface,
+      reason: reasonCode,
+      rerunCount,
+      previousAction: decision?.tool || decision?.legacyAction || decision?.intent,
+    }),
+    terminal: true,
+    reasonCode,
+    authorization: "not_required",
+    rerunCount,
+    maxAutoReruns,
+    requestedCapabilities,
+    alreadyGrantedCapabilities,
+    missingCapabilities,
+    missingTargets,
+    requestedFingerprint: details.coverage?.requestedFingerprint || buildContextRequestFingerprint(requestedContext),
+    grantedFingerprint: details.coverage?.grantedFingerprint || buildContextRequestFingerprint(request?.contextGrant?.request),
+  };
+  const terminalDecision = {
+    type: "answer",
+    intent: "context_boundary",
+    handoff: answer,
+    writerTask: {
+      schema: AI_WRITER_TASK_SCHEMA,
+      goal: answer,
+      responseShape: "原样展示本地确定性边界说明。",
+      mustMention: [],
+      mustAvoid: ["不要补充未提供的事实，不要声称已经获得缺失数据。"],
+      tone: "简洁、准确",
+    },
+    deterministicAnswer: true,
+    needsFollowUp: false,
+    boundary: "只说明已授权范围、仍缺少的资料和用户可以选择的下一步。",
+    referenceKeys: [],
+    contextAssessment: requirement.assessment,
+    contextResolution,
+    reason: `context_terminal:${reasonCode}`,
+    parseStatus: "context_resolution_terminal",
+  };
+  return {
+    decision: terminalDecision,
+    contextGuard: {
+      schema: "guanshi-ai-context-sufficiency-guard-v1",
+      applied: true,
+      terminal: true,
+      reason: reasonCode,
+      previousDecision: redactSensitiveValue(decision, { maxStringLength: 2000 }),
+      contextRequest: requestedContext,
+      contextResolution,
+      contextContractFilter: requirement.contextContractFilter,
+    },
+    contextResolution,
   };
 }
 
@@ -2404,10 +2592,49 @@ function enforceContextSufficiencyGuard(request, decision, toolCatalog) {
     };
   }
 
+  const requestedContext = buildRequirementContextRequest(requirement);
+  const maxAutoReruns = Math.max(0, Math.min(
+    AI_CONTEXT_RERUN_HARD_MAX,
+    Number(request?.contextAccessPolicy?.maxAutoReruns ?? AI_CONTEXT_RERUN_HARD_MAX) || 0,
+  ));
+  const authorizationRerunCount = Math.max(0, Math.min(
+    AI_CONTEXT_RERUN_HARD_MAX,
+    Number(request?.contextGrant?.rerunCount || 0) || 0,
+  ));
+  const coverage = compareContextRequestCoverage(request?.contextGrant?.request, requestedContext);
+
   const missingRequirement = {
     ...requirement,
     requiredCapabilities: missingCapabilities.length ? missingCapabilities : requirement.requiredCapabilities,
   };
+
+  // Authorization termination is stronger than page-local recomposition. Once the
+  // bounded grant loop has ended, switching surfaces cannot create a third attempt.
+  if (maxAutoReruns === 0 || authorizationRerunCount >= maxAutoReruns) {
+    return createContextTerminalResult(request, decision, requirement, currentContext, {
+      requestedContext,
+      coverage,
+      reasonCode: "limit_reached",
+    });
+  }
+  if (request?.contextGrant?.approved === true && coverage.covered) {
+    return createContextTerminalResult(request, decision, requirement, currentContext, {
+      requestedContext,
+      coverage,
+      reasonCode: "no_new_scope",
+    });
+  }
+
+  // An insufficient assessment with no registered capability describes an
+  // unsupported data source, not a surface that can be recomposed.
+  if (!missingRequirement.requiredCapabilities.length) {
+    return createContextTerminalResult(request, decision, requirement, currentContext, {
+      requestedContext,
+      coverage,
+      reasonCode: "unsupported_context",
+    });
+  }
+
   const surface = resolveContextSurface(
     toolCatalog,
     missingRequirement.requiredCapabilities,
@@ -2492,6 +2719,9 @@ function buildSystemPrompt(toolCatalog) {
   const tools = toolCatalog.tools
     .map(describeCatalogTool)
     .join("\n");
+  const registeredContextCapabilities = Array.from(new Set(
+    listContextSurfaceEntries(toolCatalog).flatMap((entry) => entry.provides),
+  )).sort();
   return [
     `prompt_schema: ${AI_PLANNER_PROMPT_SCHEMA}`,
     GUANSHI_PERSONA_PROMPT,
@@ -2513,7 +2743,8 @@ function buildSystemPrompt(toolCatalog) {
       "重排策略规则：time.reflow_unfinished 默认 strategy=minimal_change，尊重手动顺序和仍有效的时间；只有用户明确要求整体优化、按优先级或截止日期重新排序时才选择 balanced 或 deadline_first。锁定任务不能移动，选择部分任务也不能忽略范围内其他任务的占用。",
 	    "估时字段规则：选择 time.parse_task 时，如果用户没有明确时长，也要结合任务语义、上下文和已确认记忆输出 task.estimatedMinutes、task.taskType、task.minimumBlockMinutes，并在 assumptions 或 warnings 里说明估时依据或不确定性。",
 	    "新增位置规则：选择 time.parse_task 时，用户明确给出日期或时间就设置 placement.mode=scheduled_time；用户明确说归入某个父待办时设置 placement.mode=child_of 和 parentTodoId；没有明确时间但当前有选中待办时设置 placement.mode=after_todo 和 anchorTodoId；都没有时使用 placement.mode=today。",
-	    "拆解估时规则：选择 time.breakdown_task 时，尽量输出 parentTask 或 contextRefs；父任务已有 dueDate/startTime/endTime 时要带给 workflow。如果能拆出步骤，输出 subtasks 数组，每项包含 title、estimatedMinutes、taskType；子任务时间要按步骤成本分配，不要机械平分。拆解结果会建立真实父子待办，父容器不占用时间。",
+	    "拆解估时规则：选择 time.breakdown_task 时，尽量输出 parentTask 或 contextRefs；如果能拆出步骤，输出 subtasks 数组，每项包含 title、estimatedMinutes、taskType；子任务时间要按步骤成本分配，不要机械平分。拆解结果会建立真实父子待办，父容器不占用时间。",
+	    "拆解约束规则：父任务备注或用户修正里有明确截止日期时，输出 arguments.deadline=YYYY-MM-DD；只拆结构不排期时输出 schedulingMode=hierarchy_only，否则使用 schedule_if_feasible。不要自行给 subtasks 填写开始结束时间，Workflow 会结合 runtimeClock、忙碌块、工作窗口和间隔调用本地 Scheduler。",
 	    "拆解命名规则：拆解出的子待办 title 尽量使用“总事项 - 子事项”格式；总事项代表父任务的核心目标，子事项代表当前步骤，两段都要精简，例如“回复客户 - 整理要点”。",
 	    "复制待办规则：用户要求复制当前或指定待办时选择 time.copy_task，只提供目标引用，不重新生成标题或内容；副本由本地确定性复制，默认不锁定、不重复提醒。",
 	    "修改待办规则：用户要求修改已有待办字段但不是完成任务时选择 time.edit_task，把明确变动放在 arguments.patch；只填写用户要求改变的字段，不补造其它字段。设为未排期使用 patch.scheduleState=unplanned。",
@@ -2533,6 +2764,8 @@ function buildSystemPrompt(toolCatalog) {
 	    "记忆不确定规则：如果无法判断用户说的是本次临时要求还是长期规则，选择 answer/clarify 并只追问这一点；不要猜测，也不要先生成记忆提案。",
 	    "记忆判定证据：选择 time.save_memory_proposal 时，在 arguments.memoryDecision 中输出 {classification:\"long_term_memory\", operation:\"new|update|replace\", evidenceQuote:\"用户原句中的稳定性证据\", reason:\"为何会影响后续协作\"}；operation 会作为治理意图参与关系判断，但最终目标仍由本地记忆治理核对现有正式记忆。",
 	    "能力需求边界：用户希望新增工具、模块、数据源、权限或自动化时选择 answer，说明当前能力边界；不要把产品能力需求保存为记忆。用户明确要求把能力需求记录成待办时，改走 time.parse_task 草稿。",
+	    `本地资料能力目录：当前结构化读取能力只有 ${registeredContextCapabilities.join("、") || "无"}。未出现在目录中的睡眠、健康、日记正文、外部项目实体等数据源视为尚未接入，不得用 todos、entries 或 busyBlocks 冒充，也不得为此重复申请无关范围。`,
+	    "读取与写入能力边界：projectTodos 只是按项目过滤 todos，不代表存在项目实体或项目里程碑写入 Action。用户需要的写入结果不在可选工具目录时，选择 answer，说明可以提供一般性方案但不能生成该类受治理草稿，并给出当前已注册工具能完成的替代方案。",
 	    "记忆候选字段：选择 time.save_memory_proposal 时，arguments.proposal 必须尽量给出 type、title、body、strength、appliesTo、modelReadable、engineReadable、matchMode、match、rule、validFrom、validUntil、reviewAfter、confidence、operationIntent 和 evidence；operationIntent 使用 create、update 或 replace，并与 memoryDecision.operation 一致；subjectKey 可给建议值，也可留空由本地治理层按已注册规则归一化；一条提案只表达一个稳定主题。",
 	    "记忆字段枚举：proposal.type 只能是 profile、principle、habit、boundary、preference、rule、playbook、review 之一，绝不能写 memory 或 memory_proposal；strength 只能是 hard、soft、observed；matchMode 只能是 global、any、all。",
 	    "记忆字段类型：modelReadable 和 engineReadable 必须是 JSON boolean，不得写说明文字或对象；evidence 必须是对象，优先包含 source、quote、date；日期字段为空时用 null，有值时用 YYYY-MM-DD。",
@@ -2952,6 +3185,80 @@ function resolveCanonicalTodoReference(canonicalTodos, reference) {
   return byTitle.length === 1 ? byTitle[0] : null;
 }
 
+function buildWorkflowActionContracts(request, action, mergedArgs, turnContext = {}) {
+  const requestInput = normalizeObject(request?.input);
+  const feedback = normalizeSemanticFeedback(request?.semanticFeedback || requestInput.semanticFeedback);
+  const runtimeClock = normalizeObject(turnContext?.modelContext?.runtimeClock || requestInput.runtimeClock);
+  const feedbackArguments = normalizeObject(feedback?.previousSemanticAction?.arguments);
+  const constraintArgs = {
+    ...normalizeObject(feedbackArguments.constraintSet || feedbackArguments.constraints),
+    ...normalizeObject(mergedArgs.constraints || mergedArgs.constraintSet),
+  };
+  const parentTask = normalizeObject(mergedArgs.parentTask || mergedArgs.targetTodo);
+  const deadlineText = normalizeText(
+    constraintArgs.deadline
+      || mergedArgs.deadline
+      || parentTask.targetDate
+      || parentTask.deadline,
+    80,
+  );
+  const deadline = extractIsoDateFromText(deadlineText) || (/^\d{4}-\d{2}-\d{2}$/.test(deadlineText) ? deadlineText : "");
+  const schedulingActions = new Set(["breakdown_task", "plan_today", "plan_week", "reflow_unfinished"]);
+  const notBefore = schedulingActions.has(action) && runtimeClock.localDate && runtimeClock.localTime
+    ? {
+        schema: "guanshi-scheduler-not-before-v1",
+        source: "runtime_clock",
+        date: normalizeText(runtimeClock.localDate, 20),
+        time: normalizeText(runtimeClock.localTime, 8),
+        timeWithSeconds: normalizeText(runtimeClock.localTimeWithSeconds, 12),
+        timezone: normalizeText(runtimeClock.timezone || request?.timezone, 80),
+      }
+    : null;
+  const workingWindows = (Array.isArray(requestInput.workingWindows) ? requestInput.workingWindows : [])
+    .slice(0, 14)
+    .map((window) => ({
+      date: normalizeText(window?.date, 20),
+      start: normalizeText(window?.start, 8),
+      end: normalizeText(window?.end, 8),
+    }))
+    .filter((window) => window.start && window.end);
+  const constraintSet = {
+    schema: "guanshi-action-constraint-set-v1",
+    action,
+    notBefore,
+    deadline: deadline || null,
+    workingWindows,
+    gapMinutes: Math.max(0, Math.min(60, Number.parseInt(String(requestInput.defaultGapMinutes ?? 5), 10) || 5)),
+    schedulingMode: normalizeText(mergedArgs.schedulingMode || constraintArgs.schedulingMode || "schedule_if_feasible", 40),
+    userFeedback: feedback?.userFeedback || "",
+    provenance: [
+      ...(notBefore ? ["runtime_clock"] : []),
+      ...(deadline ? ["planner_deadline"] : []),
+      ...(feedback ? ["semantic_feedback"] : []),
+    ],
+  };
+  const lineageId = normalizeText(
+    feedback?.sourceMessageId
+      || request?.contextGrant?.sourceRequestId
+      || request?.contextContinuation?.sourceRequestId
+      || request?.requestId,
+    120,
+  );
+  return {
+    runtimeClock,
+    constraintSet,
+    actionRun: {
+      schema: "guanshi-action-run-v1",
+      actionRunId: lineageId || normalizeText(request?.requestId, 120),
+      action,
+      revision: Math.max(1, Number.parseInt(String(request?.contextGrant?.rerunCount || 0), 10) + (feedback ? 2 : 1)),
+      targetRefs: collectPlannerTodoReferences(mergedArgs).slice(0, 20),
+      feedbackSourceMessageId: feedback?.sourceMessageId || "",
+      status: "generating",
+    },
+  };
+}
+
 function buildWorkflowInput(request, decision, turnContext = {}) {
   const args = normalizeObject(decision.arguments);
   const semanticAction = normalizeObject(decision.semanticAction || decision.semantic || args.semanticAction || args.semantic || args.actionPlan);
@@ -2973,6 +3280,10 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
     ...(normalizedGoal ? { normalizedGoal } : {}),
     text: normalizeRawText(mergedArgs.text || semanticAction.sourceText || request.text),
   };
+  const actionContracts = buildWorkflowActionContracts(request, action, mergedArgs, turnContext);
+  input.runtimeClock = actionContracts.runtimeClock;
+  input.constraintSet = actionContracts.constraintSet;
+  input.actionRun = actionContracts.actionRun;
   input.currentDate = normalizeText(requestInput.currentDate || input.currentDate, 20);
   input.referenceScope = requestInput.referenceScope;
   input.viewContext = requestInput.viewContext;
@@ -3010,7 +3321,17 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
     input.targetTodoId = normalizeText(targetTodo?.id || sourceRef, 120);
     input.sourceTodoId = input.targetTodoId;
     input.todos = action === "move_task" ? canonicalTodos : targetTodo ? [targetTodo] : [];
-    if (action === "breakdown_task") input.parentTask = targetTodo || normalizeObject(input.parentTask);
+    input.actionRun = {
+      ...input.actionRun,
+      targetRefs: input.targetTodoId ? [input.targetTodoId] : input.actionRun.targetRefs,
+    };
+    if (action === "breakdown_task") {
+      input.parentTask = targetTodo || normalizeObject(input.parentTask);
+      input.fixedTodos = canonicalTodos.filter((todo) => todo.id !== input.targetTodoId);
+      input.busyBlocks = Array.isArray(turnContext?.execution?.busyBlocks)
+        ? turnContext.execution.busyBlocks
+        : [];
+    }
 
     if (action === "move_task") {
       const structure = normalizeObject(mergedArgs.structure || mergedArgs.move);
@@ -3037,7 +3358,7 @@ function buildWorkflowInput(request, decision, turnContext = {}) {
       todosSource: targetTodo ? "turn_context_target" : "missing",
       todoCount: targetTodo ? 1 : 0,
       plannerRefCount: fallbackRefs.length,
-      busyBlockCount: 0,
+      busyBlockCount: action === "breakdown_task" && Array.isArray(input.busyBlocks) ? input.busyBlocks.length : 0,
     };
     delete input.tasks;
   }
@@ -3333,6 +3654,7 @@ async function planAssistantTurn(input, options = {}) {
       intent: decision.intent || "",
       handoff: decision.handoff || "",
       writerTask: decision.writerTask || null,
+      deterministicAnswer: decision.deterministicAnswer === true,
       needsFollowUp: decision.needsFollowUp === true,
       boundary: decision.boundary || "",
       referenceKeys: Array.isArray(decision.referenceKeys) ? decision.referenceKeys.slice(0, 12) : [],
@@ -3719,6 +4041,7 @@ function buildAssistantResultFromPlan(plannerResult, workflow = null, options = 
       intent: decision.intent || "",
       handoff: decision.handoff || "",
       writerTask: decision.writerTask || null,
+      deterministicAnswer: decision.deterministicAnswer === true,
       needsFollowUp: decision.needsFollowUp === true,
       boundary: decision.boundary || "",
       referenceKeys: Array.isArray(decision.referenceKeys) ? decision.referenceKeys.slice(0, 12) : [],
@@ -3745,6 +4068,8 @@ function buildAssistantResultFromPlan(plannerResult, workflow = null, options = 
     semanticAction,
     actionReview,
     contextRequest: decision.contextRequest || null,
+    contextGrant: request.contextGrant || null,
+    contextContinuation: request.contextContinuation || null,
     contextAssessment: decision.contextAssessment || null,
     contextResolution: plannerResult.contextResolution || null,
     contextGuard: plannerResult.contextGuard || null,
@@ -4139,6 +4464,13 @@ async function executeAiAssistantTurn(input, stores = {}, options = {}) {
     return buildAssistantResultFromPlan(plannerResult, null, { stream: false, now: options.now });
   }
   if (plannerResult.decision.type === "answer") {
+    if (plannerResult.decision.deterministicAnswer === true) {
+      return buildAssistantResultFromPlan(plannerResult, null, {
+        answer: plannerResult.decision.handoff,
+        stream: false,
+        now: options.now,
+      });
+    }
     const writerResult = await runAnswerWriterTurn(plannerResult, {
       ...options,
       memoryStore: options.memoryStore || stores.memoryStore,

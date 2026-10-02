@@ -1490,6 +1490,7 @@ const calendarActionsModule = createCalendarActionsModule({
 const todoActionsModule = createTodoActionsModule({
   validateTodoEdit: (...args) => todoPlanModule.validateTodoEdit(...args),
   validateTodoScheduleChanges: (...args) => todoPlanModule.validateTodoScheduleChanges(...args),
+  alignPastTodoEditToCurrentTime: (...args) => todoPlanModule.alignPastTodoEditToCurrentTime(...args),
   showTodoInProject: (...args) => todoListModule.showTodoInProject(...args),
   insertTodoAfterAnchor: (...args) => todoPlanModule.insertTodoAfterAnchor(...args),
   prepareTodoInsertionContext: (...args) => todoListModule.prepareTodoInsertionContext(...args),

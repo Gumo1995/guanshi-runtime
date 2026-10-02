@@ -276,6 +276,7 @@
     let eventsBound = false;
     let isBusy = false;
     let activeRequestController = null;
+    let activeRequestStopReason = "";
     const deltaBuffers = new Map();
     let currentProviderIdentity = { label: "模型", logoKey: "generic" };
     let activeTurnScroll = null;
@@ -306,6 +307,7 @@
     let generatedItems = [];
     let pendingItems = [];
     let pendingSemanticFeedback = null;
+    let lastInvalidatedActionFeedback = null;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -2822,6 +2824,14 @@
         }
         buffer += decoder.decode();
         if (buffer.trim()) handleFrame(buffer);
+      } catch (error) {
+        if (handlers.signal?.aborted === true) {
+          const abortedError = new Error("已停止本轮生成。");
+          abortedError.name = "AbortError";
+          abortedError.code = "AI_PROVIDER_REQUEST_ABORTED";
+          throw abortedError;
+        }
+        throw error;
       } finally {
         if (typeof reader.releaseLock === "function") reader.releaseLock();
       }
@@ -3355,6 +3365,11 @@
 
     function resolveReferenceScope(action, text, options = {}) {
       const viewContext = readViewContext();
+      const actionMinimumRequired = new Set(
+        Array.isArray(findActionRegistryEntry(action)?.minimum_context?.required)
+          ? findActionRegistryEntry(action).minimum_context.required.map((item) => normalizeText(item))
+          : [],
+      );
       const contextGrant = normalizeContextGrant(options.contextGrant);
       if (contextGrant?.approved) {
         const include = new Set(contextGrant.request.include);
@@ -3368,7 +3383,12 @@
           maxItems: contextGrant.request.maxItems,
           viewContext,
           includes: {
-            selectedTodo: (include.has("selectedTodo") || include.has("selectedObjects") || include.has("todoDetails")) && Boolean(getSelectedTodo()),
+            selectedTodo: (
+              include.has("selectedTodo")
+              || include.has("selectedObjects")
+              || include.has("todoDetails")
+              || actionMinimumRequired.has("selectedTodo")
+            ) && Boolean(getSelectedTodo()),
             selectedReading: include.has("selectedReading"),
             todos: include.has("todos") || include.has("pageWorkContext") || include.has("projectTodos") || include.has("tagTodos") || include.has("statusTodos"),
             busyBlocks: include.has("busyBlocks") || include.has("calendarBusyBlocks"),
@@ -3390,7 +3410,7 @@
           maxItems: 80,
           viewContext,
           includes: {
-            selectedTodo: include.has("selectedTodo") && Boolean(getSelectedTodo()),
+            selectedTodo: (include.has("selectedTodo") || actionMinimumRequired.has("selectedTodo")) && Boolean(getSelectedTodo()),
             selectedReading: include.has("selectedReading"),
             todos: include.has("todos"),
             busyBlocks: include.has("busyBlocks"),
@@ -4190,6 +4210,49 @@
       };
     }
 
+    function mergeContextRequests(...values) {
+      const requests = values
+        .map((value) => normalizeContextRequestForUi(value))
+        .filter(Boolean);
+      if (!requests.length) return null;
+      const latest = requests.at(-1);
+      const starts = requests.map((request) => request.range.start).filter(Boolean).sort();
+      const ends = requests.map((request) => request.range.end || request.range.start).filter(Boolean).sort();
+      const pickLatestText = (key) => {
+        for (let index = requests.length - 1; index >= 0; index -= 1) {
+          const value = normalizeText(requests[index]?.[key]);
+          if (value) return value;
+        }
+        return "";
+      };
+      return {
+        schema: "guanshi-ai-context-request-v1",
+        requestType: latest.requestType,
+        target: pickLatestText("target"),
+        detailLevel: pickLatestText("detailLevel"),
+        todoIds: normalizeIdList(requests.flatMap((request) => request.todoIds || []), 12),
+        project: pickLatestText("project"),
+        category: pickLatestText("category"),
+        tag: pickLatestText("tag"),
+        status: pickLatestText("status"),
+        reason: latest.reason,
+        range: {
+          start: starts[0] || "",
+          end: ends.at(-1) || starts[0] || "",
+        },
+        include: normalizeContextIncludeList(requests.flatMap((request) => request.include || [])),
+        maxItems: Math.max(...requests.map((request) => request.maxItems || 80)),
+      };
+    }
+
+    function getAccumulatedContextRequest(assistantResult, latestRequest) {
+      return mergeContextRequests(
+        assistantResult?.contextGrant?.request,
+        assistantResult?.contextSnapshot?.contextGrant?.request,
+        latestRequest,
+      );
+    }
+
     function formatContextRequestDetail(request) {
       const normalized = normalizeContextRequestForUi(request);
       if (!normalized) return "需要本轮授权查看更多上下文。";
@@ -4250,14 +4313,20 @@
     }
 
     function rememberConversationContextAccess(contextRequest) {
-      if (normalizeContextScopeMode(contextScopeMode) !== "allow_conversation") return;
+      const mergedRequest = mergeContextRequests(
+        isConversationContextAccessActive() ? conversationContextAccessGrant?.request : null,
+        contextRequest,
+      );
+      if (normalizeContextScopeMode(contextScopeMode) !== "allow_conversation") return mergedRequest;
       conversationContextAccessGrant = {
         schema: "guanshi-ai-conversation-context-access-v1",
         conversationId: contextConversationId,
         approvedAt: new Date().toISOString(),
         expiresAtMs: Date.now() + AI_CONTEXT_CONVERSATION_TTL_MS,
-        include: normalizeContextIncludeList(contextRequest?.include),
+        include: normalizeContextIncludeList(mergedRequest?.include),
+        request: mergedRequest,
       };
+      return mergedRequest;
     }
 
     function buildAutoContextGrant(assistantResult) {
@@ -4267,13 +4336,18 @@
       if (rerunCount >= AI_CONTEXT_RERUN_MAX) return null;
       const mode = normalizeContextScopeMode(contextScopeMode);
       if (mode !== "auto_allow" && !(mode === "allow_conversation" && isConversationContextAccessActive())) return null;
+      const accumulatedRequest = mergeContextRequests(
+        mode === "allow_conversation" ? conversationContextAccessGrant?.request : null,
+        getAccumulatedContextRequest(assistantResult, contextRequest),
+      );
+      if (mode === "allow_conversation") rememberConversationContextAccess(accumulatedRequest);
       return {
         schema: "guanshi-ai-context-grant-v1",
         approved: true,
         sourceRequestId: assistantResult?.requestId || "",
         rerunCount: rerunCount + 1,
         grantSource: mode === "auto_allow" ? "time_data_reference_default_allow" : "time_data_reference_conversation_allow",
-        request: contextRequest,
+        request: accumulatedRequest,
       };
     }
 
@@ -4282,7 +4356,7 @@
       if (assistantResult?.answer) {
         paragraphs.push(...splitAssistantAnswer(assistantResult.answer));
       }
-      if (assistantResult?.mode === "need_more_context" || assistantResult?.contextRequest) {
+      if (!isTerminalContextResult(assistantResult) && (assistantResult?.mode === "need_more_context" || assistantResult?.contextRequest)) {
         const detail = formatContextRequestDetail(assistantResult.contextRequest || assistantResult.decision?.contextRequest);
         paragraphs.push(`需要你允许本轮参考：${detail}。`);
       }
@@ -4291,6 +4365,17 @@
         paragraphs.push(...buildAssistantParagraphs(assistantResult.workflow, text));
       }
       return paragraphs.length ? paragraphs : ["我已经处理完这次请求。"];
+    }
+
+    function getContextResolution(assistantResult) {
+      return assistantResult?.contextResolution
+        || assistantResult?.decision?.contextResolution
+        || assistantResult?.contextSnapshot?.contextResolution
+        || null;
+    }
+
+    function isTerminalContextResult(assistantResult) {
+      return getContextResolution(assistantResult)?.terminal === true;
     }
 
     function normalizeWorkflowActionId(action) {
@@ -4501,6 +4586,10 @@
             sourceTodoId: result.sourceTodoId || "",
             targetTodoId: result.sourceTodoId || "",
             targetSnapshot: result.targetSnapshot || null,
+            constraintSet: result.constraintSet || null,
+            actionRun: result.actionRun || null,
+            scheduling: result.scheduling || null,
+            validation: result.validation || null,
             ...withWorkflowUiPayload({}, workflowAction),
           },
           editText: text,
@@ -4556,6 +4645,7 @@
     function addContextRequestPending(assistantResult, text, options = {}) {
       const contextRequest = normalizeContextRequestForUi(assistantResult?.contextRequest || assistantResult?.decision?.contextRequest);
       if (!contextRequest) return { pendingIds: [], generatedIds: [] };
+      const accumulatedRequest = getAccumulatedContextRequest(assistantResult, contextRequest);
       const rerunCount = Math.max(0, Math.min(AI_CONTEXT_RERUN_MAX, Number.parseInt(String(assistantResult?.contextGrant?.rerunCount || assistantResult?.contextSnapshot?.contextGrant?.rerunCount || 0), 10) || 0));
       if (rerunCount >= AI_CONTEXT_RERUN_MAX) return { pendingIds: [], generatedIds: [] };
       const pendingId = upsertPendingItem({
@@ -4565,12 +4655,12 @@
         detail: contextRequest.reason,
         preview: [
           {
-            time: formatContextRequestDetail(contextRequest),
+            time: formatContextRequestDetail(accumulatedRequest),
             text: `剩余补跑 ${Math.max(0, AI_CONTEXT_RERUN_MAX - rerunCount)} 次`,
           },
         ],
         payload: {
-          contextRequest,
+          contextRequest: accumulatedRequest,
           originalText: text,
           sourceRequestId: assistantResult.requestId || "",
           rerunCount,
@@ -4611,7 +4701,9 @@
       const budgetMeta = includedCount || compressedCount
         ? `读取 ${includedCount} 类资料${compressedCount ? ` · 压缩 ${compressedCount} 类` : ""}`
         : "";
-      const primaryMeta = assistantResult?.mode === "need_more_context"
+      const primaryMeta = isTerminalContextResult(assistantResult)
+        ? `资料边界已收口 · ${elapsed}`
+        : assistantResult?.mode === "need_more_context"
         ? `请求授权 · ${elapsed}`
         : assistantResult?.mode === "tool"
         ? `${getAssistantDecisionMeta(assistantResult.decision, config)} · ${elapsed}`
@@ -4685,6 +4777,40 @@
       }
     }
 
+    function isActionRegenerationText(value) {
+      return /(?:重新|重做|再来|再生成|重新生成|重新拆解|按.*修正)/i.test(normalizeText(value));
+    }
+
+    function buildPendingActionFeedback(item, details = {}) {
+      const payload = item?.payload && typeof item.payload === "object" ? item.payload : {};
+      const sourceAction = normalizeText(payload.sourceAction || payload.actionId || payload.actionRun?.action);
+      if (!sourceAction) return null;
+      const originalText = normalizeText(payload.originalText || item.editText || item.detail || item.title);
+      return {
+        schema: AI_SEMANTIC_FEEDBACK_SCHEMA,
+        mode: "regenerate",
+        sourceMessageId: normalizeText(payload.actionRun?.actionRunId || item.id),
+        originalText,
+        previousNormalizedGoal: normalizeText(payload.normalizedGoal || originalText),
+        previousSemanticAction: {
+          action: sourceAction,
+          tool: normalizeWorkflowActionId(sourceAction),
+          sourceText: originalText,
+          normalizedGoal: normalizeText(payload.normalizedGoal || originalText),
+          contextRefs: [payload.targetTodoId || payload.sourceTodoId].filter(Boolean),
+          arguments: {
+            targetTodoId: payload.targetTodoId || payload.sourceTodoId || "",
+            constraintSet: payload.constraintSet || null,
+            previousError: {
+              code: normalizeText(details.code),
+              message: normalizeText(details.message),
+            },
+          },
+        },
+        prompt: "请沿用上一轮 Action、目标对象和已确认约束，修正失败原因后重新生成。",
+      };
+    }
+
     async function runAction(actionKey = "assistant", options = {}) {
       if (isBusy) return;
       const config = ACTION_CONFIG[actionKey] || ACTION_CONFIG.assistant;
@@ -4704,10 +4830,14 @@
       }
 
       closeContextScopeMenu();
+      const retryFeedback = actionKey === "assistant" && isActionRegenerationText(text)
+        ? lastInvalidatedActionFeedback
+        : null;
       const semanticFeedback = actionKey === "assistant" && pendingSemanticFeedback && typeof pendingSemanticFeedback === "object"
         ? pendingSemanticFeedback
-        : null;
+        : retryFeedback && typeof retryFeedback === "object" ? retryFeedback : null;
       pendingSemanticFeedback = null;
+      if (retryFeedback) lastInvalidatedActionFeedback = null;
       const suppressUserEcho = options.suppressUserEcho === true;
       if (!actionRegistryPayload) await refreshActionRegistry();
       const contextAction = config.workflow || "assistant";
@@ -4748,6 +4878,7 @@
       const AbortControllerCtor = windowRef.AbortController || globalScope.AbortController;
       const requestController = typeof AbortControllerCtor === "function" ? new AbortControllerCtor() : null;
       activeRequestController = requestController;
+      activeRequestStopReason = "";
       const assistantMessage = appendMessage({
         id: assistantMessageId,
         role: "assistant",
@@ -4847,19 +4978,26 @@
             rerunCount: 1,
           });
           if (!contextContinuation) {
-            throw new Error("AI_CONTEXT_RECOMPOSE_INVALID");
+            finalResult.mode = "answer";
+            finalResult.answer = "当前页面切换信息不完整，已停止自动切换。你可以明确要参考的资料范围，或让我只基于现有资料回答。";
+            finalResult.contextResolution = {
+              ...(resolution || {}),
+              terminal: true,
+              reasonCode: "invalid_surface_resolution",
+            };
+          } else {
+            messages = messages.filter((message) => message.id !== assistantMessage.id);
+            renderMessages();
+            setStatus("正在切换到相关页面并重新读取资料。");
+            deferredContextRerun = {
+              text,
+              contextContinuation,
+              suppressUserEcho: true,
+            };
+            return;
           }
-          messages = messages.filter((message) => message.id !== assistantMessage.id);
-          renderMessages();
-          setStatus("正在切换到相关页面并重新读取资料。");
-          deferredContextRerun = {
-            text,
-            contextContinuation,
-            suppressUserEcho: true,
-          };
-          return;
         }
-        if (finalResult.mode === "need_more_context" || finalResult.contextRequest || finalResult.decision?.contextRequest) {
+        if (!isTerminalContextResult(finalResult) && (finalResult.mode === "need_more_context" || finalResult.contextRequest || finalResult.decision?.contextRequest)) {
           const autoContextGrant = buildAutoContextGrant(finalResult);
           if (autoContextGrant) {
             const contextRequest = autoContextGrant.request;
@@ -4936,6 +5074,8 @@
         setStatus(
           finalIncomplete
             ? "回答没有完整结束，已保留当前可见内容。"
+            : isTerminalContextResult(finalResult)
+            ? "已停止重复申请资料，并说明当前边界。"
             : finalResult.mode === "need_more_context" || finalResult.contextRequest
             ? "需要你允许本轮参考更多数据。"
             : artifactRefs.pendingIds.length
@@ -4948,10 +5088,14 @@
         );
       } catch (error) {
         flushAssistantDeltaBuffer(assistantMessage.id, { force: true });
-        const message = getAssistantErrorMessage(error);
-        const cancelled = requestController?.signal?.aborted === true
+        const cancelledByUser = activeRequestController === requestController
+          && activeRequestStopReason === "user_stop"
+          && requestController?.signal?.aborted === true;
+        const cancelled = cancelledByUser
+          || requestController?.signal?.aborted === true
           || error?.name === "AbortError"
           || error?.code === "AI_PROVIDER_REQUEST_ABORTED";
+        const message = cancelled ? "已停止本轮生成。" : getAssistantErrorMessage(error);
         const currentMessage = getMessageById(assistantMessage.id);
         const partialText = normalizeText(currentMessage?.streamText);
         if (activeLiuyaoWorkflow) {
@@ -4964,14 +5108,22 @@
         updateMessage(assistantMessage.id, (current) => ({
           ...finalizeAssistantElapsedTimer(current),
           state: cancelled ? "已停止" : partialText || activeLiuyaoWorkflow ? "未完成" : "失败",
-          paragraphs: partialText ? splitAssistantAnswer(partialText) : [message],
+          paragraphs: partialText
+            ? [
+              ...splitAssistantAnswer(partialText),
+              ...(cancelled ? ["本轮已停止，以上内容可能不完整。"] : []),
+            ]
+            : [message],
           meta: "",
           showActions: false,
         }));
         queueNextActionsForMessage(assistantMessage.id);
         setStatus(message);
       } finally {
-        if (activeRequestController === requestController) activeRequestController = null;
+        if (activeRequestController === requestController) {
+          activeRequestController = null;
+          activeRequestStopReason = "";
+        }
         setBusy(false);
         finishActiveTurnScroll();
         if (deferredContextRerun) {
@@ -5219,7 +5371,7 @@
           return;
         }
         setPendingStatus(item.id, "confirmed");
-        rememberConversationContextAccess(contextRequest);
+        const accumulatedRequest = rememberConversationContextAccess(contextRequest) || contextRequest;
         appendMessage({
           role: "assistant",
           state: "已授权",
@@ -5234,7 +5386,7 @@
             approved: true,
             sourceRequestId: item.payload?.sourceRequestId || "",
             rerunCount: rerunCount + 1,
-            request: contextRequest,
+            request: accumulatedRequest,
           },
         });
         return;
@@ -5362,8 +5514,11 @@
           appendMessage({ role: "assistant", state: "已确认", paragraphs: [message] });
           setStatus("待办变更已应用。");
         } else {
-          const invalidated = ["todo_target_missing", "todo_target_changed", "todo_anchor_missing", "todo_anchor_changed"].includes(applyResult?.code);
-          if (invalidated) setPendingStatus(item.id, "rejected");
+          setPendingStatus(item.id, "rejected");
+          lastInvalidatedActionFeedback = buildPendingActionFeedback(item, {
+            code: applyResult?.code || "todo_draft_apply_failed",
+            message: applyResult?.message || "待办变更无法应用，数据保持不变。",
+          });
           appendMessage({ role: "assistant", state: "未执行", paragraphs: [applyResult?.message || "待办变更无法应用，数据保持不变。"] });
           setStatus(applyResult?.message || "待办变更未应用。");
         }
@@ -5384,6 +5539,12 @@
         await requestJson(`/api/ai/schedule-drafts/${encodeURIComponent(item.payload.draftId)}/reject`, {
           method: "POST",
           body: JSON.stringify({ rejectedBy: "sidebar" }),
+        });
+      }
+      if (["todo_draft", "todo_hierarchy_draft", "todo_mutation_draft"].includes(item.type)) {
+        lastInvalidatedActionFeedback = buildPendingActionFeedback(item, {
+          code: "user_rejected_draft",
+          message: "用户拒绝了上一版草稿。",
         });
       }
       setPendingStatus(item.id, "rejected");
@@ -5537,6 +5698,7 @@
       handleAiPageActivity();
       if (!isBusy || !activeRequestController) return;
       stopButton.disabled = true;
+      activeRequestStopReason = "user_stop";
       setStatus("正在停止本轮生成。");
       activeRequestController.abort();
     }

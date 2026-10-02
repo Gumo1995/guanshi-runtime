@@ -283,6 +283,7 @@
       const minStartMinutes = Number.isInteger(parsedMinStart)
         ? clampMinutes(parsedMinStart)
         : null;
+      const preserveExistingTimes = options.preserveExistingTimes === true;
       normalizeTodoOrderForDate(key);
       const dayTodos = getIncompleteTodosByDate(key);
       const lockedBlocks = buildLockedTimeBlocks(dayTodos);
@@ -319,6 +320,15 @@
         const lockedRange = getLockedTodoClockRange(todo);
         if (lockedRange) {
           cursor = Math.max(cursor, lockedRange.endMinutes + TODO_PLAN_DAY_GAP_MINUTES);
+          continue;
+        }
+        const currentRange = getTodoClockRange(todo);
+        // Direct user edits are authoritative but local: keep an existing
+        // downstream slot whenever it still satisfies the required gap.
+        // Only the actually conflicting suffix is pushed later; never pull a
+        // task forward merely because the edit opened an earlier gap.
+        if (preserveExistingTimes && currentRange && currentRange.startMinutes >= cursor) {
+          cursor = currentRange.endMinutes + TODO_PLAN_DAY_GAP_MINUTES;
           continue;
         }
         const duration = getTodoDurationMinutes(todo, TODO_PLAN_DAY_NEXT_DURATION_MINUTES);
@@ -551,6 +561,94 @@
       });
     }
 
+    function alignPastTodoEditToCurrentTime(todo, todoSnapshot, options = {}) {
+      const today = getTodayDateInputValue();
+      const date = String(todo?.dueDate || "").trim();
+      const currentRange = getTodoClockRange(todo);
+      const rawCurrentMinutes = Math.max(0, Math.min(1439, Math.floor(Number(getCurrentClockMinutes()) || 0)));
+      const alignedCurrentMinutes = Math.ceil(rawCurrentMinutes / 5) * 5;
+      if (!todo || todo.completed || date !== today || !currentRange || currentRange.startMinutes >= alignedCurrentMinutes) {
+        return { feasible: true, adjusted: false, alignedStartMinutes: alignedCurrentMinutes };
+      }
+      if (todo.planLocked) {
+        return { feasible: false, adjusted: false, message: "已锁定待办不能自动调整到当前时间。" };
+      }
+      if (alignedCurrentMinutes >= 24 * 60) {
+        return { feasible: false, adjusted: false, message: "今天已没有足够时间重新安排该待办。" };
+      }
+
+      const core = scheduleCore();
+      const todos = getTodos();
+      const snapshot = Array.isArray(todoSnapshot) ? todoSnapshot : [];
+      const originalDay = snapshot
+        .filter((item) => item && !item.completed && item.todoKind !== "group" && item.scheduleState !== "unplanned" && String(item.dueDate || "").trim() === date)
+        .sort(core.compareTodoDayOrder);
+      const currentById = new Map(todos.map((item) => [String(item.id), item]));
+      let ordered = originalDay.map((item) => currentById.get(String(item.id))).filter(Boolean);
+      if (!ordered.some((item) => String(item.id) === String(todo.id))) {
+        ordered = getIncompleteTodosByDate(date);
+      }
+      const anchorIndex = ordered.findIndex((item) => String(item.id) === String(todo.id));
+      if (anchorIndex < 0) {
+        return { feasible: false, adjusted: false, message: "待办顺序已变化，请重新修改时间。" };
+      }
+
+      const suffix = ordered.slice(anchorIndex);
+      const movingIds = suffix.filter((item) => !item.planLocked).map((item) => String(item.id));
+      const fixedBlocks = core.buildFixedBlocks(todos, getScheduleBusyBlocks(), {
+        targetIds: movingIds,
+        includeOtherTodos: true,
+      });
+      const timestampIso = String(options.timestampIso || new Date().toISOString());
+      const markDirty = options.markDirty !== false;
+      let cursor = alignedCurrentMinutes;
+      let changed = false;
+
+      for (let index = 0; index < suffix.length; index += 1) {
+        const item = suffix[index];
+        const range = getTodoClockRange(item);
+        if (item.planLocked) {
+          if (range) cursor = Math.max(cursor, range.endMinutes + TODO_PLAN_DAY_GAP_MINUTES);
+          continue;
+        }
+        const duration = getTodoDurationMinutes(
+          item,
+          index === 0 ? getTodoDurationMinutes(todo) : TODO_PLAN_DAY_NEXT_DURATION_MINUTES,
+        );
+        const canPreserve = index > 0 && range && range.startMinutes >= cursor && !fixedBlocks.some((block) => core.overlaps(
+          { date, start: range.startMinutes, end: range.endMinutes },
+          block,
+          TODO_PLAN_DAY_GAP_MINUTES,
+        ));
+        const startMinutes = canPreserve
+          ? range.startMinutes
+          : core.findStart(cursor, duration, fixedBlocks, date, TODO_PLAN_DAY_GAP_MINUTES);
+        if (!Number.isInteger(startMinutes) || startMinutes + duration > 1439) {
+          return { feasible: false, adjusted: false, message: "今天没有足够空间完成后续待办重排，原安排未改动。" };
+        }
+        const previousStart = String(item.startTime || "");
+        const previousEnd = String(item.endTime || "");
+        const previousEstimate = Number.parseInt(String(item.estimatedMinutes ?? ""), 10);
+        const next = setTodoRangeByStartAndDuration(item, startMinutes, duration);
+        item.estimatedMinutes = duration;
+        if (previousStart !== item.startTime || previousEnd !== item.endTime || previousEstimate !== duration) {
+          changed = true;
+          if (markDirty) markTodoPlanningDirty(item, timestampIso);
+        }
+        cursor = next.endMinutes + TODO_PLAN_DAY_GAP_MINUTES;
+      }
+
+      normalizeTodoOrderForDate(date);
+      return {
+        feasible: true,
+        adjusted: true,
+        changed,
+        alignedStartMinutes: alignedCurrentMinutes,
+        alignedStartTime: formatMinutesForInput(alignedCurrentMinutes),
+        scheduledStartTime: String(todo.startTime || formatMinutesForInput(alignedCurrentMinutes)),
+      };
+    }
+
     function previewTodoMove(todoIds, targetDate, targetOrder, anchor = {}) {
       return scheduleCore().previewMove(
         { todos: getTodos(), busyBlocks: getScheduleBusyBlocks() },
@@ -737,6 +835,7 @@
       if (!todo || todo.completed) {
         return { handled: true, applied: false };
       }
+      const scheduleSnapshot = JSON.parse(JSON.stringify(todos));
 
       const oldDueDate = String(todo.dueDate || "").trim();
       const oldDayIndex = isValidDateInput(oldDueDate)
@@ -760,11 +859,45 @@
       if (oldDueDate && oldDueDate !== todo.dueDate) {
         reflowTodoDayFromIndex(oldDueDate, oldDayIndex, { markDirty: true, timestampIso: nowIso });
       }
-      reflowTodoDayAfterAnchor(todo.dueDate, todo.id, { markDirty: true, timestampIso: nowIso });
-      saveTodos(todos);
+      const pastAdjustment = alignPastTodoEditToCurrentTime(todo, scheduleSnapshot, {
+        markDirty: true,
+        timestampIso: nowIso,
+      });
+      if (!pastAdjustment.feasible) {
+        todos.splice(0, todos.length, ...scheduleSnapshot);
+        return { handled: true, applied: false, message: pastAdjustment.message };
+      }
+      if (!pastAdjustment.adjusted) {
+        reflowTodoDayAfterAnchor(todo.dueDate, todo.id, {
+          markDirty: true,
+          timestampIso: nowIso,
+          preserveExistingTimes: true,
+        });
+      }
+      const currentById = new Map(todos.map((item) => [String(item.id), item]));
+      const changes = scheduleSnapshot.flatMap((before) => {
+        const after = currentById.get(String(before.id));
+        if (!after || ["dueDate", "startTime", "endTime"].every((field) => String(before[field] || "") === String(after[field] || ""))) return [];
+        return [{
+          operation: "schedule_todo_block",
+          todoId: before.id,
+          after: { dueDate: after.dueDate, startTime: after.startTime, endTime: after.endTime },
+        }];
+      });
+      const validation = validateTodoScheduleChanges(scheduleSnapshot, changes, { allowPast: true });
+      if (!validation.feasible) {
+        todos.splice(0, todos.length, ...scheduleSnapshot);
+        return { handled: true, applied: false, message: validation.message };
+      }
+      saveTodos(todos, { undoBoundary: true });
       render();
 
-      return { handled: true, applied: true };
+      return {
+        handled: true,
+        applied: true,
+        adjustedToCurrentTime: pastAdjustment.adjusted,
+        message: pastAdjustment.adjusted ? `开始时间早于当前时间，已从可用时间 ${pastAdjustment.scheduledStartTime} 起重新安排。` : "",
+      };
     }
 
     return {
@@ -789,6 +922,7 @@
       findOverlappingCalendarItem,
       validateTodoScheduleChanges,
       validateTodoEdit,
+      alignPastTodoEditToCurrentTime,
       previewTodoMove,
       insertTodoAfterAnchor,
       applyTodoScheduleChanges,

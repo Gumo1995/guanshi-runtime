@@ -6,6 +6,7 @@ const { createDomainModuleRegistry } = require("./ai-domain-module-registry");
 const { normalizeRuleMatcherValues } = require("./ai-memory-rule-registry");
 const { normalizeMatch } = require("./ai-memory-selector");
 const { deriveSubjectKey, validateMemoryCandidate } = require("./ai-memory-policy");
+const { createScheduleDraft } = require("./ai-scheduler");
 const developmentLiuyaoEnginePath = path.resolve(__dirname, "../../client/app-liuyao-engine.js");
 const liuyaoEngine = require(fs.existsSync(developmentLiuyaoEnginePath)
   ? developmentLiuyaoEnginePath
@@ -165,7 +166,19 @@ function getZonedRuntimeClock(nowIso, timezone) {
 }
 
 function buildSchedulerNotBefore(request, dateRange, action, nowIso) {
-  if (!["plan_today", "plan_week", "reflow_unfinished"].includes(action)) return null;
+  if (!["breakdown_task", "plan_today", "plan_week", "reflow_unfinished"].includes(action)) return null;
+  const constraintNotBefore = normalizeObject(request.input.constraintSet).notBefore;
+  const normalizedConstraint = normalizeObject(constraintNotBefore);
+  if (normalizeDate(normalizedConstraint.date) && normalizeClock(normalizedConstraint.time)) {
+    return {
+      schema: "guanshi-scheduler-not-before-v1",
+      source: normalizeText(normalizedConstraint.source || "constraint_set", 80),
+      date: normalizeDate(normalizedConstraint.date),
+      time: normalizeClock(normalizedConstraint.time),
+      timeWithSeconds: normalizeText(normalizedConstraint.timeWithSeconds, 12),
+      timezone: normalizeText(normalizedConstraint.timezone || request.timezone, 80),
+    };
+  }
   const clockInput = normalizeObject(request.input.runtimeClock);
   const runtimeClock = clockInput.localDate && clockInput.localTime
     ? {
@@ -1346,6 +1359,168 @@ function applyBreakdownChildSchedule(children, parent = {}) {
   });
 }
 
+function clearBreakdownChildSchedule(children) {
+  return (Array.isArray(children) ? children : []).map((child) => {
+    const next = { ...child };
+    delete next.dueDate;
+    delete next.startTime;
+    delete next.endTime;
+    delete next.scheduleState;
+    return next;
+  });
+}
+
+function getInclusiveDateSpan(start, end) {
+  const startDate = parseDate(start);
+  const endDate = parseDate(end);
+  if (!startDate || !endDate || endDate < startDate) return 1;
+  return Math.max(1, Math.min(14, Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1));
+}
+
+function scheduleBreakdownChildren(request, context, result, nowIso) {
+  const children = clearBreakdownChildSchedule(result?.children);
+  const parent = resolveBreakdownParent(request.input);
+  const constraintSet = normalizeObject(request.input.constraintSet);
+  const actionRun = normalizeObject(request.input.actionRun);
+  const schedulingMode = normalizeText(constraintSet.schedulingMode || "schedule_if_feasible", 40);
+  if (parent.planLocked === true || schedulingMode === "hierarchy_only") {
+    return {
+      ...result,
+      children,
+      constraintSet,
+      actionRun: { ...actionRun, status: "validated" },
+      scheduling: {
+        schema: "guanshi-breakdown-scheduling-v1",
+        mode: parent.planLocked === true ? "locked_parent" : "hierarchy_only",
+        status: "not_requested",
+        scheduledCount: 0,
+        conflicts: [],
+      },
+    };
+  }
+
+  const notBefore = buildSchedulerNotBefore(request, null, "breakdown_task", nowIso);
+  const currentDate = normalizeDate(notBefore?.date) || getCurrentDate(nowIso);
+  const parentDate = normalizeDate(parent.dueDate || parent.date);
+  const requestedDeadline = normalizeDate(constraintSet.deadline);
+  const parentBoundary = normalizeDate(parent.targetDate || parent.deadline);
+  const hardEndDate = [requestedDeadline, parentBoundary]
+    .filter((date) => date && date >= currentDate)
+    .sort()[0] || "";
+  const startDate = parentDate && parentDate > currentDate && (!hardEndDate || parentDate <= hardEndDate)
+    ? parentDate
+    : currentDate;
+  const endDate = hardEndDate && hardEndDate >= startDate ? hardEndDate : startDate;
+  const scheduledCandidates = applyBreakdownChildSchedule(children, {
+    ...parent,
+    dueDate: startDate,
+  });
+  const virtualTodos = scheduledCandidates.map((child, index) => ({
+    id: normalizeText(child.draftTodoId || `breakdown_${request.requestId}_${index + 1}`, 120),
+    title: normalizeText(child.title || `子任务 ${index + 1}`, 160),
+    dueDate: normalizeDate(child.dueDate) || startDate,
+    startTime: normalizeClock(child.startTime),
+    endTime: normalizeClock(child.endTime),
+    estimatedMinutes: normalizePositiveInteger(child.estimatedMinutes, 30, 5, 24 * 60),
+    remainingMinutes: normalizePositiveInteger(child.estimatedMinutes, 30, 5, 24 * 60),
+    minimumBlockMinutes: normalizePositiveInteger(child.estimatedMinutes, 30, 5, 24 * 60),
+    taskType: normalizeText(child.taskType || parent.taskType || "other", 80),
+    dependencies: normalizeStringList(child.dependsOnDraftIds, 20, 120),
+    planLocked: false,
+    completed: false,
+    splittable: false,
+    todoKind: "task",
+    scheduleState: "unplanned",
+  }));
+  const schedulerInput = {
+    schema: "guanshi-scheduler-input-v1",
+    draftId: `draft_${request.requestId}_breakdown_schedule`,
+    requestId: request.requestId,
+    action: "breakdown_task",
+    timezone: request.timezone,
+    source: { kind: "breakdown_scheduler", requestId: request.requestId },
+    dateRange: { start: startDate, end: endDate },
+    todos: virtualTodos,
+    fixedTodos: Array.isArray(request.input.fixedTodos) ? request.input.fixedTodos : [],
+    busyBlocks: Array.isArray(request.input.busyBlocks) ? request.input.busyBlocks : [],
+    memoryProjections: Array.isArray(context?.memory) ? context.memory : [],
+    progressSummary: request.input.progressSummary || null,
+    options: {
+      workingWindows: Array.isArray(constraintSet.workingWindows) && constraintSet.workingWindows.length
+        ? constraintSet.workingWindows
+        : Array.isArray(request.input.workingWindows) ? request.input.workingWindows : [],
+      defaultGapMinutes: normalizePositiveInteger(constraintSet.gapMinutes, 5, 0, 60),
+      strategy: "minimal_change",
+      allowMoveExistingUnlocked: true,
+      allowSplitLongTasks: false,
+      maxDays: getInclusiveDateSpan(startDate, endDate),
+      ...(notBefore ? { notBefore } : {}),
+    },
+  };
+  const draft = createScheduleDraft(schedulerInput, { now: () => nowIso });
+  const scheduledById = new Map();
+  for (const todo of virtualTodos) {
+    if (normalizeDate(todo.dueDate) && normalizeClock(todo.startTime) && normalizeClock(todo.endTime)) {
+      scheduledById.set(todo.id, {
+        dueDate: todo.dueDate,
+        startTime: todo.startTime,
+        endTime: todo.endTime,
+      });
+    }
+  }
+  for (const change of Array.isArray(draft.changes) ? draft.changes : []) {
+    scheduledById.set(change.todoId, change.after);
+  }
+  const unscheduledIds = new Set(Array.isArray(draft.impact?.unscheduledTodos) ? draft.impact.unscheduledTodos : []);
+  const fullyScheduled = virtualTodos.every((todo) => scheduledById.has(todo.id) && !unscheduledIds.has(todo.id));
+  if (!fullyScheduled) {
+    return {
+      ...result,
+      children,
+      constraintSet,
+      actionRun: { ...actionRun, status: "validated" },
+      warnings: [
+        ...(Array.isArray(result?.warnings) ? result.warnings : []),
+        {
+          code: "breakdown_schedule_not_feasible",
+          message: "当前约束下无法为全部子任务生成有效时间，草稿将建立层级但不自动排期。",
+        },
+      ],
+      scheduling: {
+        schema: "guanshi-breakdown-scheduling-v1",
+        mode: schedulingMode,
+        status: "not_feasible",
+        scheduledCount: 0,
+        conflicts: Array.isArray(draft.conflicts) ? draft.conflicts : [],
+      },
+    };
+  }
+  const scheduledChildren = children.map((child) => {
+    const schedule = scheduledById.get(child.draftTodoId);
+    return {
+      ...child,
+      dueDate: normalizeDate(schedule?.dueDate),
+      startTime: normalizeClock(schedule?.startTime),
+      endTime: normalizeClock(schedule?.endTime),
+      scheduleState: "planned",
+    };
+  });
+  return {
+    ...result,
+    children: scheduledChildren,
+    constraintSet,
+    actionRun: { ...actionRun, status: "validated" },
+    scheduling: {
+      schema: "guanshi-breakdown-scheduling-v1",
+      mode: schedulingMode,
+      status: "scheduled",
+      scheduledCount: scheduledChildren.length,
+      conflicts: [],
+      schedulerDraftId: draft.draftId,
+    },
+  };
+}
+
 function buildTaskDraftNotes(options = {}) {
   const sourceText = normalizeText(options.sourceText, 500);
   const understanding = normalizeText(options.understanding || options.normalizedGoal, 700);
@@ -1456,9 +1631,8 @@ function buildTaskBreakdownResult(request) {
   const normalizedGoal = normalizeText(request.input.normalizedGoal || semanticAction.normalizedGoal, 700);
   const sourceText = normalizeText(request.input.sourceText || request.input.text, 500);
   const total = Math.max(30, Number.parseInt(String(parent.remainingMinutes || parent.estimatedMinutes || 120), 10) || 120);
-  const plannerChildren = applyBreakdownChildSchedule(
+  const plannerChildren = clearBreakdownChildSchedule(
     normalizePlannerBreakdownChildren(request, parentTitle, parent.taskType),
-    parent,
   );
   if (plannerChildren.length) {
     return {
@@ -1485,7 +1659,7 @@ function buildTaskBreakdownResult(request) {
   const childMinutes = parent.taskType === "communication" && childCount > 1
     ? splitMinutesByWeights(total, [1, 2, 1])
     : splitMinutesByWeights(total, titles.map(() => 1), 15);
-  const children = applyBreakdownChildSchedule(
+  const children = clearBreakdownChildSchedule(
     titles.map((title, index) => ({
       draftTodoId: `child_draft_${request.requestId}_${index + 1}`,
       title: formatBreakdownTodoTitle(parentTitle, title),
@@ -1500,7 +1674,6 @@ function buildTaskBreakdownResult(request) {
       }),
       requiresConfirmation: true,
     })),
-    parent,
   );
   return {
     schema: TASK_BREAKDOWN_SCHEMA,
@@ -1858,7 +2031,9 @@ function createStepTrace(stepId, status, output = null, extra = {}) {
   return {
     step_id: stepId,
     status,
+    expected_output_schema: normalizeText(extra.expected_output_schema || "", 120),
     output_schema: normalizeText(output?.schema || extra.output_schema || "", 120),
+    contract_validation: normalizeText(extra.contract_validation || "", 40),
     output_summary: normalizeText(extra.output_summary || "", 500),
   };
 }
@@ -2022,13 +2197,16 @@ const REGISTRY_STEP_HANDLERS = {
     };
   },
 
-  "time.step.todo.inherit_parent_schedule"(state) {
+  "time.step.scheduler.schedule_breakdown"(state) {
+    state.result = scheduleBreakdownChildren(state.request, state.context, state.result, state.nowIso);
     const children = Array.isArray(state.result?.children) ? state.result.children : [];
     return {
       output: {
-        schema: "guanshi-parent-schedule-inheritance-step-v1",
+        schema: "guanshi-breakdown-scheduling-step-v1",
         sourceTodoId: state.result?.sourceTodoId || "",
-        inheritedCount: children.filter((child) => child.dueDate || child.startTime || child.endTime).length,
+        status: state.result?.scheduling?.status || "not_requested",
+        scheduledCount: children.filter((child) => child.dueDate && child.startTime && child.endTime).length,
+        constraintSet: state.result?.constraintSet || null,
         schedules: children.map((child) => ({
           draftTodoId: child.draftTodoId || "",
           dueDate: child.dueDate || "",
@@ -2036,7 +2214,48 @@ const REGISTRY_STEP_HANDLERS = {
           endTime: child.endTime || "",
         })),
       },
-      summary: `${children.filter((child) => child.dueDate || child.startTime || child.endTime).length}/${children.length} 个子任务继承时间`,
+      summary: `${children.filter((child) => child.dueDate && child.startTime && child.endTime).length}/${children.length} 个子任务通过约束排程`,
+    };
+  },
+
+  "time.step.draft.validate_todo_batch"(state) {
+    const children = Array.isArray(state.result?.children) ? state.result.children : [];
+    const notBefore = normalizeObject(state.result?.constraintSet?.notBefore);
+    const notBeforeMinutes = parseClockToMinutes(notBefore.time);
+    const errors = [];
+    if (!children.length) errors.push({ code: "breakdown_children_required", message: "拆解草稿没有子任务。" });
+    for (const child of children) {
+      const hasAnySchedule = Boolean(child.dueDate || child.startTime || child.endTime);
+      const hasCompleteSchedule = Boolean(normalizeDate(child.dueDate) && normalizeClock(child.startTime) && normalizeClock(child.endTime));
+      if (hasAnySchedule && !hasCompleteSchedule) {
+        errors.push({ code: "breakdown_schedule_incomplete", message: "子任务时间字段不完整。", draftTodoId: child.draftTodoId || "" });
+        continue;
+      }
+      if (hasCompleteSchedule && notBefore.date && notBeforeMinutes !== null) {
+        const startMinutes = parseClockToMinutes(child.startTime);
+        if (child.dueDate < notBefore.date || (child.dueDate === notBefore.date && startMinutes < notBeforeMinutes)) {
+          errors.push({ code: "breakdown_schedule_in_past", message: "子任务不能安排在当前时刻之前。", draftTodoId: child.draftTodoId || "" });
+        }
+      }
+    }
+    if (errors.length) {
+      throw createWorkflowError("AI_BREAKDOWN_DRAFT_INVALID", "拆解草稿未通过执行前校验。", 400, { errors });
+    }
+    state.breakdownValidation = {
+      schema: "guanshi-draft-validation-v1",
+      feasible: true,
+      checkedCount: children.length,
+      scheduledCount: children.filter((child) => child.dueDate && child.startTime && child.endTime).length,
+      errors: [],
+    };
+    state.result = {
+      ...state.result,
+      validation: state.breakdownValidation,
+      actionRun: { ...normalizeObject(state.result?.actionRun), status: "pending_confirmation" },
+    };
+    return {
+      output: state.breakdownValidation,
+      summary: `${children.length} 个子任务通过执行前校验`,
     };
   },
 
@@ -2397,6 +2616,12 @@ const REGISTRY_STEP_HANDLERS = {
 };
 
 function executeRegistryWorkflow(registryAction, request, context, stores, options = {}) {
+  const moduleId = normalizeText(registryAction?.action_id, 120).split(".")[0];
+  const registryBundle = moduleId ? DOMAIN_MODULES.getActionRegistry(moduleId) : null;
+  const stepContracts = new Map(
+    (Array.isArray(registryBundle?.step_registry) ? registryBundle.step_registry : [])
+      .map((step) => [normalizeText(step?.step_id, 120), step]),
+  );
   const state = {
     request,
     context,
@@ -2410,6 +2635,7 @@ function executeRegistryWorkflow(registryAction, request, context, stores, optio
   const steps = [];
   for (const stepId of normalizeStringList(registryAction.steps, 40, 120)) {
     const handler = REGISTRY_STEP_HANDLERS[stepId];
+    const stepContract = stepContracts.get(stepId);
     if (typeof handler !== "function") {
       throw createWorkflowError("AI_WORKFLOW_STEP_UNSUPPORTED", "AI workflow step is not supported.", 400, {
         action: request.action,
@@ -2418,8 +2644,21 @@ function executeRegistryWorkflow(registryAction, request, context, stores, optio
       });
     }
     const { output, summary } = handler(state) || {};
+    if (!stepContract || !output || typeof output !== "object" || Array.isArray(output) || !normalizeText(output.schema, 120)) {
+      throw createWorkflowError("AI_WORKFLOW_STEP_OUTPUT_INVALID", "AI workflow step did not satisfy its registered output contract.", 500, {
+        action: request.action,
+        action_id: registryAction.action_id,
+        step_id: stepId,
+        expected_output_schema: normalizeText(stepContract?.output_schema, 120),
+        actual_output_schema: normalizeText(output?.schema, 120),
+      });
+    }
     state.stepOutputs[stepId] = output || null;
-    steps.push(createStepTrace(stepId, "completed", output, { output_summary: summary }));
+    steps.push(createStepTrace(stepId, "completed", output, {
+      expected_output_schema: stepContract.output_schema,
+      contract_validation: "schema_tag_present",
+      output_summary: summary,
+    }));
   }
   if (!state.result) {
     throw createWorkflowError("AI_WORKFLOW_RESULT_MISSING", "AI workflow pipeline did not produce a result.", 500, {
